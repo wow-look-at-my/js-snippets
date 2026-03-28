@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync, copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 function collectEntries(dir: string): string[] {
@@ -25,5 +25,10 @@ await build({
   bundle: true,
   loader: { '.wgsl': 'text' },
 });
+
+// Copy static files to dist
+if (existsSync('src/llms.txt')) {
+  copyFileSync('src/llms.txt', 'dist/llms.txt');
+}
 
 console.log(`Built ${entryPoints.length} module(s) → dist/`);
