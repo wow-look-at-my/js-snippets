@@ -1,0 +1,14 @@
+{
+  "name": "js-snippets",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node build.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0",
+    "@webgpu/types": "^0.1.60"
+  }
+}
