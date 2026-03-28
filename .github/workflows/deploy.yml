@@ -1,10 +1,6 @@
 name: CI / Deploy
 
-on:
-  push:
-    branches:
-      - master
-  pull_request:
+on: push
 
 permissions:
   contents: read
