@@ -1,0 +1,14 @@
+### math/vec3.js
+Minimal vec3 utilities. All functions return new arrays, no mutation.
+
+Exports: create, add, subtract, scale, dot, cross, length, normalize
+Type: Vec3 = [number, number, number]
+
+### math/mat4.js
+Minimal mat4 utilities. Column-major Float32Array(16). Imports vec3 internally.
+
+Exports: create, identity, perspective, lookAt, multiply, translate, rotateX,
+  rotateY, scale, reflectY, invert
+Type: Mat4 = Float32Array
+
+Note: perspective() uses WebGPU clip-Z [0,1] convention.

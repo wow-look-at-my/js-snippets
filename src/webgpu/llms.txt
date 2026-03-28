@@ -1,27 +1,3 @@
-# js-snippets
-
-Reusable ES modules served via GitHub Pages. Source is TypeScript + WGSL,
-built to plain JS by esbuild. Import directly by URL — no bundler needed.
-
-Base URL: https://wow-look-at-my.github.io/js-snippets
-
-## Modules
-
-### math/vec3.js
-Minimal vec3 utilities. All functions return new arrays, no mutation.
-
-Exports: create, add, subtract, scale, dot, cross, length, normalize
-Type: Vec3 = [number, number, number]
-
-### math/mat4.js
-Minimal mat4 utilities. Column-major Float32Array(16). Imports vec3 internally.
-
-Exports: create, identity, perspective, lookAt, multiply, translate, rotateX,
-  rotateY, scale, reflectY, invert
-Type: Mat4 = Float32Array
-
-Note: perspective() uses WebGPU clip-Z [0,1] convention.
-
 ### webgpu/hdr-loader.js
 Parses Radiance RGBE (.hdr) files. Supports new-style RLE scanlines.
 
@@ -76,11 +52,3 @@ Exports:
   createSky(device, format, hdriView, hdriSampler, depthFormat?) → Sky
   drawSky(pass, sky) → void
   Write invViewProj to sky.uniformBuffer before calling drawSky.
-
-## Usage Example
-
-```js
-import { loadHDR } from 'https://wow-look-at-my.github.io/js-snippets/webgpu/hdr-loader.js';
-import { generateMips } from 'https://wow-look-at-my.github.io/js-snippets/webgpu/mip-generator.js';
-import * as mat4 from 'https://wow-look-at-my.github.io/js-snippets/math/mat4.js';
-```
