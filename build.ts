@@ -1,11 +1,9 @@
 import { build } from 'esbuild';
-import { globSync } from 'node:fs';
 import { readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join } from 'node:path';
 
-// Collect all .ts entry points under src/ (skip .d.ts files)
-function collectEntries(dir) {
-  const entries = [];
+function collectEntries(dir: string): string[] {
+  const entries: string[] = [];
   for (const name of readdirSync(dir)) {
     const full = join(dir, name);
     if (statSync(full).isDirectory()) {

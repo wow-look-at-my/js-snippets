@@ -10,5 +10,6 @@
     "skipLibCheck": true,
     "types": ["@webgpu/types"]
   },
-  "include": ["src/**/*.ts", "wgsl.d.ts"]
+  "include": ["src/**/*.ts", "wgsl.d.ts"],
+  "exclude": ["build.ts"]
 }

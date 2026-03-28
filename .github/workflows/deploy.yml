@@ -27,7 +27,7 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Build
-        run: node build.js
+        run: npx ts-node build.ts
 
       - name: Upload Pages artifact
         if: github.ref == 'refs/heads/master'
