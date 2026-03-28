@@ -1,0 +1,54 @@
+### webgpu/hdr-loader.js
+Parses Radiance RGBE (.hdr) files. Supports new-style RLE scanlines.
+
+Exports: loadHDR(url: string) → Promise<{ width, height, data: Float32Array }>
+  Returns 4 floats per pixel (RGBA), suitable for rgba32float textures.
+
+### webgpu/mip-generator.js
+AMD Single Pass Downsampler for WebGPU. Generates a full mip chain in two
+compute dispatches (box-filter average). WGSL shader is embedded at build time.
+
+Exports: generateMips(device: GPUDevice, texture: GPUTexture, mipCount?: number) → void
+  Texture must be rgba32float with COPY_DST usage. Mip 0 must be populated.
+  mipCount defaults to texture.mipLevelCount.
+
+### webgpu/env-prefilter.js
+IBL environment map prefiltering with GGX importance sampling and Hammersley
+sequence. Generates roughness-based mip chain where each level is convolved
+with a GGX specular lobe. Use with split-sum approximation for PBR.
+
+Exports: prefilterEnvMap(device: GPUDevice, texture: GPUTexture, numSamples?: number) → void
+  Mip 0 = sharp (roughness 0), mip N = fully diffuse (roughness 1).
+  numSamples defaults to 1024. Higher = better quality, slower.
+  Sample with: textureSampleLevel(tex, sampler, uv, roughness * maxMip)
+
+### webgpu/geometry.js
+Procedural mesh generators. Each returns { positions: Float32Array,
+normals: Float32Array, indices: Uint16Array }.
+
+Exports: createCube(size?), createSphere(radius?, segments?),
+  createCylinder(radiusTop?, radiusBottom?, height?, segments?),
+  createPlane(width?, depth?)
+
+### webgpu/buffer.js
+GPU buffer creation helper.
+
+Exports: createBuffer(device: GPUDevice, data: ArrayBufferView, usage: GPUBufferUsageFlags) → GPUBuffer
+  Creates a buffer pre-filled with data via mappedAtCreation.
+
+### webgpu/context.js
+WebGPU device + canvas context initialization.
+
+Exports: initWebGPU(canvas: HTMLCanvasElement, features?: GPUFeatureName[])
+  → Promise<{ device, ctx, format } | null>
+  Returns null if WebGPU is unavailable. Features are only requested if
+  the adapter supports them.
+
+### webgpu/sky.js
+Equirectangular HDRI sky renderer. Fullscreen triangle, no vertex buffer.
+Includes Reinhard tonemapping.
+
+Exports:
+  createSky(device, format, hdriView, hdriSampler, depthFormat?) → Sky
+  drawSky(pass, sky) → void
+  Write invViewProj to sky.uniformBuffer before calling drawSky.

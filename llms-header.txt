@@ -1,0 +1,15 @@
+# js-snippets
+
+Reusable ES modules served via GitHub Pages. Source is TypeScript + WGSL,
+built to plain JS by esbuild. Import directly by URL — no bundler needed.
+
+Base URL: https://wow-look-at-my.github.io/js-snippets
+
+## Usage
+
+```js
+import { loadHDR } from 'https://wow-look-at-my.github.io/js-snippets/webgpu/hdr-loader.js';
+import * as mat4 from 'https://wow-look-at-my.github.io/js-snippets/math/mat4.js';
+```
+
+## Modules
