@@ -141,8 +141,8 @@ export function createAutoRefresh(
         showBanner();
         setTimeout(() => bustCacheAndReload(), refreshDelay);
       }
-    } catch {
-      // Network error — silently skip this cycle
+    } catch (err) {
+      console.debug('auto-refresh check failed:', err);
     }
   }
 
