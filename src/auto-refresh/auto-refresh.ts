@@ -4,12 +4,25 @@
  * Periodically sends HEAD requests to the current page to detect server-side
  * changes via ETag / Last-Modified headers. When a change is detected, a
  * notification banner is shown and the page reloads automatically.
+ *
+ * Usage: <script type="module" src="auto-refresh.js"></script>
  */
 
 // -- Configuration -----------------------------------------------------------
 
 const DEFAULT_INTERVAL = 30_000; // ms between checks
 const DEFAULT_REFRESH_DELAY = 2_000; // ms before reload after detection
+
+// -- Cache-bust cleanup ------------------------------------------------------
+
+// Strip the _v cache-busting param from the URL so it doesn't linger
+{
+  const url = new URL(location.href);
+  if (url.searchParams.has('_v')) {
+    url.searchParams.delete('_v');
+    history.replaceState(null, '', url.pathname + url.search + url.hash);
+  }
+}
 
 // -- Types -------------------------------------------------------------------
 
@@ -156,4 +169,16 @@ export function createAutoRefresh(
   });
 
   return { start, stop };
+}
+
+// -- Auto-start when loaded as a standalone script ---------------------------
+// Pages can import { createAutoRefresh } for manual control, or simply load
+// the module to get the default behaviour with no extra code.
+
+const instance = createAutoRefresh();
+
+if (document.readyState === 'complete') {
+  instance.start();
+} else {
+  window.addEventListener('load', () => instance.start());
 }
