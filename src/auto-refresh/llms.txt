@@ -1,6 +1,8 @@
 ### auto-refresh/auto-refresh.js
-HEAD-polling live-reload. Detects server-side changes via ETag / Last-Modified
-headers and shows a notification banner before reloading.
+Live-reload detection. Polls a `version.txt` file (e.g. commit SHA) at the
+site root to detect deployments. Falls back to HEAD-polling the current page
+and comparing ETag / Last-Modified headers if version.txt is missing.
+Shows a notification banner before reloading.
 
 Exports:
   createAutoRefresh(options?: AutoRefreshOptions) → AutoRefreshHandle

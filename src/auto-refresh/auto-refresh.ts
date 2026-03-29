@@ -1,9 +1,11 @@
 /**
  * Auto-Refresh Detection
  *
- * Periodically sends HEAD requests to the current page to detect server-side
- * changes via ETag / Last-Modified headers. When a change is detected, a
- * notification banner is shown and the page reloads automatically.
+ * Detects server-side changes and reloads the page automatically.
+ *
+ * Primary method: fetches a `version.txt` file (e.g. containing a commit SHA)
+ * relative to the site root. If the file is missing or empty, falls back to
+ * HEAD-polling the current page and comparing ETag / Last-Modified headers.
  *
  * Usage: <script type="module" src="https://wow-look-at-my.github.io/js-snippets/auto-refresh/auto-refresh.js"></script>
  */
@@ -12,6 +14,7 @@
 
 const DEFAULT_INTERVAL = 30_000; // ms between checks
 const DEFAULT_REFRESH_DELAY = 2_000; // ms before reload after detection
+const VERSION_PATH = 'version.txt';
 
 // -- Cache-bust cleanup ------------------------------------------------------
 
@@ -55,11 +58,19 @@ export function createAutoRefresh(
   const checkInterval = options.interval ?? DEFAULT_INTERVAL;
   const refreshDelay = options.refreshDelay ?? DEFAULT_REFRESH_DELAY;
 
-  let baseline: { etag: string | null; lastModified: string | null; contentLength: string | null } | null = null;
+  let baselineVersion: string | null = null;
+  let baselineHeaders: { etag: string | null; lastModified: string | null; contentLength: string | null } | null = null;
+  let useVersionFile = true; // try version.txt first, disable on 404
   let notified = false;
   let timerId: ReturnType<typeof setInterval> | null = null;
 
   // -- Helpers ---------------------------------------------------------------
+
+  function siteRoot(): string {
+    // Resolve VERSION_PATH relative to the site root (origin + base path)
+    const base = document.querySelector('base')?.href ?? location.origin + '/';
+    return new URL(VERSION_PATH, base).href;
+  }
 
   function pageUrl(): string {
     return location.href.split('#')[0];
@@ -73,9 +84,9 @@ export function createAutoRefresh(
     };
   }
 
-  function hasChanged(
-    prev: NonNullable<typeof baseline>,
-    curr: NonNullable<typeof baseline>,
+  function headersChanged(
+    prev: NonNullable<typeof baselineHeaders>,
+    curr: NonNullable<typeof baselineHeaders>,
   ): boolean {
     if (prev.etag && curr.etag) return prev.etag !== curr.etag;
     if (prev.lastModified && curr.lastModified)
@@ -119,28 +130,65 @@ export function createAutoRefresh(
     });
   }
 
+  function onChange(): void {
+    notified = true;
+    clearInterval(timerId!);
+    showBanner();
+    setTimeout(() => bustCacheAndReload(), refreshDelay);
+  }
+
+  // -- Version file check ----------------------------------------------------
+
+  async function checkVersion(): Promise<boolean> {
+    const response = await fetch(siteRoot(), { cache: 'no-store' });
+    if (!response.ok) {
+      useVersionFile = false;
+      return false;
+    }
+
+    const version = (await response.text()).trim();
+    if (!version) {
+      useVersionFile = false;
+      return false;
+    }
+
+    if (!baselineVersion) {
+      baselineVersion = version;
+      return true;
+    }
+
+    if (version !== baselineVersion) {
+      onChange();
+    }
+    return true;
+  }
+
+  // -- Header fallback check -------------------------------------------------
+
+  async function checkHeaders(): Promise<void> {
+    const response = await fetch(pageUrl(), { method: 'HEAD', cache: 'no-store' });
+    if (!response.ok) return;
+
+    const current = headersOf(response);
+
+    if (!baselineHeaders) {
+      baselineHeaders = current;
+      return;
+    }
+
+    if (headersChanged(baselineHeaders, current)) {
+      onChange();
+    }
+  }
+
   // -- Core check ------------------------------------------------------------
 
   async function check(): Promise<void> {
     if (notified) return;
 
     try {
-      const response = await fetch(pageUrl(), { method: 'HEAD', cache: 'no-store' });
-      if (!response.ok) return;
-
-      const current = headersOf(response);
-
-      if (!baseline) {
-        baseline = current;
-        return;
-      }
-
-      if (hasChanged(baseline, current)) {
-        notified = true;
-        clearInterval(timerId!);
-        showBanner();
-        setTimeout(() => bustCacheAndReload(), refreshDelay);
-      }
+      if (useVersionFile && await checkVersion()) return;
+      await checkHeaders();
     } catch (err) {
       console.debug('auto-refresh check failed:', err);
     }
