@@ -121,30 +121,29 @@ export function createAutoRefresh(
 
   // -- Core check ------------------------------------------------------------
 
-  function check(): void {
+  async function check(): Promise<void> {
     if (notified) return;
 
-    fetch(pageUrl(), { method: 'HEAD', cache: 'no-store' })
-      .then((response) => {
-        if (!response.ok) return;
+    try {
+      const response = await fetch(pageUrl(), { method: 'HEAD', cache: 'no-store' });
+      if (!response.ok) return;
 
-        const current = headersOf(response);
+      const current = headersOf(response);
 
-        if (!baseline) {
-          baseline = current;
-          return;
-        }
+      if (!baseline) {
+        baseline = current;
+        return;
+      }
 
-        if (hasChanged(baseline, current)) {
-          notified = true;
-          clearInterval(timerId!);
-          showBanner();
-          setTimeout(() => bustCacheAndReload(), refreshDelay);
-        }
-      })
-      .catch(() => {
-        // Network error — silently skip this cycle
-      });
+      if (hasChanged(baseline, current)) {
+        notified = true;
+        clearInterval(timerId!);
+        showBanner();
+        setTimeout(() => bustCacheAndReload(), refreshDelay);
+      }
+    } catch {
+      // Network error — silently skip this cycle
+    }
   }
 
   // -- Public API ------------------------------------------------------------
