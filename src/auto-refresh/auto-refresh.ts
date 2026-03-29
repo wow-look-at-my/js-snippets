@@ -5,7 +5,7 @@
  * changes via ETag / Last-Modified headers. When a change is detected, a
  * notification banner is shown and the page reloads automatically.
  *
- * Usage: <script type="module" src="auto-refresh.js"></script>
+ * Usage: <script type="module" src="https://wow-look-at-my.github.io/js-snippets/auto-refresh/auto-refresh.js"></script>
  */
 
 // -- Configuration -----------------------------------------------------------
