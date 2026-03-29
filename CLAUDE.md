@@ -10,6 +10,9 @@ Base URL: `https://wow-look-at-my.github.io/js-snippets`
 
 ```
 src/
+├── auto-refresh/
+│   ├── llms.txt           ← docs for auto-refresh modules
+│   └── auto-refresh.ts
 ├── math/
 │   ├── llms.txt           ← docs for math modules
 │   ├── vec3.ts
@@ -34,7 +37,7 @@ tsconfig.json
 wgsl.d.ts                  ← type declarations for .wgsl imports
 ```
 
-Modules are organized by domain (`math/`, `webgpu/`). The deployed URL mirrors the `src/` structure without the `src/` prefix: `src/webgpu/sky.ts` → `https://…/webgpu/sky.js`.
+Modules are organized by domain (`auto-refresh/`, `math/`, `webgpu/`). The deployed URL mirrors the `src/` structure without the `src/` prefix: `src/webgpu/sky.ts` → `https://…/webgpu/sky.js`.
 
 ## Build
 
@@ -57,6 +60,7 @@ GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` 
 ## llms.txt — CRITICAL
 
 Each module category has its own `llms.txt` alongside its source files:
+- `src/auto-refresh/llms.txt` — documents the auto-refresh modules
 - `src/math/llms.txt` — documents the math modules
 - `src/webgpu/llms.txt` — documents the webgpu modules
 - `llms-header.txt` — preamble (repo description, base URL, usage example)
