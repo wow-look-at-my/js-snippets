@@ -66,10 +66,19 @@ export function createAutoRefresh(
 
   // -- Helpers ---------------------------------------------------------------
 
-  function siteRoot(): string {
-    // Resolve VERSION_PATH relative to the site root (origin + base path)
-    const base = document.querySelector('base')?.href ?? location.origin + '/';
-    return new URL(VERSION_PATH, base).href;
+  function versionUrl(): string {
+    const path = location.pathname;
+
+    // PR preview: /{repo}/pr-preview/pr-{N}/...
+    const prMatch = path.match(/^(\/[^/]+\/pr-preview\/pr-\d+\/)/);
+    if (prMatch) return new URL(prMatch[1] + VERSION_PATH, location.origin).href;
+
+    // GitHub Pages: /{repo}/...
+    const repoMatch = path.match(/^(\/[^/]+\/)/);
+    if (repoMatch) return new URL(repoMatch[1] + VERSION_PATH, location.origin).href;
+
+    // Bare domain (e.g. custom domain or user.github.io root)
+    return new URL('/' + VERSION_PATH, location.origin).href;
   }
 
   function pageUrl(): string {
@@ -140,7 +149,7 @@ export function createAutoRefresh(
   // -- Version file check ----------------------------------------------------
 
   async function checkVersion(): Promise<boolean> {
-    const response = await fetch(siteRoot(), { cache: 'no-store' });
+    const response = await fetch(versionUrl(), { cache: 'no-store' });
     if (!response.ok) {
       useVersionFile = false;
       return false;
