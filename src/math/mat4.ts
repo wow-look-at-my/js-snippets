@@ -87,6 +87,14 @@ export function reflectY(m: Mat4): Mat4 {
   return r;
 }
 
+/** Reflect about Z=0: S * V * S where S = diag(1,1,-1,1). */
+export function reflectZ(m: Mat4): Mat4 {
+  const r = new Float32Array(m);
+  r[2] = -r[2]; r[6] = -r[6]; r[8] = -r[8];
+  r[9] = -r[9]; r[11] = -r[11]; r[14] = -r[14];
+  return r;
+}
+
 /** Transpose-of-inverse of the upper 3x3, embedded in a 4x4 (for transforming normals). */
 export function normalMatrix(m: Mat4): Mat4 {
   const inv = invert(m);
