@@ -87,6 +87,17 @@ export function reflectY(m: Mat4): Mat4 {
   return r;
 }
 
+/** Transpose-of-inverse of the upper 3x3, embedded in a 4x4 (for transforming normals). */
+export function normalMatrix(m: Mat4): Mat4 {
+  const inv = invert(m);
+  if (!inv) return identity();
+  const n = identity();
+  n[0] = inv[0]; n[1] = inv[4]; n[2]  = inv[8];
+  n[4] = inv[1]; n[5] = inv[5]; n[6]  = inv[9];
+  n[8] = inv[2]; n[9] = inv[6]; n[10] = inv[10];
+  return n;
+}
+
 /** Invert a general 4x4 matrix. Returns null if singular. */
 export function invert(m: Mat4): Mat4 | null {
   const inv = new Float32Array(16);
