@@ -34,7 +34,7 @@ export function createCube(size = 1): Mesh {
   const idx: number[] = [];
   for (let f = 0; f < 6; f++) {
     const o = f * 4;
-    idx.push(o, o+1, o+2, o, o+2, o+3);
+    idx.push(o, o+2, o+1, o, o+3, o+2);
   }
   return {
     positions: new Float32Array(p),
@@ -66,7 +66,7 @@ export function createSphere(radius = 1, segments = 24): Mesh {
     for (let s = 0; s < sectors; s++) {
       const a = r * (sectors + 1) + s;
       const b = a + sectors + 1;
-      indices.push(a, b, a + 1, a + 1, b, b + 1);
+      indices.push(a, a + 1, b, a + 1, b + 1, b);
     }
   }
 
@@ -98,7 +98,7 @@ export function createCylinder(radiusTop = 0.5, radiusBottom = 0.5, height = 1, 
   }
   for (let i = 0; i < segments; i++) {
     const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
-    indices.push(a, c, b, b, c, d);
+    indices.push(a, b, c, b, d, c);
   }
 
   // Top cap
@@ -111,7 +111,7 @@ export function createCylinder(radiusTop = 0.5, radiusBottom = 0.5, height = 1, 
     normals.push(0, 1, 0);
   }
   for (let i = 0; i < segments; i++) {
-    indices.push(topCenter, topCenter + 1 + i, topCenter + 2 + i);
+    indices.push(topCenter, topCenter + 2 + i, topCenter + 1 + i);
   }
 
   // Bottom cap
@@ -124,7 +124,7 @@ export function createCylinder(radiusTop = 0.5, radiusBottom = 0.5, height = 1, 
     normals.push(0, -1, 0);
   }
   for (let i = 0; i < segments; i++) {
-    indices.push(botCenter, botCenter + 2 + i, botCenter + 1 + i);
+    indices.push(botCenter, botCenter + 1 + i, botCenter + 2 + i);
   }
 
   return {
@@ -143,6 +143,6 @@ export function createPlane(width = 20, depth = 20): Mesh {
     normals: new Float32Array([
       0, 1, 0,  0, 1, 0,  0, 1, 0,  0, 1, 0,
     ]),
-    indices: new Uint16Array([0, 2, 1, 0, 3, 2]),
+    indices: new Uint16Array([0, 1, 2, 0, 2, 3]),
   };
 }
