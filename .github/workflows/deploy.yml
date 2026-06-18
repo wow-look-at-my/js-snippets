@@ -17,7 +17,10 @@ jobs:
         with:
           node-version: 22
 
-      - run: npm ci
+      # No lockfile is committed (so ts0 is never pinned to a commit) — use
+      # `npm install`, which resolves the ts0 branch dependency to its current
+      # HEAD on every run.
+      - run: npm install
 
       - name: Build
         # ts0 build type-checks (tsc --noEmit) and compiles src/ -> dist/;
