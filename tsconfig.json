@@ -1,15 +1,13 @@
 {
+  "//": "Editor/IDE config only. ts0 generates its own tsconfig for the build's type-check; this mirrors it (bundler resolution, no emit) so editors agree with CI.",
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ES2022",
+    "target": "ESNext",
+    "module": "ESNext",
     "moduleResolution": "bundler",
-    "outDir": "dist",
-    "rootDir": "src",
-    "declaration": true,
     "strict": true,
+    "noEmit": true,
     "skipLibCheck": true,
-    "types": ["@webgpu/types"]
+    "allowImportingTsExtensions": true
   },
-  "include": ["src/**/*.ts", "wgsl.d.ts"],
-  "exclude": ["build.ts"]
+  "include": ["src/**/*.ts", "wgsl.d.ts"]
 }

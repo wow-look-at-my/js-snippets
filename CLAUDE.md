@@ -2,7 +2,7 @@
 
 ## What This Repo Is
 
-A library of reusable ES modules. Source is TypeScript (`.ts`) and WGSL (`.wgsl`) under `src/`. A build step compiles to JavaScript and deploys to GitHub Pages. **Only `.ts` and `.wgsl` files are committed — `.js` output is never checked in.**
+A library of reusable ES modules. Source is TypeScript (`.ts`) and WGSL (`.wgsl`) under `src/`. [ts0](https://github.com/wow-look-at-my/ts0) compiles them to JavaScript, which deploys to GitHub Pages. **Only `.ts` and `.wgsl` files are committed — `.js` output is never checked in.**
 
 Base URL: `https://wow-look-at-my.github.io/js-snippets`
 
@@ -31,10 +31,11 @@ src/
 │       ├── sky.wgsl
 │       └── prefilter.wgsl
 llms-header.txt            ← preamble for combined llms.txt
-build.ts                   ← esbuild orchestration (run with ts-node)
+ts0.json                   ← ts0 config (js library target, .wgsl text loader)
+scripts/build-llms.mjs     ← assembles dist/llms.txt after the ts0 build
 package.json
-tsconfig.json
-wgsl.d.ts                  ← type declarations for .wgsl imports
+tsconfig.json              ← editor/IDE only (ts0 generates its own for the build)
+wgsl.d.ts                  ← ambient *.wgsl decl + @webgpu/types reference
 ```
 
 Modules are organized by domain (`auto-refresh/`, `math/`, `webgpu/`). The deployed URL mirrors the `src/` structure without the `src/` prefix: `src/webgpu/sky.ts` → `https://…/webgpu/sky.js`.
@@ -42,20 +43,21 @@ Modules are organized by domain (`auto-refresh/`, `math/`, `webgpu/`). The deplo
 ## Build
 
 ```sh
-npm ci
-npx tsc --noEmit      # type-check only
-npx ts-node build.ts  # compile to dist/
+pnpm install
+pnpm build      # ts0 build (type-check + compile src/ -> dist/) + assemble dist/llms.txt
 ```
 
-esbuild handles TypeScript compilation and inlines `.wgsl` files as strings via `--loader:.wgsl=text`. Each `.ts` file under `src/` is a separate entry point — no bundling across modules.
+The build is [ts0](https://github.com/wow-look-at-my/ts0)'s **js library target**, selected because `ts0.json`'s `entry` is the `src/` *directory*. ts0 type-checks (`tsc --noEmit`) and then compiles every `.ts` under `src/` to a parallel `.js` under `dist/`, preserving structure (`src/webgpu/sky.ts` → `dist/webgpu/sky.js`). Each file is its own esbuild entry point. Code shared between modules (e.g. `vec3`, imported by `mat4`) is deduplicated into a `dist/chunk-*.js` and imported — never copied into each output; non-shared local imports and `.wgsl` shaders stay inlined. A consumer still imports a single URL — the browser fetches any shared chunk transitively. WGSL is imported as text via the `loaders: { ".wgsl": "text" }` field in `ts0.json`.
 
-The build also combines `llms-header.txt` + all `src/**/llms.txt` files into `dist/llms.txt`.
+`pnpm build` then runs `scripts/build-llms.mjs`, which combines `llms-header.txt` + all `src/**/llms.txt` files into `dist/llms.txt`.
 
-`tsconfig.json` is for type-checking only (`tsc --noEmit`), not compilation.
+The package manager is **pnpm**, pinned via `package.json`'s `"packageManager"` field and provisioned by corepack (ships with Node — `corepack enable`), so no global install or third-party CI action is needed. Because ts0 is a git dependency that builds itself on install (its `prepare` runs `ts0`'s own build), pnpm requires its build script to be allowlisted — hence `"pnpm": { "onlyBuiltDependencies": ["ts0", "esbuild"] }` in `package.json` (`esbuild` is allowlisted too, only to silence pnpm's ignored-build-script warning; its binary already comes via optionalDependencies).
+
+ts0 is a devDependency installed from git, pinned to a **branch** (never a commit): `package.json` references `wow-look-at-my/ts0#<branch>`. **No lockfile is committed** (`package-lock.json` and `pnpm-lock.yaml` are gitignored) so nothing freezes ts0 to a SHA — `pnpm install` resolves the branch to its current HEAD every time, and ts0's `prepare` script builds the `ts0` binary on install. `tsconfig.json` is **not** used by the build — ts0 generates its own type-check config (bundler resolution). The committed `tsconfig.json` exists only so editors/IDEs match CI; keep the two in sync.
 
 ## Deploy
 
-GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` job type-checks and compiles. The `deploy` job (master only) uploads `dist/` to GitHub Pages via `actions/deploy-pages`.
+GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` job enables pnpm via corepack, then runs `pnpm build` (ts0 type-checks + compiles, then `dist/llms.txt` is assembled). The `deploy` job (master only) uploads `dist/` to GitHub Pages via `actions/deploy-pages`.
 
 ## llms.txt — CRITICAL
 
@@ -80,9 +82,8 @@ If you are reading any `llms.txt` and notice ANY inaccuracy, missing module, wro
 1. Create `src/<category>/<name>.ts` (and `shaders/<name>.wgsl` if needed)
 2. **Update `src/<category>/llms.txt`** with the new module's path, exports, and description
 3. If it's a new category, create a new `src/<category>/llms.txt`
-4. Run `npx tsc --noEmit` to verify types
-5. Run `npx ts-node build.ts` to verify the build
-6. Commit and push
+4. Run `pnpm build` to type-check and verify the build (ts0 does both)
+5. Commit and push
 
 ## Conventions
 

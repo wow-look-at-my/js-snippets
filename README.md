@@ -1,6 +1,6 @@
 # js-snippets
 
-Reusable ES modules served via GitHub Pages. Source is TypeScript + WGSL, compiled to plain JavaScript by esbuild. Import directly by URL — no bundler or package manager needed.
+Reusable ES modules served via GitHub Pages. Source is TypeScript + WGSL, compiled to plain JavaScript by [ts0](https://github.com/wow-look-at-my/ts0). Import directly by URL — no bundler or package manager needed.
 
 **Base URL:** `https://wow-look-at-my.github.io/js-snippets`
 
@@ -42,12 +42,11 @@ import * as mat4 from 'https://wow-look-at-my.github.io/js-snippets/math/mat4.js
 ## Building
 
 ```sh
-npm ci
-npx tsc --noEmit      # type-check
-npx ts-node build.ts  # compile to dist/
+pnpm install
+pnpm build      # ts0 build (type-check + compile src/ -> dist/) + assemble dist/llms.txt
 ```
 
-Each `.ts` file under `src/` is a separate entry point. WGSL shaders are inlined as strings via esbuild's `--loader:.wgsl=text`.
+[ts0](https://github.com/wow-look-at-my/ts0)'s "js" library target compiles every `.ts` under `src/` to a parallel `.js` under `dist/`, preserving structure (`src/webgpu/sky.ts` → `dist/webgpu/sky.js`). Code shared between modules (e.g. `vec3`, used by `mat4`) is deduplicated into a chunk and imported — never copied into both — so you still import a single URL and the browser fetches any shared chunk transitively. WGSL shaders are imported as strings via the `loaders: { ".wgsl": "text" }` field in `ts0.json`. `ts0 build` type-checks first (`tsc --noEmit`), so there is no separate type-check step.
 
 ## Deploy
 
