@@ -3,13 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "build": "ts-node build.ts"
+    "build": "ts0 build && node scripts/build-llms.mjs"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0",
-    "typescript": "^5.8.0",
     "@webgpu/types": "^0.1.60",
-    "ts-node": "^10.9.0"
+    "ts0": "git+https://github.com/wow-look-at-my/ts0.git#claude/tender-knuth-dq56p3"
   }
 }
