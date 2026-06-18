@@ -43,19 +43,21 @@ Modules are organized by domain (`auto-refresh/`, `math/`, `webgpu/`). The deplo
 ## Build
 
 ```sh
-npm install
-npm run build   # ts0 build (type-check + compile src/ -> dist/) + assemble dist/llms.txt
+pnpm install
+pnpm build      # ts0 build (type-check + compile src/ -> dist/) + assemble dist/llms.txt
 ```
 
 The build is [ts0](https://github.com/wow-look-at-my/ts0)'s **js library target**, selected because `ts0.json`'s `entry` is the `src/` *directory*. ts0 type-checks (`tsc --noEmit`) and then compiles every `.ts` under `src/` to a parallel `.js` under `dist/`, preserving structure (`src/webgpu/sky.ts` → `dist/webgpu/sky.js`). Each file is its own esbuild entry point. Code shared between modules (e.g. `vec3`, imported by `mat4`) is deduplicated into a `dist/chunk-*.js` and imported — never copied into each output; non-shared local imports and `.wgsl` shaders stay inlined. A consumer still imports a single URL — the browser fetches any shared chunk transitively. WGSL is imported as text via the `loaders: { ".wgsl": "text" }` field in `ts0.json`.
 
-`npm run build` then runs `scripts/build-llms.mjs`, which combines `llms-header.txt` + all `src/**/llms.txt` files into `dist/llms.txt`.
+`pnpm build` then runs `scripts/build-llms.mjs`, which combines `llms-header.txt` + all `src/**/llms.txt` files into `dist/llms.txt`.
 
-ts0 is a devDependency installed from git, pinned to a **branch** (never a commit): `package.json` references `wow-look-at-my/ts0#<branch>`. **No `package-lock.json` is committed** (it's gitignored) so nothing freezes ts0 to a SHA — `npm install` resolves the branch to its current HEAD every time, and ts0's `prepare` script builds the `ts0` binary on install. `tsconfig.json` is **not** used by the build — ts0 generates its own type-check config (bundler resolution). The committed `tsconfig.json` exists only so editors/IDEs match CI; keep the two in sync.
+The package manager is **pnpm**, pinned via `package.json`'s `"packageManager"` field and provisioned by corepack (ships with Node — `corepack enable`), so no global install or third-party CI action is needed. Because ts0 is a git dependency that builds itself on install (its `prepare` runs `ts0`'s own build), pnpm requires its build script to be allowlisted — hence `"pnpm": { "onlyBuiltDependencies": ["ts0", "esbuild"] }` in `package.json` (`esbuild` is allowlisted too, only to silence pnpm's ignored-build-script warning; its binary already comes via optionalDependencies).
+
+ts0 is a devDependency installed from git, pinned to a **branch** (never a commit): `package.json` references `wow-look-at-my/ts0#<branch>`. **No lockfile is committed** (`package-lock.json` and `pnpm-lock.yaml` are gitignored) so nothing freezes ts0 to a SHA — `pnpm install` resolves the branch to its current HEAD every time, and ts0's `prepare` script builds the `ts0` binary on install. `tsconfig.json` is **not** used by the build — ts0 generates its own type-check config (bundler resolution). The committed `tsconfig.json` exists only so editors/IDEs match CI; keep the two in sync.
 
 ## Deploy
 
-GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` job runs `npm run build` (ts0 type-checks + compiles, then `dist/llms.txt` is assembled). The `deploy` job (master only) uploads `dist/` to GitHub Pages via `actions/deploy-pages`.
+GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` job enables pnpm via corepack, then runs `pnpm build` (ts0 type-checks + compiles, then `dist/llms.txt` is assembled). The `deploy` job (master only) uploads `dist/` to GitHub Pages via `actions/deploy-pages`.
 
 ## llms.txt — CRITICAL
 
@@ -80,7 +82,7 @@ If you are reading any `llms.txt` and notice ANY inaccuracy, missing module, wro
 1. Create `src/<category>/<name>.ts` (and `shaders/<name>.wgsl` if needed)
 2. **Update `src/<category>/llms.txt`** with the new module's path, exports, and description
 3. If it's a new category, create a new `src/<category>/llms.txt`
-4. Run `npm run build` to type-check and verify the build (ts0 does both)
+4. Run `pnpm build` to type-check and verify the build (ts0 does both)
 5. Commit and push
 
 ## Conventions

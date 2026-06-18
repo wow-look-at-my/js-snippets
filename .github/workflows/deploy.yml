@@ -7,6 +7,9 @@ permissions:
   pages: write
   id-token: write
 
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,15 +20,21 @@ jobs:
         with:
           node-version: 22
 
-      # No lockfile is committed (so ts0 is never pinned to a commit) — use
-      # `npm install`, which resolves the ts0 branch dependency to its current
-      # HEAD on every run.
-      - run: npm install
+      # pnpm, pinned via package.json "packageManager" and provisioned by
+      # corepack (ships with Node) — no third-party setup action needed.
+      - name: Enable pnpm
+        run: corepack enable
+
+      # No lockfile is committed (so ts0 is never pinned to a commit) — `pnpm
+      # install` resolves the ts0 branch dependency to its current HEAD on every
+      # run. ts0's git-dep build script is allowlisted via package.json
+      # "pnpm.onlyBuiltDependencies".
+      - run: pnpm install
 
       - name: Build
         # ts0 build type-checks (tsc --noEmit) and compiles src/ -> dist/;
-        # the npm script then assembles dist/llms.txt.
-        run: npm run build
+        # the build script then assembles dist/llms.txt.
+        run: pnpm build
 
       - name: Upload Pages artifact
         if: github.ref == 'refs/heads/master'
