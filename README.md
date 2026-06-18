@@ -39,7 +39,7 @@ npm ci
 npm run build   # ts0 build (type-check + compile src/ -> dist/) + assemble dist/llms.txt
 ```
 
-[ts0](https://github.com/wow-look-at-my/ts0)'s "js" library target compiles every `.ts` under `src/` to a parallel `.js` under `dist/`, preserving structure (`src/webgpu/sky.ts` → `dist/webgpu/sky.js`). Each output module is self-contained; WGSL shaders are inlined as strings via the `loader: { ".wgsl": "text" }` esbuild escape hatch in `ts0.json`. `ts0 build` type-checks first (`tsc --noEmit`), so there is no separate type-check step.
+[ts0](https://github.com/wow-look-at-my/ts0)'s "js" library target compiles every `.ts` under `src/` to a parallel `.js` under `dist/`, preserving structure (`src/webgpu/sky.ts` → `dist/webgpu/sky.js`). Code shared between modules (e.g. `vec3`, used by `mat4`) is deduplicated into a chunk and imported — never copied into both — so you still import a single URL and the browser fetches any shared chunk transitively. WGSL shaders are inlined as strings via the `loader: { ".wgsl": "text" }` esbuild escape hatch in `ts0.json`. `ts0 build` type-checks first (`tsc --noEmit`), so there is no separate type-check step.
 
 ## Deploy
 
