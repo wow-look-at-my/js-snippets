@@ -13,6 +13,13 @@ import * as mat4 from 'https://wow-look-at-my.github.io/js-snippets/math/mat4.js
 
 ## Modules
 
+### Editor
+
+| Module | Description |
+|--------|-------------|
+| `editor/code-editor.js` | Tiny dependency-free syntax-highlighting code editor as a `<code-editor>` custom element. The highlighted token spans *are* the editable content, so the native caret never drifts. Self-contained themeable styles; ~18 KB, no deps. Also exports `highlightToHTML` / `highlightToFragment` for read-only highlighting. |
+| `editor/tokenizer.js` | Byte-preserving tokenizer + syntax classifier for C-like source (HLSL/GLSL/WGSL/C/C++/JS). Pure, DOM-free. `tokenize`, `classify`, `LANGUAGES`, `resolveLanguage`. |
+
 ### Math
 
 | Module | Description |
