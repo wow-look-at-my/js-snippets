@@ -1,0 +1,77 @@
+### editor/code-editor.js
+Tiny dependency-free syntax-highlighting code editor as a custom element. The
+highlighted token spans ARE the editable content (a single contenteditable
+whose children are coloured spans + bare whitespace text nodes), so the native
+caret sits in the real glyphs and never drifts. On each edit the text is
+re-tokenized and the spans rebuilt with the caret offset saved/restored.
+Rendered in the light DOM; injects its own themeable stylesheet once. ~18 KB
+unminified, no dependencies. Re-exports everything from editor/tokenizer.js so
+one import is enough.
+
+Importing the module auto-registers <code-editor> (unless that tag is taken).
+
+  import { CodeEditor, highlightToHTML } from '.../editor/code-editor.js';
+
+  <code-editor language="glsl">float x = 1.0;</code-editor>
+
+  const ed = document.querySelector('code-editor');
+  ed.value = 'vec3 n = normalize(p);';
+  ed.addEventListener('input', () => console.log(ed.value)); // native bubbling input
+
+Element <code-editor> attributes (all optional):
+  language    — built-in name (clike|c|cpp|glsl|hlsl|wgsl|js|ts), default clike
+  placeholder — shown when empty
+  readonly    — boolean; disables editing
+  tab-size    — CSS tab width (Tab key always inserts a real \t)
+  spellcheck  — default "false"
+Initial text comes from the element's text content (or a `value` attribute).
+
+Element properties / methods:
+  value: string         — source text (source of truth); set re-renders, no input event
+  language: string|LanguageDef — accepts a custom LanguageDef object too
+  readOnly: boolean
+  focus()               — focus the editor
+
+Exports:
+  class CodeEditor extends HTMLElement
+    Exported so you can register under another name:
+    customElements.define('my-editor', CodeEditor)
+  highlightToHTML(code, language?) → string
+    Read-only highlight to an HTML string of <span class="ce-<role>"> (escaped).
+  highlightToFragment(code, language?) → DocumentFragment
+    Read-only highlight to coloured spans + whitespace text nodes.
+  injectStyles() → void
+    Inject the component stylesheet once (idempotent; no-op without a DOM).
+    Called automatically by the element and the highlight helpers.
+  CODE_EDITOR_CSS: string
+    The stylesheet source. Theme by overriding the --ce-* custom properties
+    (--ce-bg, --ce-fg, --ce-caret, --ce-keyword, --ce-function, --ce-string,
+    --ce-number, --ce-member, --ce-punct, --ce-comment, --ce-font, ...).
+  Plus everything re-exported from editor/tokenizer.js.
+
+### editor/tokenizer.js
+Byte-preserving tokenizer + syntax classifier for C-like source (HLSL / GLSL /
+WGSL / C / C++ / JavaScript). Pure and DOM-free. The concatenation of every
+token's `text` is exactly the input — nothing is dropped or rewritten — which
+is what lets the editor re-render span by span without drifting. Not a full
+parser: no scopes, preprocessor, or template-literal interpolation.
+
+Exports:
+  tokenize(src: string) → Token[]
+    Flat tokens with type ('ws'|'comment'|'number'|'ident'|'string'|'punct'),
+    text, and start/end offsets. Handles line + block comments, "/'/` strings,
+    decimal/hex numbers with exponents and type suffixes, and a greedy
+    longest-operator match.
+  classify(tokens: Token[], language: LanguageDef) → HiToken[]
+    Adds a highlight `role` per token using context: a.x → member, f(x) →
+    function, keyword-set words → keyword. Returns a new array (no mutation).
+    Roles: ws|comment|number|string|punct|keyword|function|member|ident.
+  resolveLanguage(language?: string | LanguageDef) → LanguageDef
+    Built-in name (case-insensitive), custom def, or undefined → clike.
+  LANGUAGES: Record<string, LanguageDef>
+    Presets keyed by name + aliases: clike, c, cpp, c++, glsl, hlsl, wgsl, js,
+    javascript, ts, typescript.
+
+Types: Token, TokenType, HiToken, TokenRole, LanguageDef
+  LanguageDef = { name, keywords: ReadonlySet<string>, memberOps?, detectCalls? }
+  Define a custom language by passing your own LanguageDef.
