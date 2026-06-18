@@ -93,7 +93,7 @@ export const CODE_EDITOR_CSS = `
 }
 .ce-host.ce-readonly .ce-editor { caret-color: transparent; cursor: default; }
 
-/* Token colours — global so standalone highlightToHTML() output is coloured too. */
+/* Token colours -- global so standalone highlightToHTML() output is coloured too. */
 .ce-comment  { color: var(--ce-comment,  #6e7681); font-style: italic; }
 .ce-number   { color: var(--ce-number,   #79c0ff); }
 .ce-string   { color: var(--ce-string,   #a5d6ff); }
