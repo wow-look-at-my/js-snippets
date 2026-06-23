@@ -13,6 +13,13 @@ src/
 ├── auto-refresh/
 │   ├── llms.txt           ← docs for auto-refresh modules
 │   └── auto-refresh.ts
+├── editor/
+│   ├── llms.txt           ← docs for editor modules
+│   ├── code-editor.ts     ← <code-editor> highlighting editor custom element
+│   └── tokenizer.ts       ← C-like tokenizer + syntax classifier (pure)
+├── ui/
+│   ├── llms.txt           ← docs for ui modules
+│   └── combobox.ts        ← custom <select> dropdown replacement (Tesla fallback) + <combo-box>
 ├── math/
 │   ├── llms.txt           ← docs for math modules
 │   ├── vec3.ts
@@ -38,7 +45,7 @@ tsconfig.json              ← editor/IDE only (ts0 generates its own for the bu
 wgsl.d.ts                  ← ambient *.wgsl decl + @webgpu/types reference
 ```
 
-Modules are organized by domain (`auto-refresh/`, `math/`, `webgpu/`). The deployed URL mirrors the `src/` structure without the `src/` prefix: `src/webgpu/sky.ts` → `https://…/webgpu/sky.js`.
+Modules are organized by domain (`auto-refresh/`, `editor/`, `ui/`, `math/`, `webgpu/`). The deployed URL mirrors the `src/` structure without the `src/` prefix: `src/webgpu/sky.ts` → `https://…/webgpu/sky.js`.
 
 ## Build
 
