@@ -13,10 +13,18 @@ src/
 ├── auto-refresh/
 │   ├── llms.txt           ← docs for auto-refresh modules
 │   └── auto-refresh.ts
+├── editor/
+│   ├── llms.txt           ← docs for editor modules
+│   ├── tokenizer.ts       ← byte-preserving C-like tokenizer + syntax classifier
+│   └── code-editor.ts     ← <code-editor> custom element (re-exports tokenizer)
 ├── math/
 │   ├── llms.txt           ← docs for math modules
 │   ├── vec3.ts
-│   └── mat4.ts
+│   ├── mat4.ts
+│   ├── sdf.ts             ← signed-distance primitives + grid bake + soft shadow
+│   ├── noise.ts           ← hash → value-noise → fbm (2D + 3D)
+│   ├── sampling.ts        ← van der Corput / Hammersley + hemisphere sampling
+│   └── gaussian-kernel.ts ← linear-sampling separable Gaussian kernel builder
 ├── webgpu/
 │   ├── llms.txt           ← docs for webgpu modules
 │   ├── hdr-loader.ts
@@ -26,6 +34,9 @@ src/
 │   ├── buffer.ts
 │   ├── context.ts
 │   ├── sky.ts
+│   ├── shaders.ts         ← loadShader / loadShaders (fetch shader text)
+│   ├── canvas.ts          ← resizeCanvasToDisplay (HiDPI backing-store sizing)
+│   ├── camera.ts          ← orbit camera (orbitEye / dirFromAzEl / controller)
 │   └── shaders/
 │       ├── spd.wgsl
 │       ├── sky.wgsl
@@ -38,7 +49,7 @@ tsconfig.json              ← editor/IDE only (ts0 generates its own for the bu
 wgsl.d.ts                  ← ambient *.wgsl decl + @webgpu/types reference
 ```
 
-Modules are organized by domain (`auto-refresh/`, `math/`, `webgpu/`). The deployed URL mirrors the `src/` structure without the `src/` prefix: `src/webgpu/sky.ts` → `https://…/webgpu/sky.js`.
+Modules are organized by domain (`auto-refresh/`, `editor/`, `math/`, `webgpu/`). The deployed URL mirrors the `src/` structure without the `src/` prefix: `src/webgpu/sky.ts` → `https://…/webgpu/sky.js`.
 
 ## Build
 
@@ -63,6 +74,7 @@ GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` 
 
 Each module category has its own `llms.txt` alongside its source files:
 - `src/auto-refresh/llms.txt` — documents the auto-refresh modules
+- `src/editor/llms.txt` — documents the editor modules
 - `src/math/llms.txt` — documents the math modules
 - `src/webgpu/llms.txt` — documents the webgpu modules
 - `llms-header.txt` — preamble (repo description, base URL, usage example)

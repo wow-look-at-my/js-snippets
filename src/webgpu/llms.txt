@@ -28,7 +28,13 @@ normals: Float32Array, indices: Uint16Array }.
 
 Exports: createCube(size?), createSphere(radius?, segments?),
   createCylinder(radiusTop?, radiusBottom?, height?, segments?),
-  createPlane(width?, depth?)
+  createPlane(width?, depth?),
+  createBox(width?, height?, depth?),
+  createTorus(radius?, tube?, radialSegments?, tubularSegments?)
+  - createBox: axis-aligned box with independent full extents per axis
+    (createCube is the uniform-size special case).
+  - createTorus: ring in the XZ plane; radius = major, tube = minor radius;
+    radialSegments subdivide the tube, tubularSegments the ring.
 
 ### webgpu/buffer.js
 GPU buffer creation helper.
@@ -52,3 +58,43 @@ Exports:
   createSky(device, format, hdriView, hdriSampler, depthFormat?) → Sky
   drawSky(pass, sky) → void
   Write invViewProj to sky.uniformBuffer before calling drawSky.
+
+### webgpu/shaders.js
+Shader-source loading (backend-agnostic; works for WGSL or GLSL text). Typical
+call site: const base = new URL('./shaders/', import.meta.url); then
+loadShaders(base, ['a.wgsl', 'b.wgsl']).
+
+Exports:
+  loadShader(url: string | URL) → Promise<string>
+    Fetches the URL as text; throws (with the URL) on a non-OK response.
+  loadShaders(baseUrl: string | URL, names: string[]) → Promise<string[]>
+    Resolves each name against baseUrl (pass a directory URL ending in '/');
+    returns the sources in the same order as names.
+
+### webgpu/canvas.js
+Canvas backing-store sizing for HiDPI rendering (backend-agnostic).
+
+Type: ResizeCanvasOptions = { maxDpr?: number; roundTo?: number }
+Exports:
+  resizeCanvasToDisplay(canvas, options?) → boolean
+    Sets canvas.width/height from clientWidth/Height * min(maxDpr, devicePixelRatio)
+    (maxDpr default 2, roundTo default 1). Returns true if the size changed, so
+    callers reconfigure the swap chain / depth buffer only when needed.
+
+### webgpu/camera.js
+Orbit camera: spherical eye + drag-to-rotate + wheel-zoom. The math helpers are
+pure (no DOM); createOrbitController wires pointer + wheel events onto a canvas.
+Imports Vec3/Mat4 helpers from ../math.
+
+Types: OrbitControllerOptions = { azimuth?, elevation?, distance?, target?,
+  rotateSpeed?, minDistance?, maxDistance?, minElevation?, maxElevation?, zoomSpeed? };
+  OrbitController = { azimuth, elevation, distance, target, eye(): Vec3,
+  viewMatrix(up?: Vec3): Mat4, dispose(): void }.
+Exports:
+  orbitEye(target, azimuth, elevation, distance) → Vec3
+    target + distance * [cosEl*sinAz, sinEl, cosEl*cosAz].
+  dirFromAzEl(azimuth, elevation) → Vec3
+    unit direction [cosEl*sinAz, sinEl, cosEl*cosAz] (e.g. a sun/light vector).
+  createOrbitController(canvas, options?) → OrbitController
+    Drag updates azimuth/elevation (clamped); the wheel scales distance
+    exponentially (clamped), normalising deltaMode line/page units to pixels.
