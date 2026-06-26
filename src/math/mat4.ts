@@ -134,7 +134,8 @@ export function normalMatrix(m: Mat4): Mat4 {
  * Transpose-of-inverse of the upper-left 3x3 of `m`, returned as a column-major
  * `Float32Array(9)` (the GLSL/WGSL `mat3x3` normal-matrix form). Use this for a
  * WebGL/WebGPU shader that wants a `mat3` normal matrix; `normalMatrix` above
- * returns the same transform embedded in a 4x4 instead.
+ * returns the same transform embedded in a 4x4 instead. Returns the identity 3x3
+ * if the upper 3x3 is singular (matching `normalMatrix`'s identity fallback).
  */
 export function normalMatrix3(m: Mat4): Float32Array {
   const a00 = m[0], a01 = m[1], a02 = m[2];
@@ -145,7 +146,8 @@ export function normalMatrix3(m: Mat4): Float32Array {
     a00 * (a11 * a22 - a12 * a21) -
     a01 * (a10 * a22 - a12 * a20) +
     a02 * (a10 * a21 - a11 * a20);
-  const id = det !== 0 ? 1 / det : 0;
+  if (det === 0) return new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+  const id = 1 / det;
 
   return new Float32Array([
     (a11 * a22 - a21 * a12) * id,
