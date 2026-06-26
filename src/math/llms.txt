@@ -21,7 +21,8 @@ Signatures of note:
 - normalMatrix(m) -> Mat4 -- transpose-of-inverse of the upper 3x3, embedded in a
   4x4 (returns identity() if singular).
 - normalMatrix3(m) -> Float32Array(9) -- the same transform as a column-major mat3
-  (the GLSL/WGSL normal-matrix form).
+  (the GLSL/WGSL normal-matrix form); returns the identity 3x3 if singular
+  (matching normalMatrix).
 
 ### math/sdf.js
 Pure signed-distance-field math (no DOM/GPU): primitives, a column-major point
