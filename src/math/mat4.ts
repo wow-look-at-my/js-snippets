@@ -1,7 +1,8 @@
 // Minimal mat4 utilities — column-major Float32Array(16).
 // All functions return new arrays, no mutation.
 
-import { Vec3, subtract, cross, normalize, dot } from './vec3';
+import { subtract, cross, normalize, dot } from './vec3.ts';
+import type { Vec3 } from './vec3.ts';
 
 export type Mat4 = Float32Array;
 

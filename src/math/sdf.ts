@@ -14,7 +14,7 @@
 //  - mat4 is column-major (the layout produced by ./mat4 and consumed by WGSL's
 //    `mat4x4<f32>`): element (row r, col c) = m[c*4 + r].
 
-import { Vec3 } from './vec3';
+import type { Vec3 } from './vec3.ts';
 
 // -- Primitive type ids -- convenient when packing a scene description. ---------
 export const SDF_SPHERE = 0;

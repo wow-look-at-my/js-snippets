@@ -3,8 +3,9 @@
 // `dirFromAzEl`) have no DOM dependency; `createOrbitController` wires pointer
 // and wheel events onto a canvas.
 
-import { Vec3 } from '../math/vec3';
-import { Mat4, lookAt } from '../math/mat4';
+import { lookAt } from '../math/mat4.ts';
+import type { Vec3 } from '../math/vec3.ts';
+import type { Mat4 } from '../math/mat4.ts';
 
 /**
  * Spherical -> cartesian eye position for an orbit camera looking at `target`.

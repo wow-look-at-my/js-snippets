@@ -31,6 +31,12 @@ jobs:
       # "pnpm.onlyBuiltDependencies".
       - run: pnpm install
 
+      - name: Test
+        # ts0 test type-checks the project (sources + *.test.ts) and runs them
+        # under Node's built-in test runner. A failing test fails CI, and since
+        # `deploy` depends on `build`, it also gates the deploy.
+        run: pnpm test
+
       - name: Build
         # ts0 build type-checks (tsc --noEmit) and compiles src/ -> dist/;
         # the build script then assembles dist/llms.txt.
