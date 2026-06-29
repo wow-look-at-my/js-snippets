@@ -4,7 +4,7 @@
 // uses in webgpu/shaders/prefilter.wgsl (the Hammersley + GGX IBL prefilter), so
 // the same sample index produces the same point on CPU and GPU.
 
-import { Vec3 } from './vec3';
+import type { Vec3 } from './vec3.ts';
 
 /**
  * Van der Corput radical inverse in base 2 (bit-reversal), in [0, 1).
