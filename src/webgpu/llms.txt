@@ -82,14 +82,20 @@ Exports:
     callers reconfigure the swap chain / depth buffer only when needed.
 
 ### webgpu/camera.js
-Orbit camera: spherical eye + drag-to-rotate + wheel-zoom. The math helpers are
-pure (no DOM); createOrbitController wires pointer + wheel events onto a canvas.
-Imports Vec3/Mat4 helpers from ../math.
+Orbit + first-person look cameras: spherical eye + drag-to-rotate + wheel-zoom,
+and drag-to-look yaw/pitch. The math helpers are pure (no DOM);
+createOrbitController / createLookController wire pointer (+ wheel) events onto
+an element. Imports Vec3/Mat4 helpers from ../math.
 
 Types: OrbitControllerOptions = { azimuth?, elevation?, distance?, target?,
   rotateSpeed?, minDistance?, maxDistance?, minElevation?, maxElevation?, zoomSpeed? };
   OrbitController = { azimuth, elevation, distance, target, eye(): Vec3,
-  viewMatrix(up?: Vec3): Mat4, dispose(): void }.
+  viewMatrix(up?: Vec3): Mat4, dispose(): void };
+  LookState = { azDeg, elDeg } (degrees; azDeg wrapped to (-180, 180], 0 = +Z);
+  LookDragOptions = { sensDegPerPx? = 0.25, invertY?, minElDeg? = -89, maxElDeg? = 89 };
+  LookControllerOptions = LookDragOptions + { azDeg?, elDeg?, onChange?(state) };
+  LookController = { azDeg, elDeg, dir(): Vec3, viewMatrix(eye, up?): Mat4,
+  dispose(): void }.
 Exports:
   orbitEye(target, azimuth, elevation, distance) → Vec3
     target + distance * [cosEl*sinAz, sinEl, cosEl*cosAz].
@@ -98,3 +104,12 @@ Exports:
   createOrbitController(canvas, options?) → OrbitController
     Drag updates azimuth/elevation (clamped); the wheel scales distance
     exponentially (clamped), normalising deltaMode line/page units to pixels.
+  applyLookDrag(state, dxPx, dyPx, opts?) → LookState
+    Pure look-drag step, owning THE sign convention: pointer right = look right
+    (azDeg -= dx*sens), pointer up = look up (invertY flips); elevation clamped,
+    azimuth wrapped; returns a new state. dirFromAzEl(azDeg*PI/180, elDeg*PI/180)
+    is the matching view direction.
+  createLookController(element, options?) → LookController
+    Pointer-drag first-person look at a fixed eye, feeding applyLookDrag (same
+    convention); live azDeg/elDeg, dir()/viewMatrix(eye, up?) per frame,
+    onChange(state) per drag update.

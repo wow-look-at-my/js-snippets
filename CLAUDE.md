@@ -39,7 +39,8 @@ src/
 │   ├── sky.ts
 │   ├── shaders.ts         ← loadShader / loadShaders (fetch shader text)
 │   ├── canvas.ts          ← resizeCanvasToDisplay (HiDPI backing-store sizing)
-│   ├── camera.ts          ← orbit camera (orbitEye / dirFromAzEl / controller)
+│   ├── camera.ts          ← orbit + look cameras (orbitEye / dirFromAzEl /
+│   │                        applyLookDrag / controllers)
 │   ├── *.test.ts          ← colocated node:test tests (geometry / camera)
 │   └── shaders/
 │       ├── spd.wgsl
@@ -85,7 +86,7 @@ Conventions:
 - Each test file uses `import { test } from 'node:test'` + `import assert from 'node:assert/strict'`, imports the **source** module directly with the `.ts` extension (e.g. `import { … } from './mat4.ts'`), and uses `import type { … }` for type-only symbols — Node's strip-types loader elides `import type` but would fail to import a type as a value at runtime.
 - Source modules import sibling modules with the `.ts` extension on **value** imports (e.g. `import { lookAt } from '../math/mat4.ts'`) and `import type` for type-only ones. Both esbuild (the build) and Node's runtime ESM resolver accept this; an extensionless **value** import resolves under esbuild but NOT under `node --test`, so keep the extension.
 - Pure/algorithmic modules are unit-tested here; several tests are ports of the proven `smoke.mjs` oracles from the `scratch` repo (`sdf` from distance-field-shadows, `gaussian-kernel` from local-contrast).
-- **DOM/fetch/GPU-bound modules are NOT unit-tested under node** — `webgpu/shaders.ts`, `webgpu/canvas.ts`, `webgpu/context.ts`, `webgpu/buffer.ts`, `webgpu/sky.ts`, `webgpu/mip-generator.ts`, `webgpu/env-prefilter.ts`, `webgpu/hdr-loader.ts`, `editor/code-editor.ts`, and `auto-refresh/` need a real browser/GPU, so they're left to manual/integration testing. `webgpu/camera.ts` is split: the pure helpers (`orbitEye`/`dirFromAzEl`) are tested; `createOrbitController` is DOM-bound and is not.
+- **DOM/fetch/GPU-bound modules are NOT unit-tested under node** — `webgpu/shaders.ts`, `webgpu/canvas.ts`, `webgpu/context.ts`, `webgpu/buffer.ts`, `webgpu/sky.ts`, `webgpu/mip-generator.ts`, `webgpu/env-prefilter.ts`, `webgpu/hdr-loader.ts`, `editor/code-editor.ts`, and `auto-refresh/` need a real browser/GPU, so they're left to manual/integration testing. `webgpu/camera.ts` is split: the pure helpers (`orbitEye`/`dirFromAzEl`/`applyLookDrag`) are tested; `createOrbitController` and `createLookController` are DOM-bound and are not.
 
 ## Deploy
 
