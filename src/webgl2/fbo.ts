@@ -1,0 +1,94 @@
+// Float-color framebuffer (RGBA16F by default) — the render target you need
+// for additive/HDR accumulation without 8-bit clamping. Rendering to float
+// color in WebGL2 requires the EXT_color_buffer_float extension; this helper
+// performs that check and fails loudly instead of leaving an incomplete FBO.
+
+/** Options for `createFloatFbo`. */
+export interface FloatFboOptions {
+  /** Texture internal format (default `'rgba16f'`). */
+  internalFormat?: 'rgba16f' | 'rgba32f';
+  /** Min+mag filter (default `gl.LINEAR`). Float filtering of RGBA16F is core WebGL2. */
+  filter?: GLenum;
+}
+
+/** A float color target: FBO + backing texture + resize/dispose. */
+export interface FloatFbo {
+  framebuffer: WebGLFramebuffer;
+  texture: WebGLTexture;
+  width: number;
+  height: number;
+  /** Reallocate the backing texture (no-op when the size is unchanged). */
+  resize(width: number, height: number): void;
+  dispose(): void;
+}
+
+/**
+ * Create a framebuffer with a float color texture attached. Throws when
+ * `EXT_color_buffer_float` is unavailable (float attachments would be
+ * incomplete) or the framebuffer fails its completeness check. Bind with
+ * `gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.framebuffer)` and remember to set
+ * the viewport; `readPixels(..., gl.FLOAT, ...)` works while it is bound.
+ * No depth attachment — pair with a renderbuffer yourself if you need one.
+ */
+export function createFloatFbo(
+  gl: WebGL2RenderingContext,
+  width: number,
+  height: number,
+  options: FloatFboOptions = {},
+): FloatFbo {
+  const { internalFormat = 'rgba16f', filter = gl.LINEAR } = options;
+  if (!gl.getExtension('EXT_color_buffer_float')) {
+    throw new Error(
+      'EXT_color_buffer_float is unavailable: this context cannot render to float textures ' +
+        `(needed for a ${internalFormat} framebuffer)`,
+    );
+  }
+  const glFormat = internalFormat === 'rgba32f' ? gl.RGBA32F : gl.RGBA16F;
+  const glType = internalFormat === 'rgba32f' ? gl.FLOAT : gl.HALF_FLOAT;
+
+  const texture = gl.createTexture();
+  if (!texture) throw new Error('createTexture failed');
+  const framebuffer = gl.createFramebuffer();
+  if (!framebuffer) {
+    gl.deleteTexture(texture);
+    throw new Error('createFramebuffer failed');
+  }
+
+  const allocate = (w: number, h: number) => {
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, glFormat, w, h, 0, gl.RGBA, glType, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  };
+
+  allocate(width, height);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+  const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  if (status !== gl.FRAMEBUFFER_COMPLETE) {
+    gl.deleteFramebuffer(framebuffer);
+    gl.deleteTexture(texture);
+    throw new Error(`float framebuffer incomplete: status 0x${status.toString(16)}`);
+  }
+
+  return {
+    framebuffer,
+    texture,
+    width,
+    height,
+    resize(w: number, h: number) {
+      if (w === this.width && h === this.height) return;
+      allocate(w, h);
+      this.width = w;
+      this.height = h;
+    },
+    dispose() {
+      gl.deleteFramebuffer(framebuffer);
+      gl.deleteTexture(texture);
+    },
+  };
+}

@@ -113,3 +113,31 @@ Exports:
     Pointer-drag first-person look at a fixed eye, feeding applyLookDrag (same
     convention); live azDeg/elDeg, dir()/viewMatrix(eye, up?) per frame,
     onChange(state) per drag update.
+
+### webgpu/fly-camera.js
+First-person fly ("noclip") camera building on webgpu/camera.js: applyLookDrag
+supplies the look half (pointer-up = look-up), this adds WASD-style key
+flight, wheel dolly, and two-finger pinch dolly. flyMoveDelta/dollyDelta are
+pure (unit-tested); createFlyController is DOM-bound. Backend-agnostic
+(WebGL or WebGPU — it only produces positions/matrices).
+
+Types: FlyMoveState = { forward, back, left, right, up, down: boolean };
+  FlyControllerOptions = LookDragOptions + { position?, azDeg?, elDeg?,
+  moveSpeed? = 5 (units/s), wheelSpeed? = 0.01 (units per normalized wheel px),
+  pinchSpeed? = 0.08 (units per pinch px), up? = [0,1,0],
+  keyMap? (KeyboardEvent.code → FlyMoveState key; default WASD + Space/E up, Q down),
+  dragButtons? = [0, 2] };
+  FlyController = { position, azDeg, elDeg, dir(): Vec3, update(dt): void,
+  viewMatrix(): Mat4, dispose(): void }.
+Exports:
+  flyMoveDelta(look, move, distance, up? = [0,1,0]) → Vec3
+    Pure displacement for one movement step: forward/back along the full 3D
+    view dir, left/right along normalize(cross(dir, up)), up/down along the
+    world up axis; opposite keys cancel, diagonals sum (not renormalized).
+  dollyDelta(look, amount) → Vec3
+    Pure dolly along the view direction (positive = toward the view).
+  createFlyController(element, options?) → FlyController
+    Drag-to-look via applyLookDrag (buttons filtered by dragButtons; suppresses
+    contextmenu when right-drag is enabled), key events on the element's
+    document, wheel dolly (deltaMode-normalized, wheel-up dollies in), pinch
+    dolly; call update(dt) once per frame to apply held keys.
