@@ -1,7 +1,7 @@
 ### webgl2/program.js
-WebGL2 shader compile + program link with readable, source-annotated errors.
-annotateShaderLog is pure string processing (unit-tested); the rest needs a
-WebGL2RenderingContext.
+WebGL2 shader compile + program link with readable, source-annotated errors,
+plus GLSL chunk injection. annotateShaderLog and injectChunk are pure string
+processing (unit-tested); the rest needs a WebGL2RenderingContext.
 
 Types: ProgramOptions = { label?: string; attribLocations?: Record<string, number> }
 Exports:
@@ -9,6 +9,14 @@ Exports:
     Interleaves "ERROR: 0:<line>:" style log lines with the referenced source
     lines (marker on the offending line, contextLines around it); log lines
     without a line reference pass through verbatim.
+  injectChunk(source, chunk) → string
+    Splice a shared GLSL chunk (helper functions used by several shaders —
+    GLSL's missing #include) immediately after the first-line #version
+    directive, or prepend it when there is none. Exactly one newline follows
+    the chunk whether or not it ends with one; no-op when the chunk already
+    appears verbatim in the source (idempotent). The chunk lands before the
+    host's precision statements, so it should declare its own default
+    precision (repeat precision declarations are legal GLSL).
   compileShader(gl, type, source, label?) → WebGLShader
     Throws an Error containing the annotated info log on compile failure.
   createProgram(gl, vertexSource, fragmentSource, options?) → WebGLProgram
@@ -34,16 +42,31 @@ Exports:
 
 ### webgl2/fbo.js
 Float-color framebuffer (RGBA16F default) for additive/HDR accumulation
-without 8-bit clamping. Performs the EXT_color_buffer_float availability
-check and the completeness check, throwing informative errors. No node unit
-tests (needs a GL context).
+without 8-bit clamping, plus a ping-pong pair of them for iterative feedback
+passes. Performs the EXT_color_buffer_float availability check and the
+completeness check, throwing informative errors. makePingPong is pure
+(unit-tested); FBO creation needs a GL context.
 
 Types: FloatFboOptions = { internalFormat?: 'rgba16f' | 'rgba32f'; filter? (default gl.LINEAR) };
-  FloatFbo = { framebuffer, texture, width, height, resize(w, h): void, dispose(): void }.
+  FloatFbo = { framebuffer, texture, width, height, resize(w, h): void, dispose(): void };
+  PingPongTarget = { resize(w, h): void; dispose(): void };
+  PingPong<T extends PingPongTarget = FloatFbo> = { read: T, write: T, swap(): void,
+    resize(w, h): void, dispose(): void }.
 Exports:
   createFloatFbo(gl, width, height, options?) → FloatFbo
     No depth attachment; resize() reallocates the backing texture;
     readPixels(..., gl.FLOAT, ...) works while the FBO is bound.
+  createPingPong(gl, width, height, options?) → PingPong<FloatFbo>
+    Two equal createFloatFbo targets for iterative accumulation: bind
+    write.framebuffer, sample read.texture, then swap(). Float storage is the
+    point — 8-bit quantizes away small per-step feedback changes (a ×0.999
+    alpha decay never fades). Both targets start empty/transparent (WebGL2
+    zero-initializes textures); resize() reallocates — and clears — both;
+    swap() reassigns read/write, so access targets through the pair rather
+    than caching them across swaps.
+  makePingPong(a, b) → PingPong<T>
+    Pure pairing logic over any two resize/dispose targets (what createPingPong
+    wraps around two FloatFbos); read starts as a, write as b.
 
 ### webgl2/video-texture.js
 Texture tracking an HTMLVideoElement (three.js VideoTexture equivalent).

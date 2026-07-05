@@ -2,6 +2,8 @@
 // for additive/HDR accumulation without 8-bit clamping. Rendering to float
 // color in WebGL2 requires the EXT_color_buffer_float extension; this helper
 // performs that check and fails loudly instead of leaving an incomplete FBO.
+// createPingPong pairs two of them for iterative feedback passes (sample the
+// previous result while rendering the next).
 
 /** Options for `createFloatFbo`. */
 export interface FloatFboOptions {
@@ -91,4 +93,77 @@ export function createFloatFbo(
       gl.deleteTexture(texture);
     },
   };
+}
+
+/** The subset of `FloatFbo` that ping-pong management needs. */
+export interface PingPongTarget {
+  resize(width: number, height: number): void;
+  dispose(): void;
+}
+
+/** A ping-pong pair of render targets: sample `read` while rendering into `write`, then `swap()`. */
+export interface PingPong<T extends PingPongTarget = FloatFbo> {
+  read: T;
+  write: T;
+  /** Exchange `read` and `write` (reassigns the properties — re-fetch them after). */
+  swap(): void;
+  /** Resize both targets (each target's resize semantics apply, e.g. `FloatFbo` clears). */
+  resize(width: number, height: number): void;
+  dispose(): void;
+}
+
+/**
+ * Pure pairing logic behind `createPingPong`: wrap two existing targets into
+ * a ping-pong pair (`read` starts as `a`, `write` as `b`). `swap()` works even
+ * when the method is detached from the pair.
+ */
+export function makePingPong<T extends PingPongTarget>(a: T, b: T): PingPong<T> {
+  const pair: PingPong<T> = {
+    read: a,
+    write: b,
+    swap() {
+      const t = pair.read;
+      pair.read = pair.write;
+      pair.write = t;
+    },
+    resize(width: number, height: number) {
+      pair.read.resize(width, height);
+      pair.write.resize(width, height);
+    },
+    dispose() {
+      pair.read.dispose();
+      pair.write.dispose();
+    },
+  };
+  return pair;
+}
+
+/**
+ * Create a ping-pong pair of equal float FBOs (see `createFloatFbo`) for
+ * iterative accumulation passes: bind `write.framebuffer`, sample
+ * `read.texture`, then `swap()`. Float targets matter here — feedback loops
+ * make small per-step changes that 8-bit storage quantizes away (e.g. a
+ * ×0.999 alpha decay rounds straight back to 255/255, so it never fades).
+ *
+ * Both targets start empty/transparent (WebGL2 zero-initializes texture
+ * storage), so the first `read` samples transparent black. `resize()`
+ * reallocates — and thereby clears — both targets (no-op when the size is
+ * unchanged). `swap()` reassigns `read`/`write`, so always access the targets
+ * through the pair instead of caching them across swaps.
+ */
+export function createPingPong(
+  gl: WebGL2RenderingContext,
+  width: number,
+  height: number,
+  options: FloatFboOptions = {},
+): PingPong<FloatFbo> {
+  const first = createFloatFbo(gl, width, height, options);
+  let second: FloatFbo;
+  try {
+    second = createFloatFbo(gl, width, height, options);
+  } catch (err) {
+    first.dispose();
+    throw err;
+  }
+  return makePingPong(first, second);
 }

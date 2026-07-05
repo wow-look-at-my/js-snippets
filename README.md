@@ -47,9 +47,9 @@ import * as mat4 from 'https://wow-look-at-my.github.io/js-snippets/math/mat4.js
 
 | Module | Description |
 |--------|-------------|
-| `webgl2/program.js` | Shader compile + program link with source-annotated error logs (`annotateShaderLog`). |
+| `webgl2/program.js` | Shader compile + program link with source-annotated error logs (`annotateShaderLog`); `injectChunk` splices a shared GLSL chunk in after the `#version` line. |
 | `webgl2/mesh.js` | VAO from typed arrays: one buffer per attribute, optional index buffer with automatic 16/32-bit sizing. |
-| `webgl2/fbo.js` | Float-color framebuffer (RGBA16F default) with the `EXT_color_buffer_float` and completeness checks. |
+| `webgl2/fbo.js` | Float-color framebuffer (RGBA16F default) with the `EXT_color_buffer_float` and completeness checks; `createPingPong` pairs two for iterative feedback passes. |
 | `webgl2/video-texture.js` | Texture tracking an `HTMLVideoElement` (sRGB or raw), using `requestVideoFrameCallback` when available. |
 | `webgl2/fullscreen.js` | Fullscreen-triangle pass from `gl_VertexID` — no vertex buffer; ships the `#version 300 es` vertex shader. |
 
