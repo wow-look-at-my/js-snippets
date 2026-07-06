@@ -45,10 +45,15 @@ Exports: createBuffer(device: GPUDevice, data: ArrayBufferView, usage: GPUBuffer
 ### webgpu/context.js
 WebGPU device + canvas context initialization.
 
-Exports: initWebGPU(canvas: HTMLCanvasElement, features?: GPUFeatureName[])
-  → Promise<{ device, ctx, format } | null>
+Exports: initWebGPU(canvas: HTMLCanvasElement, features?: GPUFeatureName[],
+    options?: { powerPreference?: GPUPowerPreference, limits?: Record<string, number> })
+  → Promise<{ device, ctx, format, adapter } | null>
   Returns null if WebGPU is unavailable. Features are only requested if
-  the adapter supports them.
+  the adapter supports them. options.powerPreference is passed to
+  requestAdapter; options.limits raises device limits by name to
+  min(adapter's supported value, your cap) (Infinity = adapter max; names the
+  adapter doesn't report are skipped). The result includes the GPUAdapter
+  (for adapter.info / limits / features).
 
 ### webgpu/sky.js
 Equirectangular HDRI sky renderer. Fullscreen triangle, no vertex buffer.
@@ -140,4 +145,6 @@ Exports:
     Drag-to-look via applyLookDrag (buttons filtered by dragButtons; suppresses
     contextmenu when right-drag is enabled), key events on the element's
     document, wheel dolly (deltaMode-normalized, wheel-up dollies in), pinch
-    dolly; call update(dt) once per frame to apply held keys.
+    dolly; call update(dt) once per frame to apply held keys. Held keys are
+    cleared on window blur so an alt-tab mid-flight can't leave the camera
+    drifting.

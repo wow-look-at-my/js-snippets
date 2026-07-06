@@ -178,6 +178,12 @@ export function createFlyController(
     if (prop) move[prop] = e.type === 'keydown';
   };
 
+  // Losing window focus swallows the matching keyup, which would leave the
+  // camera drifting forever after an alt-tab mid-flight — drop all held keys.
+  const onWindowBlur = () => {
+    for (const k of Object.keys(move) as (keyof FlyMoveState)[]) move[k] = false;
+  };
+
   const onWheel = (e: WheelEvent) => {
     e.preventDefault();
     // Normalise deltaMode: 0 = pixels, 1 = lines (~16px), 2 = pages (~viewport).
@@ -212,6 +218,7 @@ export function createFlyController(
   if (dragButtons.includes(2)) element.addEventListener('contextmenu', onContextMenu);
   doc.addEventListener('keydown', onKey);
   doc.addEventListener('keyup', onKey);
+  doc.defaultView?.addEventListener('blur', onWindowBlur);
   element.addEventListener('wheel', onWheel, { passive: false });
   element.addEventListener('touchstart', onTouchStart, { passive: true });
   element.addEventListener('touchmove', onTouchMove, { passive: true });
@@ -241,6 +248,7 @@ export function createFlyController(
       if (dragButtons.includes(2)) element.removeEventListener('contextmenu', onContextMenu);
       doc.removeEventListener('keydown', onKey);
       doc.removeEventListener('keyup', onKey);
+      doc.defaultView?.removeEventListener('blur', onWindowBlur);
       element.removeEventListener('wheel', onWheel);
       element.removeEventListener('touchstart', onTouchStart);
       element.removeEventListener('touchmove', onTouchMove);
