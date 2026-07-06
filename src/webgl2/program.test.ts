@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { annotateShaderLog } from './program.ts';
+import { annotateShaderLog, injectChunk } from './program.ts';
 
 const SOURCE = ['#version 300 es', 'precision highp float;', 'out vec4 fragColor;', 'void main() {', '  fragColor = vec4(1.0)', '}'].join('\n');
 
@@ -42,4 +42,57 @@ test('annotateShaderLog handles multiple errors and passthrough lines', () => {
 test('annotateShaderLog ignores out-of-range line references', () => {
   const out = annotateShaderLog(SOURCE, 'ERROR: 0:99: beyond the end');
   assert.equal(out, 'ERROR: 0:99: beyond the end');
+});
+
+const CHUNK = ['float ripple(float t) {', '  return sin(t);', '}'].join('\n');
+
+test('injectChunk inserts immediately after the #version line, before precision lines', () => {
+  const src = ['#version 300 es', 'precision highp float;', 'void main() {}'].join('\n');
+  const out = injectChunk(src, CHUNK);
+  assert.equal(
+    out,
+    ['#version 300 es', 'float ripple(float t) {', '  return sin(t);', '}', 'precision highp float;', 'void main() {}'].join('\n'),
+  );
+});
+
+test('injectChunk prepends when there is no #version line', () => {
+  const src = 'precision mediump float;\nvoid main() {}';
+  assert.equal(injectChunk(src, CHUNK), CHUNK + '\n' + src);
+});
+
+test('injectChunk handles a #version-only source without trailing newline', () => {
+  const out = injectChunk('#version 300 es', CHUNK);
+  assert.equal(out, '#version 300 es\n' + CHUNK + '\n');
+});
+
+test('injectChunk does not double the newline for a chunk with a trailing newline', () => {
+  const src = '#version 300 es\nvoid main() {}';
+  assert.equal(injectChunk(src, CHUNK + '\n'), '#version 300 es\n' + CHUNK + '\nvoid main() {}');
+});
+
+test('injectChunk is idempotent', () => {
+  const src = '#version 300 es\nvoid main() {}';
+  const once = injectChunk(src, CHUNK);
+  assert.equal(injectChunk(once, CHUNK), once);
+  assert.equal(injectChunk(once, CHUNK + '\n'), once, 'trailing-newline variant also detected');
+});
+
+test('injectChunk with an empty chunk returns the source unchanged', () => {
+  const src = '#version 300 es\nvoid main() {}';
+  assert.equal(injectChunk(src, ''), src);
+});
+
+test('injectChunk tolerates whitespace around # and version', () => {
+  const src = '\t# version 300 es\nvoid main() {}';
+  assert.equal(injectChunk(src, CHUNK), '\t# version 300 es\n' + CHUNK + '\nvoid main() {}');
+});
+
+test('injectChunk keeps a CRLF version line intact', () => {
+  const src = '#version 300 es\r\nvoid main() {}';
+  assert.equal(injectChunk(src, CHUNK), '#version 300 es\r\n' + CHUNK + '\nvoid main() {}');
+});
+
+test('injectChunk does not treat a later #version-looking line as the first line', () => {
+  const src = '// header\n#version 300 es\nvoid main() {}';
+  assert.equal(injectChunk(src, CHUNK), CHUNK + '\n' + src, 'only a first-line directive counts');
 });
