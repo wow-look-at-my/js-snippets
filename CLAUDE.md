@@ -43,12 +43,18 @@ src/
 │   │                        applyLookDrag / controllers)
 │   ├── fly-camera.ts      ← first-person fly camera on camera.ts (WASD flight,
 │   │                        wheel/pinch dolly; pure flyMoveDelta / dollyDelta)
+│   ├── scan.ts            ← GPU exclusive prefix scan (Blelloch) over a u32
+│   │                        region of one storage buffer (element-offset
+│   │                        src/dst/scratch; createScan/prepare/encode)
+│   ├── scan-plan.ts       ← pure planScan level math (no .wgsl import so it
+│   │                        node-tests; re-exported by scan.ts)
 │   ├── *.test.ts          ← colocated node:test tests (geometry / camera /
-│   │                        fly-camera)
+│   │                        fly-camera / scan)
 │   └── shaders/
 │       ├── spd.wgsl
 │       ├── sky.wgsl
-│       └── prefilter.wgsl
+│       ├── prefilter.wgsl
+│       └── scan.wgsl
 ├── webgl2/
 │   ├── llms.txt           ← docs for webgl2 modules
 │   ├── program.ts         ← shader compile + link (annotateShaderLog errors)
@@ -102,7 +108,7 @@ Conventions:
 - Each test file uses `import { test } from 'node:test'` + `import assert from 'node:assert/strict'`, imports the **source** module directly with the `.ts` extension (e.g. `import { … } from './mat4.ts'`), and uses `import type { … }` for type-only symbols — Node's strip-types loader elides `import type` but would fail to import a type as a value at runtime.
 - Source modules import sibling modules with the `.ts` extension on **value** imports (e.g. `import { lookAt } from '../math/mat4.ts'`) and `import type` for type-only ones. Both esbuild (the build) and Node's runtime ESM resolver accept this; an extensionless **value** import resolves under esbuild but NOT under `node --test`, so keep the extension.
 - Pure/algorithmic modules are unit-tested here; several tests are ports of the proven `smoke.mjs` oracles from the `scratch` repo (`sdf` from distance-field-shadows, `gaussian-kernel` from local-contrast).
-- **DOM/fetch/GPU-bound modules are NOT unit-tested under node** — `webgpu/shaders.ts`, `webgpu/canvas.ts`, `webgpu/context.ts`, `webgpu/buffer.ts`, `webgpu/sky.ts`, `webgpu/mip-generator.ts`, `webgpu/env-prefilter.ts`, `webgpu/hdr-loader.ts`, `webgl2/video-texture.ts`, `webgl2/fullscreen.ts` (its `.glsl` import also only resolves under the build's text loader, not `node --test`), `editor/code-editor.ts`, and `auto-refresh/` need a real browser/GPU, so they're left to manual/integration testing. Modules mixing pure + bound code are split: `webgpu/camera.ts` tests `orbitEye`/`dirFromAzEl`/`applyLookDrag` but not the DOM-bound controllers; `webgpu/fly-camera.ts` tests `flyMoveDelta`/`dollyDelta` but not `createFlyController`; `webgl2/program.ts` tests `annotateShaderLog` and `injectChunk`; `webgl2/mesh.ts` tests `chooseIndexArray`; `webgl2/fbo.ts` tests `makePingPong` but not the GL-bound `createFloatFbo`/`createPingPong`.
+- **DOM/fetch/GPU-bound modules are NOT unit-tested under node** — `webgpu/shaders.ts`, `webgpu/canvas.ts`, `webgpu/context.ts`, `webgpu/buffer.ts`, `webgpu/sky.ts`, `webgpu/mip-generator.ts`, `webgpu/env-prefilter.ts`, `webgpu/hdr-loader.ts`, `webgl2/video-texture.ts`, `webgl2/fullscreen.ts` (its `.glsl` import also only resolves under the build's text loader, not `node --test`), `editor/code-editor.ts`, and `auto-refresh/` need a real browser/GPU, so they're left to manual/integration testing. Modules mixing pure + bound code are split: `webgpu/camera.ts` tests `orbitEye`/`dirFromAzEl`/`applyLookDrag` but not the DOM-bound controllers; `webgpu/fly-camera.ts` tests `flyMoveDelta`/`dollyDelta` but not `createFlyController`; `webgl2/program.ts` tests `annotateShaderLog` and `injectChunk`; `webgl2/mesh.ts` tests `chooseIndexArray`; `webgl2/fbo.ts` tests `makePingPong` but not the GL-bound `createFloatFbo`/`createPingPong`; `webgpu/scan.ts` splits its pure half into `webgpu/scan-plan.ts` (planScan level math, tested incl. a plan-driven JS emulation of the WGSL) because scan.ts's own `.wgsl` import cannot load under node — the GPU wrapper (`createScan`) is covered by consumer browser harnesses.
 
 ## Deploy
 

@@ -119,6 +119,47 @@ Exports:
     convention); live azDeg/elDeg, dir()/viewMatrix(eye, up?) per frame,
     onChange(state) per drag update.
 
+### webgpu/scan.js
+GPU exclusive prefix scan (Blelloch, 512 elements/block, recursive levels —
+3 levels cover 134M elements) over a u32 region of a storage buffer. The
+input, output, and scratch regions live in ONE buffer at arbitrary ELEMENT
+offsets (bases travel in a uniform, so no 256-byte bind-offset alignment and
+no second writable binding — fused buffer layouts just work). planScan is
+pure (unit-tested); createScan/prepare/encode are GPU-bound. Workgroups are
+256 threads (WebGPU default limits suffice); dispatches auto-split into 2D
+grids when a level exceeds maxComputeWorkgroupsPerDimension. The pure level
+math lives in webgpu/scan-plan.js (no shader import — loads under node) and
+is re-exported by scan.js, so consumers import scan.js alone.
+
+Types: ScanDispatch = { x, y };
+  ScanLevelPlan = { count, blocks, sumsBase, scanDispatch, addbackDispatch };
+  ScanPlan = { count, levels: ScanLevelPlan[], scratchElems, grandTotalElem };
+  ScanRegion = { buffer: GPUBuffer, count, srcElem, dstElem, scratchElem };
+  PreparedScan = { plan, grandTotalElem, encode(pass), destroy() };
+  GpuScan = { prepare(region): PreparedScan }.
+Exports:
+  SCAN_BLOCK_SIZE = 512, SCAN_ADDBACK_SIZE = 256
+  planScan(count, maxWorkgroupsPerDim? = 65535) → ScanPlan
+    PURE level math: level 0 scans src→dst, each next level scans the previous
+    level's block sums in place inside scratch until one block remains; the
+    LAST level's sums[0] is the grand total (sum of all inputs, written even
+    for count 0). scratchElems = u32 elements the caller must reserve;
+    grandTotalElem is scratch-relative.
+  createScan(device) → GpuScan
+    Compiles the two pipelines once per device.
+  GpuScan.prepare({ buffer, count, srcElem, dstElem, scratchElem }) → PreparedScan
+    Bakes one region layout into per-level uniforms + bind groups (create
+    once; re-prepare only when buffer/count/bases change; destroy() the old
+    one). dstElem may equal srcElem (in-place). buffer needs STORAGE usage
+    and is bound whole (must fit maxStorageBufferBindingSize).
+  PreparedScan.encode(pass: GPUComputePassEncoder) → void
+    Records the dispatches into a CALLER-owned compute pass (wrap it in your
+    own timestamp window, keep issuing dependent dispatches in the same
+    pass); zero per-frame allocation. Afterwards dst[i] = sum of src[0..i)
+    and the grand total sits at the ABSOLUTE element PreparedScan.grandTotalElem
+    (copyBufferToBuffer it out if needed). Resets pipeline/bind group 0 —
+    restore yours after.
+
 ### webgpu/fly-camera.js
 First-person fly ("noclip") camera building on webgpu/camera.js: applyLookDrag
 supplies the look half (pointer-up = look-up), this adds WASD-style key
