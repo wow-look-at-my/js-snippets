@@ -1,0 +1,123 @@
+### ui/perf-graph.js
+Compact, stackable, canvas-rendered performance graph as a <perf-graph>
+custom element. One element = one scrolling metric strip (frame time, fps,
+heap, any numeric gauge): push(value) appends a sample, the newest sample
+hugs the right edge, history scrolls left. Every pixel — including all text
+(label, current value, avg/min/max readout, tick labels) — is drawn on one
+shadow-DOM <canvas> via fillText: zero DOM text nodes, no layout, no
+dependencies. Redraws only when new data / size / theme arrive (dirty flag,
+at most one rAF pending, none when idle) and skips drawing entirely while
+the tab is hidden or the element is scrolled out of view (one deferred draw
+on becoming visible). DPR-aware backing store (crisp on HiDPI); when
+samples outnumber plot pixels the trace switches from a polyline (+ soft
+area fill) to per-pixel min-max columns via binMinMax. Steady-state draws
+allocate nothing. Re-exports everything from ui/perf-graph-math.js so one
+import is enough.
+
+Importing the module auto-registers <perf-graph> (unless that tag is taken).
+
+  import '.../ui/perf-graph.js';
+
+  <perf-graph label="frame" unit="ms" budget="16.7"></perf-graph>
+
+Element <perf-graph> attributes (all optional; properties mirror them, and
+property setters reflect back to the attributes):
+  label   — name drawn top-left
+  unit    — 'ms' (default) | 'fps' | any custom suffix | '' for bare numbers
+  history — samples kept/displayed (default 240); changing it live preserves
+            the newest samples
+  height  — element height in CSS px (default 48; compact)
+  min/max — fixed scale ends; omit either for autoscale (autoRange + nice
+            1-2-5 gridlines, range quantized so ticks stay put)
+  budget  — guide value (e.g. 16.7) drawn as a dashed amber line, always
+            kept inside the displayed range
+
+Element properties / methods:
+  push(value: number)  — append one sample; schedules (at most) one rAF redraw
+  clear()              — drop all samples
+  refreshTheme()       — re-read the --perf-graph-* custom properties
+  label, unit, history, height: reflected properties for the attributes
+  min, max, budget: number | null (null = attribute absent)
+
+CSS custom properties (read via getComputedStyle, cached; dark Scratch
+Proto defaults — set on the element, an ancestor, or :root):
+  --perf-graph-bg        — background            (#0d0f14)
+  --perf-graph-line      — trace / columns       (#00e47a)
+  --perf-graph-fill      — area fill under the polyline; 'none' disables
+                           (rgba(0, 228, 122, 0.10))
+  --perf-graph-grid      — gridlines             (rgba(200, 205, 216, 0.08))
+  --perf-graph-text      — label/stats/ticks     (#6b7280)
+  --perf-graph-value     — current-value readout (#e8ecf4)
+  --perf-graph-budget    — budget line           (#f0a500)
+  --perf-graph-font      — canvas font family    ('JetBrains Mono', 'SF Mono',
+                           'Cascadia Code', 'Fira Code', monospace)
+  --perf-graph-font-size — base font size in px  (10)
+
+Stacked HUD example — several graphs sit flush in a plain column (:host is
+display:block, width:100%, margin-free), all fed from one rAF loop:
+
+  <div id="hud" style="position: fixed; top: 0; right: 0; width: 260px;">
+    <perf-graph id="ft"  label="frame" unit="ms"  budget="16.7"></perf-graph>
+    <perf-graph id="fps" label="fps"   unit="fps" min="0" max="120"></perf-graph>
+    <perf-graph id="mem" label="heap"  unit="MB"  history="600" height="32"></perf-graph>
+  </div>
+
+  import '.../ui/perf-graph.js';
+  const ft = document.getElementById('ft');
+  const fps = document.getElementById('fps');
+  const mem = document.getElementById('mem');
+  let last = performance.now();
+  requestAnimationFrame(function tick(now) {
+    const dt = now - last;
+    last = now;
+    ft.push(dt);
+    fps.push(1000 / dt);
+    if (performance.memory) mem.push(performance.memory.usedJSHeapSize / 2 ** 20);
+    requestAnimationFrame(tick);
+  });
+
+Exports:
+  class PerfGraphElement extends HTMLElement
+    Exported so you can register under another name:
+    customElements.define('my-graph', PerfGraphElement)
+  THEME_DEFAULTS — the default theme values keyed like the CSS properties
+  Plus everything re-exported from ui/perf-graph-math.js.
+
+### ui/perf-graph-math.js
+The graph's pure math. No DOM or browser APIs (unit-tested under node);
+hot paths are allocation-free — the ring allocates only on construction /
+setCapacity, and computeStats/binMinMax fill caller-owned outputs.
+
+Exports:
+  class SampleRing
+    Fixed-capacity float32 ring buffer: constructor(capacity), push(v),
+    at(i) (0 = oldest; NaN out of range), latest() (NaN when empty),
+    clear(), setCapacity(n) (preserves the newest samples), getters
+    length / capacity. Capacity clamps to >= 1.
+  computeStats(ring, out: PerfStats) → PerfStats
+    Fills the caller-owned { current, avg, min, max } (returns it).
+    Non-finite samples are skipped for avg/min/max; all fields NaN when
+    empty; current is the raw latest sample.
+  autoRange(dataMin, dataMax, opts?: AutoRangeOptions) → DisplayRange
+    Padded display range { min, max }. opts: fixedMin/fixedMax pin an end
+    exactly, pad (default 0.1) pads each free end by pad × span,
+    includeZero extends a free end to 0 (a zero floor from non-negative
+    data is not padded below 0). Degenerate-safe: empty/flat data still
+    yields a usable nonzero span.
+  niceStep(span, maxTicks) → number
+    Smallest 1-2-5 × 10^k step splitting span into <= maxTicks intervals.
+  niceTicks(lo, hi, maxTicks) → number[]
+    Tick positions on that grid within [lo, hi] (at most maxTicks + 1;
+    [] for an invalid range). Allocates — call only when the range moves.
+  binMinMax(ring, bins, outMin: Float32Array, outMax: Float32Array) → number
+    Min-max downsample for more-samples-than-pixels: sample i lands in bin
+    floor(i * bins / count), so every finite sample influences exactly one
+    bin and outMin[b] <= outMax[b]. Empty bins are NaN; bins clamps to the
+    out arrays; returns the number of non-empty bins.
+  formatValue(v, unit) → string
+    Deterministic readout formatting: non-finite → '—'; 'ms' → adaptive
+    decimals (|v| >= 100 → 0, >= 10 → 1, else 2) + 'ms'; 'fps' → rounded +
+    'fps'; other non-empty unit → 1 decimal + suffix; '' → bare adaptive
+    number.
+
+Types: PerfStats, AutoRangeOptions, DisplayRange

@@ -27,6 +27,13 @@ import * as mat4 from 'https://wow-look-at-my.github.io/js-snippets/math/mat4.js
 | `math/vec3.js` | Minimal vec3 utilities. All functions return new arrays, no mutation. |
 | `math/mat4.js` | Column-major `Float32Array(16)` mat4 utilities. Perspective uses WebGPU clip-Z `[0,1]`. |
 
+### UI
+
+| Module | Description |
+|--------|-------------|
+| `ui/perf-graph.js` | `<perf-graph>` — compact, stackable, canvas-rendered performance graph custom element. Push-based sampling, label/current/avg/min/max readout drawn as canvas text, autoscale or fixed range with nice gridlines, dashed budget guide line, min-max downsampling when samples outnumber pixels, `--perf-graph-*` CSS-custom-property theming. Re-exports `perf-graph-math`. |
+| `ui/perf-graph-math.js` | The graph's pure math: `SampleRing` float32 ring buffer, `computeStats`, `autoRange` / `niceStep` / `niceTicks`, `binMinMax`, `formatValue`. DOM-free, allocation-free hot paths. |
+
 ### WebGPU
 
 | Module | Description |

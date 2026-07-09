@@ -28,6 +28,14 @@ src/
 │   ├── gaussian-kernel.ts ← linear-sampling separable Gaussian kernel builder
 │   └── *.test.ts          ← colocated node:test tests (vec3 / mat4 / sdf /
 │                            noise / sampling / gaussian-kernel)
+├── ui/
+│   ├── llms.txt           ← docs for ui modules
+│   ├── perf-graph-math.ts ← pure graph math: SampleRing ring buffer, stats,
+│   │                        autoRange + 1-2-5 niceTicks, min-max binning,
+│   │                        value formatting
+│   ├── perf-graph-math.test.ts ← colocated node:test tests for the math
+│   └── perf-graph.ts      ← <perf-graph> custom element (canvas-rendered
+│                            stackable perf HUD; re-exports perf-graph-math)
 ├── webgpu/
 │   ├── llms.txt           ← docs for webgpu modules
 │   ├── hdr-loader.ts
@@ -76,7 +84,7 @@ wgsl.d.ts                  ← ambient *.wgsl decl + @webgpu/types reference
 glsl.d.ts                  ← ambient *.glsl decl (text imports, mirrors wgsl.d.ts)
 ```
 
-Modules are organized by domain (`auto-refresh/`, `editor/`, `math/`, `webgpu/`). The deployed URL mirrors the `src/` structure without the `src/` prefix: `src/webgpu/sky.ts` → `https://…/webgpu/sky.js`.
+Modules are organized by domain (`auto-refresh/`, `editor/`, `math/`, `ui/`, `webgpu/`, `webgl2/`). The deployed URL mirrors the `src/` structure without the `src/` prefix: `src/webgpu/sky.ts` → `https://…/webgpu/sky.js`.
 
 ## Build
 
@@ -108,7 +116,7 @@ Conventions:
 - Each test file uses `import { test } from 'node:test'` + `import assert from 'node:assert/strict'`, imports the **source** module directly with the `.ts` extension (e.g. `import { … } from './mat4.ts'`), and uses `import type { … }` for type-only symbols — Node's strip-types loader elides `import type` but would fail to import a type as a value at runtime.
 - Source modules import sibling modules with the `.ts` extension on **value** imports (e.g. `import { lookAt } from '../math/mat4.ts'`) and `import type` for type-only ones. Both esbuild (the build) and Node's runtime ESM resolver accept this; an extensionless **value** import resolves under esbuild but NOT under `node --test`, so keep the extension.
 - Pure/algorithmic modules are unit-tested here; several tests are ports of the proven `smoke.mjs` oracles from the `scratch` repo (`sdf` from distance-field-shadows, `gaussian-kernel` from local-contrast).
-- **DOM/fetch/GPU-bound modules are NOT unit-tested under node** — `webgpu/shaders.ts`, `webgpu/canvas.ts`, `webgpu/context.ts`, `webgpu/buffer.ts`, `webgpu/sky.ts`, `webgpu/mip-generator.ts`, `webgpu/env-prefilter.ts`, `webgpu/hdr-loader.ts`, `webgl2/video-texture.ts`, `webgl2/fullscreen.ts` (its `.glsl` import also only resolves under the build's text loader, not `node --test`), `editor/code-editor.ts`, and `auto-refresh/` need a real browser/GPU, so they're left to manual/integration testing. Modules mixing pure + bound code are split: `webgpu/camera.ts` tests `orbitEye`/`dirFromAzEl`/`applyLookDrag` but not the DOM-bound controllers; `webgpu/fly-camera.ts` tests `flyMoveDelta`/`dollyDelta` but not `createFlyController`; `webgl2/program.ts` tests `annotateShaderLog` and `injectChunk`; `webgl2/mesh.ts` tests `chooseIndexArray`; `webgl2/fbo.ts` tests `makePingPong` but not the GL-bound `createFloatFbo`/`createPingPong`; `webgpu/scan.ts` splits its pure half into `webgpu/scan-plan.ts` (planScan level math, tested incl. a plan-driven JS emulation of the WGSL) because scan.ts's own `.wgsl` import cannot load under node — the GPU wrapper (`createScan`) is covered by consumer browser harnesses.
+- **DOM/fetch/GPU-bound modules are NOT unit-tested under node** — `webgpu/shaders.ts`, `webgpu/canvas.ts`, `webgpu/context.ts`, `webgpu/buffer.ts`, `webgpu/sky.ts`, `webgpu/mip-generator.ts`, `webgpu/env-prefilter.ts`, `webgpu/hdr-loader.ts`, `webgl2/video-texture.ts`, `webgl2/fullscreen.ts` (its `.glsl` import also only resolves under the build's text loader, not `node --test`), `editor/code-editor.ts`, and `auto-refresh/` need a real browser/GPU, so they're left to manual/integration testing. Modules mixing pure + bound code are split: `webgpu/camera.ts` tests `orbitEye`/`dirFromAzEl`/`applyLookDrag` but not the DOM-bound controllers; `webgpu/fly-camera.ts` tests `flyMoveDelta`/`dollyDelta` but not `createFlyController`; `webgl2/program.ts` tests `annotateShaderLog` and `injectChunk`; `webgl2/mesh.ts` tests `chooseIndexArray`; `webgl2/fbo.ts` tests `makePingPong` but not the GL-bound `createFloatFbo`/`createPingPong`; `webgpu/scan.ts` splits its pure half into `webgpu/scan-plan.ts` (planScan level math, tested incl. a plan-driven JS emulation of the WGSL) because scan.ts's own `.wgsl` import cannot load under node — the GPU wrapper (`createScan`) is covered by consumer browser harnesses; `ui/perf-graph.ts` is DOM/canvas-bound (the `<perf-graph>` element), so its logic lives in `ui/perf-graph-math.ts` (ring buffer / stats / range / ticks / binning / formatting), which is its fully node-tested pure half.
 
 ## Deploy
 
@@ -120,7 +128,9 @@ Each module category has its own `llms.txt` alongside its source files:
 - `src/auto-refresh/llms.txt` — documents the auto-refresh modules
 - `src/editor/llms.txt` — documents the editor modules
 - `src/math/llms.txt` — documents the math modules
+- `src/ui/llms.txt` — documents the ui modules
 - `src/webgpu/llms.txt` — documents the webgpu modules
+- `src/webgl2/llms.txt` — documents the webgl2 modules
 - `llms-header.txt` — preamble (repo description, base URL, usage example)
 
 The build combines these into a single `dist/llms.txt` deployed to the site root.
