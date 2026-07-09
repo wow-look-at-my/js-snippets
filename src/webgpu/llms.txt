@@ -24,17 +24,25 @@ Exports: prefilterEnvMap(device: GPUDevice, texture: GPUTexture, numSamples?: nu
 
 ### webgpu/geometry.js
 Procedural mesh generators. Each returns { positions: Float32Array,
-normals: Float32Array, indices: Uint16Array }.
+normals: Float32Array, indices: Uint16Array }. Winding convention: all
+generators emit triangles counter-clockwise viewed from outside the surface —
+front-facing under WebGPU's default frontFace: 'ccw'.
 
 Exports: createCube(size?), createSphere(radius?, segments?),
   createCylinder(radiusTop?, radiusBottom?, height?, segments?),
   createPlane(width?, depth?),
   createBox(width?, height?, depth?),
-  createTorus(radius?, tube?, radialSegments?, tubularSegments?)
+  createTorus(radius?, tube?, radialSegments?, tubularSegments?),
+  flipWinding(mesh: Mesh) → Mesh
   - createBox: axis-aligned box with independent full extents per axis
     (createCube is the uniform-size special case).
   - createTorus: ring in the XZ plane; radius = major, tube = minor radius;
     radialSegments subdivide the tube, tubularSegments the ring.
+  - flipWinding: returns a NEW mesh with each triangle (a, b, c) → (a, c, b)
+    (input unmutated; positions/normals passed through as the same arrays,
+    only a new index array). For rendering interiors, or pre-flipping geometry
+    drawn under a mirror (determinant < 0) transform so back-face culling
+    keeps working.
 
 ### webgpu/buffer.js
 GPU buffer creation helper.
