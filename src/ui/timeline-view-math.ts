@@ -793,40 +793,34 @@ export function historyProbe(view: TimeView, now: number, coveredEnd: number | n
 export interface CoverageOptions {
   /** Never request less than this much history at once (default 60 s). */
   minChunkMs?: number;
-  /** First retry delay after a failed load (default 2 s). */
-  backoffMs?: number;
-  /** Retry delay cap (default 60 s). */
-  maxBackoffMs?: number;
+  /** Fixed delay between retries of a failed load (default 2 s). */
+  retryMs?: number;
 }
 
 /**
  * Bookkeeping for `loadRange`-style async history loading. Tracks which
  * time ranges are covered by data the consumer has supplied, which request
  * is in flight (one at a time — no request storms), the exhausted-history
- * boundary, and a rejection backoff.
+ * boundary, and the fixed retry cadence for rejected loads.
  *
  *   const next = tracker.nextRequest(view, now); // range to fetch, or null
  *   ...call loadRange(next)...                    // tracker marked it in flight
  *   tracker.settle(next, { ok: true });           // → covered
  *   tracker.settle(next, { ok: true, exhausted: true }); // → history ends here
- *   tracker.settle(next, { ok: false });          // → retried after backoff
+ *   tracker.settle(next, { ok: false });          // → retried ~retryMs later, forever
  */
 export class CoverageTracker {
   private covered: TimeRange[] = [];
   private inflight: TimeRange | null = null;
   private minChunk: number;
-  private backoff0: number;
-  private backoffMax: number;
-  private backoff: number;
+  private retryEvery: number;
   private retryAt = -Infinity;
   /** Time before which history is known exhausted (null = unknown). */
   exhaustedBefore: number | null = null;
 
   constructor(opts: CoverageOptions = {}) {
     this.minChunk = opts.minChunkMs ?? 60_000;
-    this.backoff0 = opts.backoffMs ?? 2_000;
-    this.backoffMax = opts.maxBackoffMs ?? 60_000;
-    this.backoff = this.backoff0;
+    this.retryEvery = opts.retryMs ?? 2_000;
   }
 
   /** Mark [start, end] as covered by consumer-supplied data. */
@@ -852,6 +846,16 @@ export class CoverageTracker {
   }
 
   /**
+   * True while a failed load is waiting out the fixed retry cadence
+   * (nothing in flight, next attempt scheduled). Callers driving requests
+   * from a frame loop must keep the loop alive while this is true, or the
+   * retry parks until the next unrelated wakeup.
+   */
+  waitingRetry(now: number): boolean {
+    return this.inflight === null && now < this.retryAt;
+  }
+
+  /**
    * Uncovered gaps within `span` that could still hold data (gaps entirely
    * before the exhausted boundary are dropped; a gap straddling it is
    * clipped). Use for painting the loading / uncovered affordance.
@@ -867,11 +871,11 @@ export class CoverageTracker {
 
   /**
    * The next range to fetch for the given viewport, or null (fully covered,
-   * a request is already in flight, backing off after a failure, or history
-   * is exhausted). The returned range is marked in flight — pass it to
-   * settle() when the load resolves or rejects. Requests are widened to
-   * minChunkMs (extending into the past) so tiny scroll steps don't spray
-   * tiny requests.
+   * a request is already in flight, waiting out the retry cadence after a
+   * failure, or history is exhausted). The returned range is marked in
+   * flight — pass it to settle() when the load resolves or rejects.
+   * Requests are widened to minChunkMs (extending into the past) so tiny
+   * scroll steps don't spray tiny requests.
    */
   nextRequest(view: TimeView, now: number): TimeRange | null {
     if (this.inflight || now < this.retryAt) return null;
@@ -892,11 +896,14 @@ export class CoverageTracker {
     if (!this.inflight || this.inflight.start !== range.start || this.inflight.end !== range.end) return;
     this.inflight = null;
     if (!result.ok) {
-      this.retryAt = now + this.backoff;
-      this.backoff = Math.min(this.backoff * 2, this.backoffMax);
+      // Fixed cadence, forever: the next attempt is always exactly
+      // retryEvery away — no growth, no attempt cap, no give-up. A growing
+      // backoff quietly converts a transient failure into a permanently
+      // parked gap; a steady short cadence keeps the gap loading (and its
+      // affordance honest) until the consumer's loader recovers.
+      this.retryAt = now + this.retryEvery;
       return;
     }
-    this.backoff = this.backoff0;
     this.retryAt = -Infinity;
     this.addCovered(range.start, range.end);
     if (result.exhausted) {

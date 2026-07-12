@@ -877,7 +877,11 @@ export class TimelineViewElement extends HTMLElement {
   /** True while something time-based needs continuous frames. */
   private animating(): boolean {
     if (this.following || this.glidePx !== 0 || this.layoutAnim !== null) return true;
-    if (this.coverage.pending() && this.loadRangeFn) return true;
+    // In-flight history loads AND failed ones waiting out the fixed retry
+    // cadence both need frames — without the latter, a rejected loadRange in
+    // a paused historical view would park silently until the next input
+    // instead of retrying every ~2s.
+    if (this.loadRangeFn && (this.coverage.pending() || this.coverage.waitingRetry(this.nowMs()))) return true;
     if (this.reducedMotion) return false;
     // Ongoing intervals pulse only while their live edge is in view.
     const now = this.nowMs();
