@@ -1,10 +1,14 @@
 // Tests for the pure math half of <timeline-view> (ui/timeline-view-math.ts):
-// scales + anchor-preserving zoom, wheel normalization, the time tick ladder
-// and label granularity, sub-track packing (incl. coincident instants),
-// lane layout, label fitting, instant-width thresholds, hit testing,
-// connector routing, category hue hashing, and coverage / range-request
-// bookkeeping. The element itself (ui/timeline-view.ts) is canvas/DOM-bound
-// and not node-testable — see the Testing section in CLAUDE.md.
+// scales + anchor-preserving zoom, wheel normalization + gesture routing,
+// the follow-now engage/disengage rule, whole-device-pixel view snapping,
+// the time tick ladder and label granularity, sub-track packing (whole-set
+// and visible-window, incl. coincident instants), lane layout, label
+// fitting, instant-width thresholds (duration-based, translation-stable),
+// hit testing, connector routing, category hue hashing, coverage /
+// range-request bookkeeping (incl. the loadRange request-flood
+// regression), and render-loop pacing. The element itself
+// (ui/timeline-view.ts) is canvas/DOM-bound and not node-testable — see
+// the Testing section in CLAUDE.md.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -47,6 +51,20 @@ import {
   mergeRanges,
   subtractRanges,
   CoverageTracker,
+  historyProbe,
+  routeWheel,
+  followAfterGesture,
+  FOLLOW_LEAD_FRAC,
+  FOLLOW_SNAP_FRAC,
+  snapViewToDevicePixels,
+  durationWidthPx,
+  MIN_BAR_PX,
+  packVisibleTracks,
+  frameBudgetMs,
+  shouldRender,
+  IDLE_FRAME_MS,
+  IDLE_BATTERY_FRAME_MS,
+  type WheelInput,
   type TimeView,
   type PackItem,
   type HitRect,
@@ -634,4 +652,352 @@ test('coverage: settle with a stale/unknown range is a no-op', () => {
   assert.ok(req);
   c.settle({ start: 1, end: 2 }, { ok: true });
   assert.deepEqual(c.pending(), req, 'the real in-flight request survives');
+});
+
+// -- Wheel routing --------------------------------------------------------------
+
+const wheel = (over: Partial<WheelInput>): WheelInput => ({
+  deltaX: 0,
+  deltaY: 0,
+  deltaMode: 0,
+  ctrlKey: false,
+  metaKey: false,
+  shiftKey: false,
+  ...over,
+});
+
+test('routeWheel: deltaX always pans time, with and without lane overflow', () => {
+  for (const lanesOverflow of [false, true]) {
+    const r = routeWheel(wheel({ deltaX: -8 }), lanesOverflow);
+    assert.deepEqual(r, { zoomPx: 0, panPx: -8, laneScrollPx: 0 });
+  }
+});
+
+test('routeWheel: deltaY scrolls lanes when they overflow, pans time when they do not', () => {
+  assert.deepEqual(routeWheel(wheel({ deltaY: 5 }), true), { zoomPx: 0, panPx: 0, laneScrollPx: 5 });
+  assert.deepEqual(routeWheel(wheel({ deltaY: 5 }), false), { zoomPx: 0, panPx: 5, laneScrollPx: 0 });
+});
+
+test('routeWheel: a diagonal gesture applies both axes in one event', () => {
+  assert.deepEqual(routeWheel(wheel({ deltaX: -6, deltaY: 4 }), true), { zoomPx: 0, panPx: -6, laneScrollPx: 4 });
+  // No overflow: both deltas pan time.
+  assert.deepEqual(routeWheel(wheel({ deltaX: -6, deltaY: 4 }), false), { zoomPx: 0, panPx: -2, laneScrollPx: 0 });
+});
+
+test('routeWheel: ctrl/meta+wheel is zoom only (deltaX ignored)', () => {
+  for (const mod of [{ ctrlKey: true }, { metaKey: true }]) {
+    const r = routeWheel(wheel({ deltaX: -6, deltaY: -10, ...mod }), true);
+    assert.deepEqual(r, { zoomPx: -10, panPx: 0, laneScrollPx: 0 });
+  }
+});
+
+test('routeWheel: shift+wheel pans time; vertical delta wins, else horizontal', () => {
+  assert.deepEqual(routeWheel(wheel({ deltaY: 7, shiftKey: true }), true), { zoomPx: 0, panPx: 7, laneScrollPx: 0 });
+  assert.deepEqual(routeWheel(wheel({ deltaX: 3, shiftKey: true }), false), { zoomPx: 0, panPx: 3, laneScrollPx: 0 });
+});
+
+test('routeWheel: deltaMode 1 (lines) normalizes to pixels on every path', () => {
+  assert.deepEqual(routeWheel(wheel({ deltaX: -2, deltaMode: 1 }), false), { zoomPx: 0, panPx: -32, laneScrollPx: 0 });
+  assert.deepEqual(routeWheel(wheel({ deltaY: 3, deltaMode: 1 }), true), { zoomPx: 0, panPx: 0, laneScrollPx: 48 });
+  assert.deepEqual(routeWheel(wheel({ deltaY: -1, deltaMode: 1, ctrlKey: true }), false), {
+    zoomPx: -16,
+    panPx: 0,
+    laneScrollPx: 0,
+  });
+});
+
+// -- Follow-now rule ----------------------------------------------------------------
+
+test('followAfterGesture: a small backward PAN disengages follow (trackpad panning must escape now)', () => {
+  const now = 1_000_000_000;
+  const span = 900_000; // 15 min
+  // Pinned view: end = now + lead.
+  const end = now + span * FOLLOW_LEAD_FRAC;
+  const view: TimeView = { start: end - span, end };
+  // One trackpad wheel step pans ~10s — far inside the old snap zone.
+  const next = panView(view, -10_000);
+  assert.equal(followAfterGesture(view.end, next, now, true), false, 'backward pan disengages');
+  // The same tiny step as a NON-pan (e.g. programmatic) still snaps back.
+  assert.equal(followAfterGesture(view.end, next, now, false), true);
+});
+
+test('followAfterGesture: consecutive backward pans stay disengaged inside the snap zone', () => {
+  const now = 1_000_000_000;
+  const span = 900_000;
+  let view: TimeView = { start: now + span * FOLLOW_LEAD_FRAC - span, end: now + span * FOLLOW_LEAD_FRAC };
+  for (let i = 0; i < 5; i++) {
+    const next = panView(view, -5_000);
+    assert.equal(followAfterGesture(view.end, next, now, true), false, `step ${i} must not re-engage`);
+    view = next;
+  }
+});
+
+test('followAfterGesture: panning forward re-docks magnetically near now', () => {
+  const now = 1_000_000_000;
+  const span = 900_000;
+  const view: TimeView = { start: now - 2 * span, end: now - span }; // well in the past
+  const far = panView(view, 10_000);
+  assert.equal(followAfterGesture(view.end, far, now, true), false, 'still far from now');
+  const near: TimeView = { start: now - span * (1 + FOLLOW_SNAP_FRAC / 2), end: now - span * (FOLLOW_SNAP_FRAC / 2) };
+  assert.equal(followAfterGesture(view.end, near, now, true), true, 'forward pan into the snap zone re-engages');
+});
+
+test('followAfterGesture: zooming while pinned stays pinned (span change is not a pan)', () => {
+  const now = 1_000_000_000;
+  const span = 900_000;
+  const end = now + span * FOLLOW_LEAD_FRAC;
+  const view: TimeView = { start: end - span, end };
+  const zoomed = zoomView(view, end - span / 2, 1.05); // anchor mid-screen: end moves back a bit
+  assert.ok(zoomed.end < view.end);
+  assert.equal(followAfterGesture(view.end, zoomed, now, false), true, 'zoom keeps follow');
+});
+
+// -- Whole-pixel scrolling ------------------------------------------------------------
+
+test('snapViewToDevicePixels: relative offsets are exactly stable across fractional translations', () => {
+  const plotW = 1000;
+  const span = 600_000;
+  const t0 = 1_750_000_000_000;
+  const t1 = t0 + (10.4 * span) / plotW; // two times 10.4 CSS px apart
+  for (const dpr of [1, 2]) {
+    const offsets = new Set<number>();
+    for (let i = 0; i < 400; i++) {
+      const view: TimeView = { start: t0 - span / 2 + i * 7.13, end: t0 + span / 2 + i * 7.13 };
+      const rv = snapViewToDevicePixels(view, plotW, dpr);
+      const off = timeToX(t1, rv, plotW) - timeToX(t0, rv, plotW);
+      offsets.add(Math.round(off * 1e6) / 1e6);
+    }
+    assert.equal(offsets.size, 1, `dpr ${dpr}: one exact relative offset across all subpixel phases`);
+    assert.ok(Math.abs([...offsets][0] - 10.4) < 1e-6);
+  }
+});
+
+test('snapViewToDevicePixels: a fixed time keeps a constant subpixel phase (integer device-pixel steps)', () => {
+  const plotW = 977; // deliberately odd
+  const span = 123_456;
+  const t = 1_750_000_000_000;
+  for (const dpr of [1, 2]) {
+    const phases = new Set<number>();
+    for (let i = 0; i < 300; i++) {
+      const view: TimeView = { start: t - span / 3 + i * 0.377, end: t + (2 * span) / 3 + i * 0.377 };
+      const rv = snapViewToDevicePixels(view, plotW, dpr);
+      const xDev = timeToX(t, rv, plotW) * dpr;
+      const phase = xDev - Math.floor(xDev);
+      phases.add(Math.round(phase * 1e6) / 1e6);
+    }
+    assert.ok(phases.size <= 2, `dpr ${dpr}: phase is constant (mod float noise), got ${phases.size}`);
+    const [a, b] = [...phases];
+    if (b !== undefined) assert.ok(Math.abs(a - b) < 1e-3 || Math.abs(Math.abs(a - b) - 1) < 1e-3);
+  }
+});
+
+test('snapViewToDevicePixels: span preserved; degenerate views returned unchanged', () => {
+  const view: TimeView = { start: 1_000_000.4, end: 1_600_000.4 };
+  const rv = snapViewToDevicePixels(view, 800, 2);
+  assert.ok(Math.abs(rv.end - rv.start - 600_000) < 1e-6);
+  const bad: TimeView = { start: 5, end: 5 };
+  assert.deepEqual(snapViewToDevicePixels(bad, 800, 1), bad);
+});
+
+// -- Bar/pip stability -----------------------------------------------------------------
+
+test('durationWidthPx: translation-invariant — shape decisions cannot flicker while scrolling', () => {
+  const plotW = 1200;
+  const span = 900_000; // 0.75 ms/px
+  const msPerPx = span / plotW;
+  const base = 1_750_000_000_000;
+  // A spread of sub-second-to-seconds durations around the pip threshold.
+  const durations = [0, 1, 100, 0.5 * msPerPx, 2.9 * msPerPx, 3.1 * msPerPx, 10 * msPerPx];
+  for (const dur of durations) {
+    const decisions = new Set<boolean>();
+    for (let i = 0; i < 500; i++) {
+      const view: TimeView = { start: base + i * 0.731, end: base + i * 0.731 + span };
+      const w = durationWidthPx(base + span / 2, base + span / 2 + dur, view, plotW);
+      decisions.add(isInstantWidth(w));
+    }
+    assert.equal(decisions.size, 1, `duration ${dur}ms: one representation across all viewport phases`);
+  }
+});
+
+test('durationWidthPx: zero-duration events are pips at any zoom; real widths clear the threshold', () => {
+  const view: TimeView = { start: 0, end: 600_000 };
+  assert.equal(isInstantWidth(durationWidthPx(1_000, 1_000, view, 1000)), true, 'zero duration = pip');
+  // 2px true width: below the pip threshold — but MIN_BAR_PX exists so a
+  // bar that passes the threshold is never rendered thinner than 2px.
+  assert.ok(MIN_BAR_PX >= 2 && MIN_BAR_PX < INSTANT_THRESHOLD_PX);
+  const wide = durationWidthPx(0, 3_600, view, 1000); // 6px
+  assert.equal(isInstantWidth(wide), false);
+});
+
+// -- Visible-window packing --------------------------------------------------------------
+
+test('packVisibleTracks: a parallelism burst outside the window does not inflate the lane', () => {
+  const items: PackItem[] = [
+    // Historical burst: 4 concurrent runs.
+    { id: 'b1', start: 0, end: 100 },
+    { id: 'b2', start: 10, end: 90 },
+    { id: 'b3', start: 20, end: 80 },
+    { id: 'b4', start: 30, end: 70 },
+    // Recent, serial runs.
+    { id: 'r1', start: 1_000, end: 1_100 },
+    { id: 'r2', start: 1_200, end: 1_300 },
+  ];
+  const over = packVisibleTracks(items, { start: 950, end: 1_400 });
+  assert.equal(over.trackCount, 1, 'only the serial runs are visible');
+  assert.deepEqual(over.tracks.slice(0, 4), [-1, -1, -1, -1], 'burst items are out of view');
+  const burst = packVisibleTracks(items, { start: 0, end: 200 });
+  assert.equal(burst.trackCount, 4, 'looking AT the burst still shows 4 tracks');
+});
+
+test('packVisibleTracks: partial overlap counts; empty window collapses to one track', () => {
+  const items: PackItem[] = [
+    { id: 'a', start: 0, end: 500 },
+    { id: 'b', start: 400, end: 900 },
+  ];
+  // Window clips both, they overlap each other → 2 tracks.
+  assert.equal(packVisibleTracks(items, { start: 420, end: 480 }).trackCount, 2);
+  // Window sees nothing → collapses to 1.
+  const empty = packVisibleTracks(items, { start: 2_000, end: 3_000 });
+  assert.equal(empty.trackCount, 1);
+  assert.deepEqual(empty.tracks, [-1, -1]);
+});
+
+test('packVisibleTracks: ongoing intervals (end null) intersect every later window', () => {
+  const items: PackItem[] = [
+    { id: 'live', start: 100, end: null },
+    { id: 'x', start: 5_000, end: 6_000 },
+  ];
+  const r = packVisibleTracks(items, { start: 4_000, end: 7_000 });
+  assert.equal(r.trackCount, 2, 'the ongoing run still occupies a track');
+  assert.notEqual(r.tracks[0], -1);
+});
+
+test('packVisibleTracks: assignment is stable while the window slides over an unchanged visible set', () => {
+  const items: PackItem[] = [
+    { id: 'a', start: 1_000, end: 2_000 },
+    { id: 'b', start: 1_500, end: 2_500 },
+    { id: 'c', start: 2_600, end: 3_000 },
+  ];
+  const first = packVisibleTracks(items, { start: 900, end: 3_100 });
+  for (let dt = 0; dt < 80; dt += 7) {
+    // All slides keep the same three items visible.
+    const r = packVisibleTracks(items, { start: 900 + dt, end: 3_100 + dt });
+    assert.deepEqual(r.tracks, first.tracks, `slide +${dt} keeps identical assignments`);
+    assert.equal(r.trackCount, first.trackCount);
+  }
+});
+
+// -- historyProbe (the request-flood regression) -----------------------------------------
+
+test('historyProbe: never reaches past the covered end — the live edge belongs to the data feed', () => {
+  const now0 = 1_000_000_000;
+  const span = 900_000;
+  const coveredEnd = now0; // consumer covered up to its last poll
+  // Follow mode: the view's end rides ahead of now; "now" keeps advancing.
+  for (let frame = 1; frame <= 100; frame++) {
+    const now = now0 + frame * 16;
+    const end = now + span * FOLLOW_LEAD_FRAC;
+    const probe = historyProbe({ start: end - span, end }, now, coveredEnd);
+    assert.ok(probe, 'the backward window is still probeable');
+    assert.ok(probe.end <= coveredEnd, `frame ${frame}: probe must not chase "now" past coverage`);
+  }
+});
+
+test('historyProbe + CoverageTracker: an idle covered viewport never re-fires (no request storm)', () => {
+  const tracker = new CoverageTracker();
+  const span = 900_000;
+  const now0 = 1_000_000_000;
+  tracker.addCovered(now0 - 2 * span, now0); // poll seeded coverage
+  let requests = 0;
+  for (let frame = 0; frame < 1_000; frame++) {
+    const now = now0 + frame * 16;
+    const end = now + span * FOLLOW_LEAD_FRAC;
+    const probe = historyProbe({ start: end - span, end }, now, tracker.coveredEnd());
+    if (!probe) continue;
+    const req = tracker.nextRequest(probe, now);
+    if (req) {
+      requests++;
+      tracker.settle(req, { ok: true }); // covered — must LATCH
+    }
+  }
+  assert.equal(requests, 0, 'fully covered viewport issues zero loadRange requests while now advances');
+});
+
+test('historyProbe: bootstrap (no coverage) probes up to now, then latches after one settle', () => {
+  const tracker = new CoverageTracker();
+  const span = 900_000;
+  let now = 1_000_000_000;
+  const probe0 = historyProbe({ start: now - span, end: now }, now, tracker.coveredEnd());
+  assert.ok(probe0 && probe0.end === now, 'first load may reach now');
+  const req = tracker.nextRequest(probe0, now);
+  assert.ok(req);
+  tracker.settle(req, { ok: true });
+  // Frames keep coming, now keeps advancing — but coverage now ends at the
+  // settled edge, so the probe clamps there and nothing re-fires.
+  let refires = 0;
+  for (let frame = 0; frame < 500; frame++) {
+    now += 16;
+    const probe = historyProbe({ start: now - span, end: now }, now, tracker.coveredEnd());
+    if (!probe) continue;
+    const r = tracker.nextRequest(probe, now);
+    if (r) {
+      refires++;
+      tracker.settle(r, { ok: true });
+    }
+  }
+  assert.equal(refires, 0, 'the forward sliver between coverage and now is never requested');
+});
+
+test('historyProbe: backward gaps are still requested (panning into uncovered history works)', () => {
+  const tracker = new CoverageTracker();
+  const now = 1_000_000_000;
+  tracker.addCovered(now - 1_000_000, now);
+  // Viewport panned deep into the uncovered past.
+  const view: TimeView = { start: now - 5_000_000, end: now - 4_000_000 };
+  const probe = historyProbe(view, now, tracker.coveredEnd());
+  assert.ok(probe);
+  const req = tracker.nextRequest(probe, now);
+  assert.ok(req, 'backward history is requestable');
+  assert.ok(req.end <= now - 4_000_000 + 1e-6);
+});
+
+test('coverage: a failed request is not retried before its backoff floor (>= 2s), then retries', () => {
+  const c = new CoverageTracker(); // defaults: backoff 2s → 60s cap
+  const view: TimeView = { start: 0, end: 100_000 };
+  const req = c.nextRequest(view, 0);
+  assert.ok(req);
+  c.settle(req, { ok: false }, 1_000);
+  assert.equal(c.nextRequest(view, 1_016), null, 'one frame later: still backing off');
+  assert.equal(c.nextRequest(view, 2_999), null, 'just under the 2s floor');
+  assert.ok(c.nextRequest(view, 3_001), 'retries after the backoff elapses');
+});
+
+// -- Render pacing ---------------------------------------------------------------------
+
+test('frameBudgetMs: interactive renders every frame; idle ~30fps; battery ~10fps', () => {
+  assert.equal(frameBudgetMs('interactive'), 0);
+  assert.equal(frameBudgetMs('idle'), IDLE_FRAME_MS);
+  assert.equal(frameBudgetMs('idle-battery'), IDLE_BATTERY_FRAME_MS);
+  assert.ok(IDLE_FRAME_MS > 16.7 && IDLE_FRAME_MS < 34);
+  assert.equal(IDLE_BATTERY_FRAME_MS, 100);
+});
+
+test('shouldRender: gates a 60Hz rAF stream to the tier budget without aliasing', () => {
+  const countAt = (budget: number): number => {
+    let rendered = 0;
+    let last = -Infinity;
+    for (let i = 0; i < 600; i++) {
+      const t = i * (1000 / 60);
+      if (shouldRender(t, last, budget)) {
+        rendered++;
+        last = t;
+      }
+    }
+    return rendered;
+  };
+  assert.equal(countAt(0), 600, 'interactive: every frame');
+  const idle = countAt(IDLE_FRAME_MS);
+  assert.ok(idle >= 280 && idle <= 320, `idle ≈ 30fps over 10s, got ${idle / 10}/s`);
+  const battery = countAt(IDLE_BATTERY_FRAME_MS);
+  assert.ok(battery >= 95 && battery <= 105, `battery ≈ 10fps over 10s, got ${battery / 10}/s`);
 });
