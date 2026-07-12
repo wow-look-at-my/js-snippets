@@ -1,0 +1,637 @@
+// Tests for the pure math half of <timeline-view> (ui/timeline-view-math.ts):
+// scales + anchor-preserving zoom, wheel normalization, the time tick ladder
+// and label granularity, sub-track packing (incl. coincident instants),
+// lane layout, label fitting, instant-width thresholds, hit testing,
+// connector routing, category hue hashing, and coverage / range-request
+// bookkeeping. The element itself (ui/timeline-view.ts) is canvas/DOM-bound
+// and not node-testable — see the Testing section in CLAUDE.md.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  toMs,
+  timeToX,
+  xToTime,
+  panView,
+  zoomView,
+  wheelDeltaToPixels,
+  zoomFactorForWheel,
+  ZOOM_PX_PER_DOUBLE,
+  MIN_SPAN_MS,
+  MAX_SPAN_MS,
+  TIME_TICK_STEPS,
+  timeTickStep,
+  timeTicks,
+  formatTimeTick,
+  formatTimeFull,
+  formatDuration,
+  packTracks,
+  PACK_MIN_MS,
+  layoutLanes,
+  trackTop,
+  fitText,
+  ELLIPSIS,
+  INSTANT_THRESHOLD_PX,
+  isInstantWidth,
+  expandHitRect,
+  hitTestRects,
+  distSqToSegment,
+  hitTestPolyline,
+  connectorRoute,
+  hashString,
+  categoryHue,
+  categoryJitter,
+  categoryColor,
+  DEFAULT_STYLES,
+  mergeRanges,
+  subtractRanges,
+  CoverageTracker,
+  type TimeView,
+  type PackItem,
+  type HitRect,
+  type TimeRange,
+} from './timeline-view-math.ts';
+
+const HOUR = 3_600_000;
+const DAY = 86_400_000;
+
+// -- toMs / scale -----------------------------------------------------------------
+
+test('toMs: numbers pass through, Dates convert', () => {
+  assert.equal(toMs(1234), 1234);
+  assert.equal(toMs(new Date(56789)), 56789);
+});
+
+test('timeToX/xToTime: endpoints, midpoint, and round-trip', () => {
+  const view: TimeView = { start: 1000, end: 2000 };
+  assert.equal(timeToX(1000, view, 500), 0);
+  assert.equal(timeToX(2000, view, 500), 500);
+  assert.equal(timeToX(1500, view, 500), 250);
+  assert.equal(xToTime(250, view, 500), 1500);
+  for (const x of [0, 17.5, 333, 500]) {
+    assert.ok(Math.abs(timeToX(xToTime(x, view, 500), view, 500) - x) < 1e-9, `round-trip ${x}`);
+  }
+});
+
+test('panView: shifts both ends, preserving the span', () => {
+  const v = panView({ start: 100, end: 300 }, 50);
+  assert.deepEqual(v, { start: 150, end: 350 });
+});
+
+// -- zoomView ----------------------------------------------------------------------
+
+test('zoomView: the time under the cursor stays under the cursor', () => {
+  const width = 800;
+  let seed = 42;
+  const rand = (): number => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  for (let i = 0; i < 200; i++) {
+    const start = rand() * 1e12;
+    const span = MIN_SPAN_MS * 4 + rand() * (MAX_SPAN_MS / 4);
+    const view: TimeView = { start, end: start + span };
+    const x = rand() * width;
+    const anchor = xToTime(x, view, width);
+    const factor = Math.pow(2, rand() * 4 - 2); // 0.25x .. 4x
+    const zoomed = zoomView(view, anchor, factor);
+    const xAfter = timeToX(anchor, zoomed, width);
+    assert.ok(Math.abs(xAfter - x) < 1e-6 * width, `anchor pixel moved: ${x} -> ${xAfter}`);
+  }
+});
+
+test('zoomView: factor > 1 shrinks the span by exactly that factor', () => {
+  const view: TimeView = { start: 0, end: 100_000 };
+  const z = zoomView(view, 50_000, 2);
+  assert.ok(Math.abs(z.end - z.start - 50_000) < 1e-9);
+});
+
+test('zoomView: span clamps to [MIN_SPAN_MS, MAX_SPAN_MS] and keeps the anchor fraction', () => {
+  const tiny = zoomView({ start: 0, end: MIN_SPAN_MS * 2 }, MIN_SPAN_MS, 1e9);
+  assert.equal(tiny.end - tiny.start, MIN_SPAN_MS);
+  // anchor was at fraction 0.5 → still at 0.5
+  assert.ok(Math.abs((MIN_SPAN_MS - tiny.start) / (tiny.end - tiny.start) - 0.5) < 1e-9);
+
+  const huge = zoomView({ start: 0, end: DAY }, DAY / 4, 1e-9);
+  assert.equal(huge.end - huge.start, MAX_SPAN_MS);
+  assert.ok(Math.abs((DAY / 4 - huge.start) / MAX_SPAN_MS - 0.25) < 1e-9);
+});
+
+test('zoomView: degenerate factors are ignored', () => {
+  const view: TimeView = { start: 0, end: 10_000 };
+  assert.deepEqual(zoomView(view, 5_000, NaN), view);
+  assert.deepEqual(zoomView(view, 5_000, 0), view);
+  assert.deepEqual(zoomView(view, 5_000, -2), view);
+});
+
+// -- Wheel normalization -----------------------------------------------------------
+
+test('wheelDeltaToPixels: deltaMode 0 is 1:1, 1 is lines, 2 is pages', () => {
+  assert.equal(wheelDeltaToPixels(7.5, 0), 7.5);
+  assert.equal(wheelDeltaToPixels(-120, 0), -120);
+  assert.equal(wheelDeltaToPixels(3, 1), 48); // 3 lines × 16px
+  assert.equal(wheelDeltaToPixels(3, 1, 20), 60);
+  assert.equal(wheelDeltaToPixels(1, 2), 800);
+  assert.equal(wheelDeltaToPixels(-2, 2, 16, 500), -1000);
+  assert.equal(wheelDeltaToPixels(NaN, 0), 0);
+});
+
+test('zoomFactorForWheel: exponential, composable, and doubling at the constant', () => {
+  assert.equal(zoomFactorForWheel(0), 1);
+  assert.equal(zoomFactorForWheel(-ZOOM_PX_PER_DOUBLE), 2); // scroll up = zoom in
+  assert.equal(zoomFactorForWheel(ZOOM_PX_PER_DOUBLE), 0.5);
+  const a = zoomFactorForWheel(-37) * zoomFactorForWheel(-63);
+  const b = zoomFactorForWheel(-100);
+  assert.ok(Math.abs(a - b) < 1e-12, 'factors compose: f(a)*f(b) == f(a+b)');
+});
+
+// -- Time ticks --------------------------------------------------------------------
+
+test('timeTickStep: picks ladder steps across spans from seconds to days', () => {
+  assert.equal(timeTickStep(2_000, 8), 500); // 2s span → 500ms ticks
+  assert.equal(timeTickStep(60_000, 8), 10_000); // 1min → 10s
+  assert.equal(timeTickStep(25 * 60_000, 8), 300_000); // 25min → 5min
+  assert.equal(timeTickStep(6 * HOUR, 8), HOUR); // 6h → 1h
+  assert.equal(timeTickStep(2 * DAY, 8), 6 * HOUR); // 2d → 6h
+  assert.equal(timeTickStep(7 * DAY, 8), DAY); // 7d → 1d
+  assert.equal(timeTickStep(1e12, 8), TIME_TICK_STEPS[TIME_TICK_STEPS.length - 1]);
+});
+
+test('timeTicks: aligned to the step, within the view, at most maxTicks + 1', () => {
+  for (const span of [2_000, 45_000, 25 * 60_000, 3 * HOUR, 5 * DAY]) {
+    const view: TimeView = { start: 1_700_000_123_456, end: 1_700_000_123_456 + span };
+    const ticks = timeTicks(view, 8);
+    const step = timeTickStep(span, 8);
+    assert.ok(ticks.length >= 1, `has ticks for span ${span}`);
+    assert.ok(ticks.length <= 9, `count ${ticks.length} <= 9 for span ${span}`);
+    for (const t of ticks) {
+      assert.ok(t >= view.start && t <= view.end, `${t} inside view`);
+      assert.equal(t % step, 0, `${t} on the ${step} grid`);
+    }
+  }
+});
+
+test('timeTicks: tzOffset aligns day ticks to local midnight', () => {
+  const offset = -5 * HOUR; // UTC-5
+  const view: TimeView = { start: 1_700_000_000_000, end: 1_700_000_000_000 + 4 * DAY };
+  const ticks = timeTicks(view, 5, offset);
+  assert.ok(ticks.length > 0);
+  for (const t of ticks) {
+    assert.equal((t + offset) % DAY, 0, `${t} is local midnight`);
+  }
+});
+
+test('timeTicks: empty/invalid view yields no ticks', () => {
+  assert.deepEqual(timeTicks({ start: 5, end: 5 }, 8), []);
+  assert.deepEqual(timeTicks({ start: 9, end: 3 }, 8), []);
+  assert.deepEqual(timeTicks({ start: NaN, end: 3 }, 8), []);
+});
+
+// -- Tick / time formatting ----------------------------------------------------------
+
+// 2021-01-02 03:04:05.678 UTC
+const T = Date.UTC(2021, 0, 2, 3, 4, 5, 678);
+
+test('formatTimeTick: granularity follows the step', () => {
+  assert.equal(formatTimeTick(T, 500), ':05.678');
+  assert.equal(formatTimeTick(T, 5_000), '03:04:05');
+  assert.equal(formatTimeTick(T, 60_000), '03:04');
+  assert.equal(formatTimeTick(T, HOUR), '03:04');
+  assert.equal(formatTimeTick(T, DAY), 'Jan 2');
+});
+
+test('formatTimeTick: a local-midnight tick labels as the date', () => {
+  const midnight = Date.UTC(2021, 0, 2);
+  assert.equal(formatTimeTick(midnight, HOUR), 'Jan 2');
+  // …and respects the tz offset: 05:00 UTC == midnight at UTC-5.
+  assert.equal(formatTimeTick(Date.UTC(2021, 0, 2, 5), HOUR, -5 * HOUR), 'Jan 2');
+  assert.equal(formatTimeTick(Date.UTC(2021, 0, 2, 5), HOUR), '05:00');
+});
+
+test('formatTimeFull: date + time, optional ms', () => {
+  assert.equal(formatTimeFull(T), 'Jan 2 03:04:05');
+  assert.equal(formatTimeFull(T, 0, true), 'Jan 2 03:04:05.678');
+  assert.equal(formatTimeFull(T, 3 * HOUR), 'Jan 2 06:04:05');
+});
+
+test('formatDuration: table', () => {
+  const cases: [number, string][] = [
+    [NaN, '—'],
+    [-5, '—'],
+    [0, '0ms'],
+    [742, '742ms'],
+    [1_000, '1.0s'],
+    [12_340, '12.3s'],
+    [83_000, '1m 23s'],
+    [605_000, '10m 05s'],
+    [2 * HOUR + 14 * 60_000, '2h 14m'],
+    [3 * DAY + 4 * HOUR, '3d 4h'],
+  ];
+  for (const [ms, expected] of cases) {
+    assert.equal(formatDuration(ms), expected, `formatDuration(${ms})`);
+  }
+});
+
+// -- packTracks --------------------------------------------------------------------
+
+const packOf = (items: PackItem[]): { tracks: number[]; trackCount: number } => packTracks(items);
+
+test('pack: non-overlapping intervals share track 0', () => {
+  const { tracks, trackCount } = packOf([
+    { id: 'a', start: 0, end: 10 },
+    { id: 'b', start: 10, end: 20 }, // touching: end == start reuses the track
+    { id: 'c', start: 25, end: 30 },
+  ]);
+  assert.deepEqual(tracks, [0, 0, 0]);
+  assert.equal(trackCount, 1);
+});
+
+test('pack: an overlap chain stacks first-fit', () => {
+  const { tracks, trackCount } = packOf([
+    { id: 'a', start: 0, end: 100 },
+    { id: 'b', start: 10, end: 50 },
+    { id: 'c', start: 20, end: 30 },
+    { id: 'd', start: 60, end: 90 }, // b and c ended → reuses track 1
+  ]);
+  assert.deepEqual(tracks, [0, 1, 2, 1]);
+  assert.equal(trackCount, 3);
+});
+
+test('pack: ongoing intervals (end null/undefined) block their track forever', () => {
+  const { tracks, trackCount } = packOf([
+    { id: 'a', start: 0, end: null },
+    { id: 'b', start: 1_000_000 }, // far later, but a never ends
+    { id: 'c', start: 2_000_000, end: 2_000_001 },
+  ]);
+  assert.deepEqual(tracks, [0, 1, 2]);
+  assert.equal(trackCount, 3);
+});
+
+test('pack: deterministic under input re-ordering (results index-aligned)', () => {
+  const items: PackItem[] = [
+    { id: 'a', start: 0, end: 40 },
+    { id: 'b', start: 10, end: 30 },
+    { id: 'c', start: 35, end: 60 },
+    { id: 'd', start: 50, end: null },
+    { id: 'e', start: 55, end: 58 },
+  ];
+  const base = packOf(items);
+  const byId = new Map(items.map((it, i) => [it.id, base.tracks[i]]));
+  const shuffled = [items[3], items[0], items[4], items[2], items[1]];
+  const re = packOf(shuffled);
+  assert.equal(re.trackCount, base.trackCount);
+  shuffled.forEach((it, i) => {
+    assert.equal(re.tracks[i], byId.get(it.id), `track for ${it.id} stable under re-sort`);
+  });
+});
+
+test('pack: equal starts tie-break by id, deterministically', () => {
+  const a = packOf([
+    { id: 'x', start: 5, end: 10 },
+    { id: 'y', start: 5, end: 10 },
+  ]);
+  const b = packOf([
+    { id: 'y', start: 5, end: 10 },
+    { id: 'x', start: 5, end: 10 },
+  ]);
+  // 'x' sorts first → track 0 in both orderings.
+  assert.deepEqual(a.tracks, [0, 1]);
+  assert.deepEqual(b.tracks, [1, 0]);
+});
+
+test('pack: coincident zero-length instants get their own tracks (never vanish)', () => {
+  const { tracks, trackCount } = packOf([
+    { id: 'i1', start: 100, end: 100 },
+    { id: 'i2', start: 100, end: 100 },
+    { id: 'i3', start: 100, end: 100 },
+  ]);
+  assert.deepEqual([...tracks].sort(), [0, 1, 2]);
+  assert.equal(trackCount, 3);
+});
+
+test('pack: an instant at a bar start does not share the bar track', () => {
+  const { tracks } = packOf([
+    { id: 'bar', start: 100, end: 500 },
+    { id: 'pip', start: 100, end: 100 },
+  ]);
+  assert.notEqual(tracks[0], tracks[1]);
+  // …but an instant at the bar END reuses it (bar released the track).
+  const after = packOf([
+    { id: 'bar', start: 100, end: 500 },
+    { id: 'pip', start: 500, end: 500 },
+  ]);
+  assert.deepEqual(after.tracks, [0, 0]);
+  assert.ok(PACK_MIN_MS >= 1);
+});
+
+test('pack: empty input yields one (empty) track', () => {
+  assert.deepEqual(packOf([]), { tracks: [], trackCount: 1 });
+});
+
+// -- Lane layout --------------------------------------------------------------------
+
+test('layoutLanes: heights grow with track count; tops stack; totals add up', () => {
+  const m = { trackHeight: 16, trackGap: 2, lanePad: 4 };
+  const { tops, heights, totalHeight } = layoutLanes([1, 3, 1], m);
+  assert.deepEqual(heights, [24, 60, 24]); // 8 + n*16 + (n-1)*2
+  assert.deepEqual(tops, [0, 24, 84]);
+  assert.equal(totalHeight, 108);
+  assert.equal(trackTop(0, m), 4);
+  assert.equal(trackTop(2, m), 4 + 2 * 18);
+});
+
+test('layoutLanes: a zero/negative track count still yields a one-track lane', () => {
+  const m = { trackHeight: 16, trackGap: 2, lanePad: 4 };
+  assert.deepEqual(layoutLanes([0], m).heights, [24]);
+});
+
+// -- fitText / instants ----------------------------------------------------------------
+
+test('fitText: fits, truncates with an ellipsis, or suppresses entirely', () => {
+  assert.equal(fitText('build', 50, 6), 'build'); // 8 chars fit
+  assert.equal(fitText('deploy-production', 60, 6), `deploy-pr${ELLIPSIS}`); // 10 chars max → 9 + …
+  assert.equal(fitText('deploy-production', 60, 6).length, 10);
+  assert.equal(fitText('ab', 30, 6), 'ab');
+  assert.equal(fitText('abcdef', 17, 6), ''); // 2 chars max → below minChars+1 → hide
+  assert.equal(fitText('abcdef', 0, 6), '');
+  assert.equal(fitText('', 100, 6), '');
+  assert.equal(fitText('abc', 100, 0), '');
+});
+
+test('fitText: never overflows the available width', () => {
+  const charW = 7;
+  for (const avail of [0, 5, 10, 21, 35, 70, 200]) {
+    const out = fitText('a-fairly-long-interval-label', avail, charW);
+    assert.ok(out.length * charW <= avail || out === '', `"${out}" fits in ${avail}px`);
+  }
+});
+
+test('isInstantWidth: threshold behavior', () => {
+  assert.equal(isInstantWidth(0), true);
+  assert.equal(isInstantWidth(INSTANT_THRESHOLD_PX - 0.01), true);
+  assert.equal(isInstantWidth(INSTANT_THRESHOLD_PX), false);
+  assert.equal(isInstantWidth(10), false);
+  assert.equal(isInstantWidth(4, 6), true); // custom threshold
+});
+
+// -- Hit testing --------------------------------------------------------------------
+
+test('expandHitRect: widens a narrow rect around its center, keeps wide rects', () => {
+  const narrow: HitRect = { x: 100, y: 10, w: 1, h: 12 };
+  const wide = expandHitRect(narrow, 9);
+  assert.deepEqual(wide, { x: 96, y: 10, w: 9, h: 12 });
+  const big: HitRect = { x: 0, y: 0, w: 50, h: 10 };
+  assert.equal(expandHitRect(big, 9), big);
+});
+
+test('hitTestRects: topmost (last) wins; edges inclusive; miss = -1', () => {
+  const rects: HitRect[] = [
+    { x: 0, y: 0, w: 100, h: 20 },
+    { x: 50, y: 0, w: 100, h: 20 },
+  ];
+  assert.equal(hitTestRects(75, 10, rects), 1);
+  assert.equal(hitTestRects(25, 10, rects), 0);
+  assert.equal(hitTestRects(0, 0, rects), 0);
+  assert.equal(hitTestRects(150, 20, rects), 1);
+  assert.equal(hitTestRects(300, 10, rects), -1);
+});
+
+test('hit-testing an instant: the expanded rect catches near-misses', () => {
+  // A zero-width instant at x=200 drawn as a pip: visual ~1px, hit target 9px.
+  const visual: HitRect = { x: 200, y: 40, w: 0.5, h: 14 };
+  const hit = expandHitRect(visual, 9);
+  assert.equal(hitTestRects(203, 47, [hit]), 0, '3px right of the pip still hits');
+  assert.equal(hitTestRects(197, 47, [hit]), 0, '3px left of the pip still hits');
+  assert.equal(hitTestRects(206, 47, [hit]), -1, 'outside the widened target misses');
+});
+
+test('distSqToSegment: interior projection and endpoint clamping', () => {
+  assert.equal(distSqToSegment(5, 5, 0, 0, 10, 0), 25);
+  assert.equal(distSqToSegment(-3, 4, 0, 0, 10, 0), 25); // clamps to endpoint a
+  assert.equal(distSqToSegment(13, 4, 0, 0, 10, 0), 25); // clamps to endpoint b
+  assert.equal(distSqToSegment(4, 4, 4, 4, 4, 4), 0); // degenerate segment
+});
+
+test('hitTestPolyline: within tolerance of any segment', () => {
+  const pts = [
+    { x: 0, y: 0 },
+    { x: 10, y: 0 },
+    { x: 10, y: 10 },
+  ];
+  assert.equal(hitTestPolyline(5, 2, pts, 3), true);
+  assert.equal(hitTestPolyline(12, 5, pts, 3), true);
+  assert.equal(hitTestPolyline(5, 5, pts, 3), false);
+});
+
+// -- connectorRoute ----------------------------------------------------------------
+
+test('connectorRoute: straight 2-point segment when rows align going forward', () => {
+  const from: HitRect = { x: 0, y: 10, w: 20, h: 10 };
+  const to: HitRect = { x: 50, y: 10, w: 20, h: 10 };
+  assert.deepEqual(connectorRoute(from, to), [
+    { x: 20, y: 15 },
+    { x: 50, y: 15 },
+  ]);
+});
+
+test('connectorRoute: forward S-curve — exact endpoints, monotonic y, mid crossing', () => {
+  const from: HitRect = { x: 0, y: 0, w: 20, h: 10 };
+  const to: HitRect = { x: 60, y: 40, w: 20, h: 10 };
+  const pts = connectorRoute(from, to, 24);
+  assert.equal(pts.length, 25);
+  assert.deepEqual(pts[0], { x: 20, y: 5 });
+  assert.deepEqual(pts[pts.length - 1], { x: 60, y: 45 });
+  for (let i = 1; i < pts.length; i++) {
+    assert.ok(pts[i].y >= pts[i - 1].y - 1e-9, 'y descends monotonically toward the target');
+  }
+  // The horizontal-handle cubic crosses the vertical midpoint at t = 0.5.
+  assert.ok(Math.abs(pts[12].y - 25) < 1e-9);
+});
+
+test('connectorRoute: backward target loops out of the source and into the target', () => {
+  const from: HitRect = { x: 100, y: 0, w: 40, h: 10 }; // ends at 140
+  const to: HitRect = { x: 20, y: 40, w: 30, h: 10 }; // starts left of that
+  const pts = connectorRoute(from, to, 32);
+  assert.deepEqual(pts[0], { x: 140, y: 5 });
+  assert.deepEqual(pts[pts.length - 1], { x: 20, y: 45 });
+  // Leaves the source rightward and enters the target leftward.
+  assert.ok(pts[1].x > 140, 'exits forward');
+  assert.ok(pts[pts.length - 2].x < 20, 'enters backward');
+  // Stays within the control-handle envelope.
+  const c = 90;
+  for (const p of pts) {
+    assert.ok(p.x >= 20 - c - 1e-9 && p.x <= 140 + c + 1e-9);
+    assert.ok(p.y >= 5 - 1e-9 && p.y <= 45 + 1e-9);
+  }
+});
+
+// -- Category hue ------------------------------------------------------------------
+
+test('hashString: stable published values (FNV-1a)', () => {
+  assert.equal(hashString(''), 0x811c9dc5);
+  assert.equal(hashString('a'), 0xe40c292c);
+  assert.equal(hashString('foobar'), 0xbf9cf968);
+});
+
+test('categoryHue: deterministic, in [0, 360)', () => {
+  const names = ['build', 'deploy', 'test', 'lint', 'release', 'db', 'cache', 'api'];
+  for (const n of names) {
+    const h = categoryHue(n);
+    assert.equal(h, categoryHue(n), `stable for ${n}`);
+    assert.ok(h >= 0 && h < 360 && Number.isInteger(h), `hue ${h} valid for ${n}`);
+  }
+});
+
+test('categoryHue: stable published values (a color must never drift across sessions)', () => {
+  // Regression-pinned: if any of these move, every consumer's colors change.
+  assert.deepEqual(
+    ['build', 'deploy', 'test', 'lint', 'release', 'db'].map(categoryHue),
+    [64, 89, 260, 71, 305, 279],
+  );
+});
+
+test('categoryHue: hues spread roughly uniformly over many category names', () => {
+  const sectors = new Array<number>(8).fill(0);
+  for (let i = 0; i < 320; i++) sectors[Math.floor(categoryHue(`category-${i}`) / 45)]++;
+  for (let s = 0; s < 8; s++) {
+    assert.ok(sectors[s] >= 20, `sector ${s} underpopulated (${sectors[s]}/320)`);
+  }
+});
+
+test('categoryJitter: deterministic, bounded tone offsets', () => {
+  for (const n of ['build', 'deploy', 'a', '']) {
+    const j = categoryJitter(n);
+    assert.deepEqual(j, categoryJitter(n), `stable for '${n}'`);
+    assert.ok(Math.abs(j.dl) <= 0.05, `|dl| bounded for '${n}'`);
+    assert.ok(Math.abs(j.dc) <= 0.02, `|dc| bounded for '${n}'`);
+  }
+  // The near-hue pair from the fixture set separates by tone instead.
+  const a = categoryJitter('deploy');
+  const b = categoryJitter('lint');
+  assert.ok(Math.abs(a.dl - b.dl) > 0.01, 'nearby hues get distinct lightness');
+});
+
+test('categoryColor: oklch and hsl forms, with alpha', () => {
+  assert.equal(categoryColor(210), 'oklch(0.62 0.11 210)');
+  assert.equal(categoryColor(210, { alpha: 0.5 }), 'oklch(0.62 0.11 210 / 0.5)');
+  assert.equal(categoryColor(210, { lightness: 0.7, chroma: 0.2 }), 'oklch(0.7 0.2 210)');
+  assert.equal(categoryColor(120, { mode: 'hsl' }), 'hsl(120, 34%, 55%)');
+  assert.equal(categoryColor(120, { mode: 'hsl', alpha: 0.25 }), 'hsla(120, 34%, 55%, 0.25)');
+});
+
+test('DEFAULT_STYLES: the required built-in treatments exist and alias', () => {
+  assert.deepEqual(DEFAULT_STYLES.failed, DEFAULT_STYLES.emphasis);
+  assert.deepEqual(DEFAULT_STYLES.queued, DEFAULT_STYLES.dim);
+  assert.deepEqual(DEFAULT_STYLES.waiting, DEFAULT_STYLES.hatch);
+  assert.equal(DEFAULT_STYLES.failed.glyph, 'bang');
+  assert.equal(DEFAULT_STYLES.failed.border?.emphasis, true);
+  assert.ok((DEFAULT_STYLES.failed.border?.width ?? 0) >= 2);
+  assert.ok((DEFAULT_STYLES.dim.alphaScale ?? 1) < 1);
+  assert.equal(DEFAULT_STYLES.hatch.pattern, 'hatch');
+  assert.equal(DEFAULT_STYLES.outline.pattern, 'outline');
+});
+
+// -- Coverage ----------------------------------------------------------------------
+
+test('mergeRanges: merges overlaps and touches, drops empties, sorts', () => {
+  const merged = mergeRanges([
+    { start: 50, end: 60 },
+    { start: 0, end: 10 },
+    { start: 8, end: 20 },
+    { start: 20, end: 30 },
+    { start: 99, end: 99 },
+  ]);
+  assert.deepEqual(merged, [
+    { start: 0, end: 30 },
+    { start: 50, end: 60 },
+  ]);
+});
+
+test('subtractRanges: gaps of a span vs a cover list', () => {
+  const covers: TimeRange[] = [
+    { start: 10, end: 20 },
+    { start: 30, end: 40 },
+  ];
+  assert.deepEqual(subtractRanges({ start: 0, end: 50 }, covers), [
+    { start: 0, end: 10 },
+    { start: 20, end: 30 },
+    { start: 40, end: 50 },
+  ]);
+  assert.deepEqual(subtractRanges({ start: 12, end: 18 }, covers), []);
+  assert.deepEqual(subtractRanges({ start: 15, end: 35 }, covers), [{ start: 20, end: 30 }]);
+});
+
+test('coverage: requests the uncovered past, widened to the min chunk', () => {
+  const c = new CoverageTracker({ minChunkMs: 1_000 });
+  c.addCovered(10_000, 20_000);
+  const req = c.nextRequest({ start: 9_700, end: 15_000 }, 0);
+  assert.ok(req, 'a request is issued');
+  assert.equal(req.end, 10_000);
+  assert.equal(req.start, 9_000); // 300ms gap widened to the 1s chunk
+});
+
+test('coverage: in-flight requests dedupe; settling covers and re-enables', () => {
+  const c = new CoverageTracker({ minChunkMs: 1_000 });
+  c.addCovered(10_000, 20_000);
+  const view: TimeView = { start: 5_000, end: 15_000 };
+  const req = c.nextRequest(view, 0);
+  assert.ok(req);
+  assert.equal(c.nextRequest(view, 0), null, 'no second request while one is in flight');
+  assert.deepEqual(c.pending(), req);
+  c.settle(req, { ok: true });
+  assert.equal(c.pending(), null);
+  assert.equal(c.nextRequest(view, 0), null, 'fully covered → no more requests');
+  assert.deepEqual(c.uncoveredIn({ start: 5_000, end: 15_000 }), []);
+  const wider: TimeView = { start: 2_000, end: 15_000 };
+  const req2 = c.nextRequest(wider, 0);
+  assert.ok(req2, 'scrolling further back requests the newly exposed gap');
+  assert.equal(req2.end, req.start);
+  assert.equal(req2.start, 2_000);
+});
+
+test('coverage: a fully covered viewport issues no request', () => {
+  const c = new CoverageTracker();
+  c.addCovered(0, 100_000);
+  assert.equal(c.nextRequest({ start: 10_000, end: 90_000 }, 0), null);
+});
+
+test('coverage: rejection backs off, then retries, with exponential growth', () => {
+  const c = new CoverageTracker({ minChunkMs: 1_000, backoffMs: 2_000, maxBackoffMs: 5_000 });
+  c.addCovered(10_000, 20_000);
+  const view: TimeView = { start: 0, end: 15_000 };
+  const r1 = c.nextRequest(view, 0);
+  assert.ok(r1);
+  c.settle(r1, { ok: false }, 1_000);
+  assert.equal(c.nextRequest(view, 2_000), null, 'still backing off');
+  const r2 = c.nextRequest(view, 3_000);
+  assert.ok(r2, 'retries after the backoff');
+  c.settle(r2, { ok: false }, 3_000);
+  assert.equal(c.nextRequest(view, 6_000), null, 'second backoff doubled (4s)');
+  const r3 = c.nextRequest(view, 7_100);
+  assert.ok(r3);
+  c.settle(r3, { ok: true });
+  const r4 = c.nextRequest({ start: -5_000, end: 1_000 }, 7_200);
+  assert.ok(r4, 'success resets the backoff immediately');
+});
+
+test('coverage: exhausted pins the history boundary; nothing below is requested', () => {
+  const c = new CoverageTracker({ minChunkMs: 1_000 });
+  c.addCovered(10_000, 20_000);
+  const req = c.nextRequest({ start: 4_000, end: 15_000 }, 0);
+  assert.ok(req);
+  c.settle(req, { ok: true, exhausted: true });
+  assert.equal(c.exhaustedBefore, req.start);
+  assert.equal(c.nextRequest({ start: 0, end: 15_000 }, 10), null, 'no requests below the boundary');
+  // uncoveredIn clips at the boundary too: nothing "loading" before history.
+  assert.deepEqual(c.uncoveredIn({ start: 0, end: 15_000 }), []);
+});
+
+test('coverage: settle with a stale/unknown range is a no-op', () => {
+  const c = new CoverageTracker({ minChunkMs: 1_000 });
+  c.addCovered(10_000, 20_000);
+  const req = c.nextRequest({ start: 0, end: 15_000 }, 0);
+  assert.ok(req);
+  c.settle({ start: 1, end: 2 }, { ok: true });
+  assert.deepEqual(c.pending(), req, 'the real in-flight request survives');
+});

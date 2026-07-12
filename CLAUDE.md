@@ -34,8 +34,17 @@ src/
 │   │                        autoRange + 1-2-5 niceTicks, min-max binning,
 │   │                        value formatting
 │   ├── perf-graph-math.test.ts ← colocated node:test tests for the math
-│   └── perf-graph.ts      ← <perf-graph> custom element (canvas-rendered
-│                            stackable perf HUD; re-exports perf-graph-math)
+│   ├── perf-graph.ts      ← <perf-graph> custom element (canvas-rendered
+│   │                        stackable perf HUD; re-exports perf-graph-math)
+│   ├── timeline-view-math.ts ← pure timeline math: time scales + anchored
+│   │                        zoom, time tick ladder, sub-track packing,
+│   │                        label fit, hit tests, category hues,
+│   │                        CoverageTracker (async history)
+│   ├── timeline-view-math.test.ts ← colocated node:test tests for the math
+│   ├── timeline-view.ts   ← <timeline-view> custom element (canvas swimlane
+│   │                        timeline; re-exports timeline-view-math)
+│   └── timeline-view.css  ← its shadow-DOM styles (text import, adopted
+│                            constructable stylesheet)
 ├── webgpu/
 │   ├── llms.txt           ← docs for webgpu modules
 │   ├── hdr-loader.ts
@@ -82,6 +91,7 @@ package.json
 tsconfig.json              ← editor/IDE only (ts0 generates its own for the build)
 wgsl.d.ts                  ← ambient *.wgsl decl + @webgpu/types reference
 glsl.d.ts                  ← ambient *.glsl decl (text imports, mirrors wgsl.d.ts)
+css.d.ts                   ← ambient *.css decl (text imports, mirrors glsl.d.ts)
 ```
 
 Modules are organized by domain (`auto-refresh/`, `editor/`, `math/`, `ui/`, `webgpu/`, `webgl2/`). The deployed URL mirrors the `src/` structure without the `src/` prefix: `src/webgpu/sky.ts` → `https://…/webgpu/sky.js`.
@@ -93,7 +103,7 @@ pnpm install
 pnpm build      # ts0 build (type-check + compile src/ -> dist/) + assemble dist/llms.txt
 ```
 
-The build is [ts0](https://github.com/wow-look-at-my/ts0)'s **js library target**, selected because `ts0.json`'s `entry` is the `src/` *directory*. ts0 type-checks (`tsc --noEmit`) and then compiles every `.ts` under `src/` to a parallel `.js` under `dist/`, preserving structure (`src/webgpu/sky.ts` → `dist/webgpu/sky.js`). Each file is its own esbuild entry point. Code shared between modules (e.g. `vec3`, imported by `mat4`) is deduplicated into a `dist/chunk-*.js` and imported — never copied into each output; non-shared local imports and `.wgsl`/`.glsl` shaders stay inlined. A consumer still imports a single URL — the browser fetches any shared chunk transitively. Shaders are imported as text via the `loaders: { ".wgsl": "text", ".glsl": "text" }` field in `ts0.json`.
+The build is [ts0](https://github.com/wow-look-at-my/ts0)'s **js library target**, selected because `ts0.json`'s `entry` is the `src/` *directory*. ts0 type-checks (`tsc --noEmit`) and then compiles every `.ts` under `src/` to a parallel `.js` under `dist/`, preserving structure (`src/webgpu/sky.ts` → `dist/webgpu/sky.js`). Each file is its own esbuild entry point. Code shared between modules (e.g. `vec3`, imported by `mat4`) is deduplicated into a `dist/chunk-*.js` and imported — never copied into each output; non-shared local imports and `.wgsl`/`.glsl` shaders stay inlined. A consumer still imports a single URL — the browser fetches any shared chunk transitively. Shaders — and component stylesheets — are imported as text via the `loaders: { ".wgsl": "text", ".glsl": "text", ".css": "text" }` field in `ts0.json` (ambient decls in `wgsl.d.ts` / `glsl.d.ts` / `css.d.ts`).
 
 `pnpm build` then runs `scripts/build-llms.mjs`, which combines `llms-header.txt` + all `src/**/llms.txt` files into `dist/llms.txt`.
 
@@ -116,7 +126,7 @@ Conventions:
 - Each test file uses `import { test } from 'node:test'` + `import assert from 'node:assert/strict'`, imports the **source** module directly with the `.ts` extension (e.g. `import { … } from './mat4.ts'`), and uses `import type { … }` for type-only symbols — Node's strip-types loader elides `import type` but would fail to import a type as a value at runtime.
 - Source modules import sibling modules with the `.ts` extension on **value** imports (e.g. `import { lookAt } from '../math/mat4.ts'`) and `import type` for type-only ones. Both esbuild (the build) and Node's runtime ESM resolver accept this; an extensionless **value** import resolves under esbuild but NOT under `node --test`, so keep the extension.
 - Pure/algorithmic modules are unit-tested here; several tests are ports of the proven `smoke.mjs` oracles from the `scratch` repo (`sdf` from distance-field-shadows, `gaussian-kernel` from local-contrast).
-- **DOM/fetch/GPU-bound modules are NOT unit-tested under node** — `webgpu/shaders.ts`, `webgpu/canvas.ts`, `webgpu/context.ts`, `webgpu/buffer.ts`, `webgpu/sky.ts`, `webgpu/mip-generator.ts`, `webgpu/env-prefilter.ts`, `webgpu/hdr-loader.ts`, `webgl2/video-texture.ts`, `webgl2/fullscreen.ts` (its `.glsl` import also only resolves under the build's text loader, not `node --test`), `editor/code-editor.ts`, and `auto-refresh/` need a real browser/GPU, so they're left to manual/integration testing. Modules mixing pure + bound code are split: `webgpu/camera.ts` tests `orbitEye`/`dirFromAzEl`/`applyLookDrag` but not the DOM-bound controllers; `webgpu/fly-camera.ts` tests `flyMoveDelta`/`dollyDelta` but not `createFlyController`; `webgl2/program.ts` tests `annotateShaderLog` and `injectChunk`; `webgl2/mesh.ts` tests `chooseIndexArray`; `webgl2/fbo.ts` tests `makePingPong` but not the GL-bound `createFloatFbo`/`createPingPong`; `webgpu/scan.ts` splits its pure half into `webgpu/scan-plan.ts` (planScan level math, tested incl. a plan-driven JS emulation of the WGSL) because scan.ts's own `.wgsl` import cannot load under node — the GPU wrapper (`createScan`) is covered by consumer browser harnesses; `ui/perf-graph.ts` is DOM/canvas-bound (the `<perf-graph>` element), so its logic lives in `ui/perf-graph-math.ts` (ring buffer / stats / range / ticks / binning / formatting), which is its fully node-tested pure half.
+- **DOM/fetch/GPU-bound modules are NOT unit-tested under node** — `webgpu/shaders.ts`, `webgpu/canvas.ts`, `webgpu/context.ts`, `webgpu/buffer.ts`, `webgpu/sky.ts`, `webgpu/mip-generator.ts`, `webgpu/env-prefilter.ts`, `webgpu/hdr-loader.ts`, `webgl2/video-texture.ts`, `webgl2/fullscreen.ts` (its `.glsl` import also only resolves under the build's text loader, not `node --test`), `editor/code-editor.ts`, and `auto-refresh/` need a real browser/GPU, so they're left to manual/integration testing. Modules mixing pure + bound code are split: `webgpu/camera.ts` tests `orbitEye`/`dirFromAzEl`/`applyLookDrag` but not the DOM-bound controllers; `webgpu/fly-camera.ts` tests `flyMoveDelta`/`dollyDelta` but not `createFlyController`; `webgl2/program.ts` tests `annotateShaderLog` and `injectChunk`; `webgl2/mesh.ts` tests `chooseIndexArray`; `webgl2/fbo.ts` tests `makePingPong` but not the GL-bound `createFloatFbo`/`createPingPong`; `webgpu/scan.ts` splits its pure half into `webgpu/scan-plan.ts` (planScan level math, tested incl. a plan-driven JS emulation of the WGSL) because scan.ts's own `.wgsl` import cannot load under node — the GPU wrapper (`createScan`) is covered by consumer browser harnesses; `ui/perf-graph.ts` is DOM/canvas-bound (the `<perf-graph>` element), so its logic lives in `ui/perf-graph-math.ts` (ring buffer / stats / range / ticks / binning / formatting), which is its fully node-tested pure half; `ui/timeline-view.ts` (the `<timeline-view>` element — its `.css` text import also only resolves under the build's loader) splits its logic into `ui/timeline-view-math.ts` (scales / zoom / ticks / packing / label fit / hit tests / hues / coverage) the same way.
 
 ## Deploy
 

@@ -33,6 +33,8 @@ import * as mat4 from 'https://wow-look-at-my.github.io/js-snippets/math/mat4.js
 |--------|-------------|
 | `ui/perf-graph.js` | `<perf-graph>` — compact, stackable, canvas-rendered performance graph custom element. Push-based sampling, label/current/avg/min/max readout drawn as canvas text, autoscale or fixed range with nice gridlines, dashed budget guide line, min-max downsampling when samples outnumber pixels, `--perf-graph-*` CSS-custom-property theming. Re-exports `perf-graph-math`. |
 | `ui/perf-graph-math.js` | The graph's pure math: `SampleRing` float32 ring buffer, `computeStats`, `autoRange` / `niceStep` / `niceTicks`, `binMinMax`, `formatValue`. DOM-free, allocation-free hot paths. |
+| `ui/timeline-view.js` | `<timeline-view>` — canvas-rendered realtime swimlane timeline custom element. Labeled lanes of interval bars on a shared time axis with sub-track packing for overlaps; stable category → hue coloring plus a state/kind style map (emphasis, dim, hatch, stipple, outline); instant diamond pips for zero-width intervals; phase segments within bars; connectors and time markers; follow-now with a jump-to-live pill; trackpad-first pan/zoom (anchored ctrl+wheel, pinch, drag, keyboard); async history via a `loadRange` callback with visible uncovered regions and an end-of-history boundary; built-in tooltip; `--timeline-*` theming. Re-exports `timeline-view-math`. |
+| `ui/timeline-view-math.js` | The timeline's pure math: time↔px scales and anchor-preserving zoom, wheel normalization, the time tick ladder + formatters, `packTracks` / `layoutLanes`, `fitText` and instant-width thresholds, hit testing and connector routing, `categoryHue` / `categoryColor` hashing, `CoverageTracker` for async history. DOM-free, node-tested. |
 
 ### WebGPU
 

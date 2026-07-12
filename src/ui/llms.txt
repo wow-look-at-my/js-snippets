@@ -121,3 +121,214 @@ Exports:
     number.
 
 Types: PerfStats, AutoRangeOptions, DisplayRange
+
+### ui/timeline-view.js
+Canvas-rendered realtime swimlane timeline as a <timeline-view> custom
+element. A shared horizontal time axis across the full width; stacked
+labeled lanes (left gutter, ellipsized labels, full text via tooltip),
+each a band of interval bars (left = start, right = end). A lane grows
+extra sub-tracks when its intervals overlap (greedy first-fit packing,
+stable under updates). Everything is data — lanes, intervals, optional
+connectors between intervals, vertical time markers; dynamic lane count
+(1-50+), smooth with thousands of in-window intervals (viewport culling,
+dirty-flag rAF drawing, DPR-aware backing store capped at 2). Not a Gantt
+(many bars per row), not a flame chart (no nesting).
+
+Color encodes CATEGORY: interval.category (default lane.group, then
+laneId) hashes to a stable hue — same category = same color, forever —
+with a small deterministic tone offset so near hues still separate.
+Rendering STYLE encodes state/phase via a named style map: interval.state
+and segment.kind look up a treatment {pattern solid|hatch|stipple|outline,
+alphaScale, saturationScale, lightnessScale, border {width, dash,
+emphasis}, glyph none|bang|dot}. Built-ins: '' solid; 'emphasis'/'failed'
+unmissable (2px emphasis border + corner bang glyph + stipple — hue
+untouched); 'dim'/'queued' translucent + desaturated; 'hatch'/'waiting'
+45-degree stripes; 'outline' hollow. Ongoing intervals (end == null)
+render to the live now edge with a subtly pulsing leading edge (static
+under prefers-reduced-motion). Zero/near-zero-width intervals (under ~3px)
+render as instant diamond pips at their start time — clearly distinct from
+bars, still category-colored, state-styled (a failed instant gets the
+thick emphasis border + stem), hoverable and clickable via a widened hit
+target, and packed like everything else so coincident instants stack
+instead of vanishing. Bar labels truncate with an ellipsis and are
+suppressed below fit width — they never spill into neighboring bars — and
+stick to the plot edge while a bar's start is scrolled off-screen.
+
+Importing the module auto-registers <timeline-view> (unless the tag is
+taken).
+
+  import '.../ui/timeline-view.js';
+
+  <timeline-view id="tl" style="height: 400px"></timeline-view>
+
+  const tl = document.getElementById('tl');
+  const now = Date.now();
+  tl.setData({
+    lanes: [
+      { id: 'build-queue', label: 'build queue' },
+      { id: 'deploy-queue', label: 'deploy queue', group: 'deploys' },
+    ],
+    intervals: [
+      { id: 'j1', laneId: 'build-queue', start: now - 300_000, end: now - 120_000,
+        label: 'job #17', category: 'build',
+        segments: [{ start: now - 300_000, end: now - 240_000, kind: 'queued' }] },
+      { id: 'j2', laneId: 'build-queue', start: now - 100_000, end: now - 100_000,
+        label: 'skipped', category: 'build', state: 'dim' },     // instant pip
+      { id: 'j3', laneId: 'deploy-queue', start: now - 90_000, end: null,
+        label: 'deploy #4', category: 'deploy' },                 // ongoing
+      { id: 'j4', laneId: 'deploy-queue', start: now - 200_000, end: now - 150_000,
+        label: 'deploy #3', category: 'deploy', state: 'failed' },
+    ],
+    connectors: [{ fromIntervalId: 'j1', toIntervalId: 'j3', label: 'triggers' }],
+    markers: [{ time: now - 150_000, label: 'config change', kind: 'emphasis' }],
+    coverage: { start: now - 300_000, end: now },
+  });
+  tl.loadRange = async (start, end) => {
+    const rows = await fetch(`/api/history?from=${start}&to=${end}`).then(r => r.json());
+    tl.mergeData({ intervals: rows });
+    return { exhausted: rows.length === 0 };
+  };
+  tl.addEventListener('intervalclick', (e) => showDetails(e.detail.interval));
+
+Element <timeline-view> — data API (properties/methods, never attributes):
+  setData({lanes?, intervals?, connectors?, markers?, coverage?})
+    Replace all data. coverage: {start, end} declares the time range the
+    supplied intervals fully cover (async-history bookkeeping).
+  mergeData(data)   — merge into the current set: lanes/intervals dedupe by
+    id (intervals replace in place), connectors by (from, to, kind),
+    markers by (time, label, kind). How loadRange results are supplied.
+  setLanes(lanes) / setIntervals(intervals) / setConnectors(connectors) /
+  setMarkers(markers) — replace one slice of the data.
+  clear()           — drop everything.
+  styles            — StyleMap spread over the built-ins (see above).
+  colorFor          — (interval, lane) => cssColor | null override.
+  tooltipFor        — (hit: TimelineHit) => string | Node | null; null/
+                      undefined hides. Default tooltip shows label,
+                      category, state, start/end, duration, segment
+                      durations. Node content is appended, never innerHTML.
+  loadRange         — (start, end) => Promise<{exhausted?: boolean} | void>.
+                      Invoked (one request at a time, min-chunk widened,
+                      backoff on rejection) when the viewport reaches
+                      uncovered past. Uncovered regions draw hatched (with
+                      'loading…' while in flight) — visually distinct from
+                      covered-but-empty; {exhausted: true} pins a dashed
+                      'history ends here' boundary with a darkened void
+                      before it and stops further requests.
+  nowProvider       — () => msSinceEpoch override for replay/testing.
+
+Interval shape: {id, laneId, start, end?, label?, category?, state?,
+segments?, data?}. start/end are ms since epoch or Date; end null/
+undefined = ongoing. segments: [{start, end?, kind}] phases WITHIN the
+bar, each styled via kind (e.g. a dim leading 'queued' phase, a hatched
+'waiting' span); end null = to the bar's end. data is opaque and echoed
+back in events/tooltips. Connector: {fromIntervalId, toIntervalId, kind?,
+label?} — a muted S-curve between two bars, endpoint-dotted, highlighted
+on hover; if one endpoint id is missing from the data a dashed stub +
+open circle marks it and the tooltip says which side isn't loaded.
+Marker: {time, label?, kind?} — dashed vertical line; kind 'emphasis'
+renders in the emphasis color.
+
+Viewport / follow:
+  viewport          — getter {start, end} (ms).
+  setViewport(start, end) — explicit window (span clamped ~2s..~7d).
+  followNow         — boolean (default true): right edge pinned to live
+                      now. Panning/zooming away disengages it; ending a
+                      gesture at the right edge magnetically re-engages.
+  jumpToNow()       — re-engage follow, keeping the span.
+  Events: 'viewportchange' {start, end, followNow} on user-driven changes,
+  'intervalclick' {interval, lane}, 'intervalhover' {interval|null,
+  lane|null}, 'connectorclick' {connector}, 'laneclick' {lane} (a click on
+  a gutter label — lets consumers make lanes navigable).
+  A built-in jump-to-live pill appears while not following (hide it with
+  the no-live-pill attribute).
+
+Attributes (scalar toggles only): no-live-pill, history-end-text
+(boundary label, default 'history ends here'), empty-text (empty-state
+hint).
+
+Interaction: plain wheel / two-finger scroll pans (deltaX = time; deltaY
+scrolls lanes when they overflow, else pans time); ctrl/meta+wheel zooms
+anchored under the cursor (pixel-precise trackpad deltas apply 1:1;
+discrete wheel steps glide ~130ms); shift+wheel pans time; pointer drag
+pans both axes (pointer capture); two-pointer pinch zooms; keyboard when
+focused (tabindex 0): arrows pan (shift = faster), +/- zoom, End = jump
+to now, Home = jump to the earliest known data. Wheel events are consumed
+within the canvas only.
+
+CSS custom properties (dark Scratch Proto defaults; see THEME_DEFAULTS):
+  --timeline-bg            — plot background          (#0d0f14)
+  --timeline-fg            — bar labels / primary     (#e8ecf4)
+  --timeline-muted         — axis/lane labels         (#6b7280)
+  --timeline-grid          — vertical time gridlines  (rgba(200,205,216,0.07))
+  --timeline-hairline      — lane separators          (rgba(200,205,216,0.10))
+  --timeline-row-tint      — alternating lane tint    (rgba(255,255,255,0.015))
+  --timeline-now           — now line + live pill     (#00e47a)
+  --timeline-emphasis      — failed/emphasis accents  (#ff5c5c)
+  --timeline-font          — canvas + chrome font     (JetBrains Mono stack)
+  --timeline-font-size     — base font size px        (11)
+  --timeline-cat-lightness — category oklch L 0..1    (0.62)
+  --timeline-cat-chroma    — category oklch chroma    (0.11)
+  --timeline-track-height  — sub-track height px      (18, clamped 10..40)
+  --timeline-gutter-width  — lane gutter px           (0 = auto-size)
+  --timeline-tooltip-bg / --timeline-tooltip-fg — tooltip chrome.
+  Category colors use oklch when supported (hsl fallback). refreshTheme()
+  re-reads the properties after retheming.
+
+Exports:
+  class TimelineViewElement extends HTMLElement
+  THEME_DEFAULTS — default theme values keyed like the CSS properties
+  Types: TimelineData, TimelineHit, LoadRangeFn, TooltipFn, ColorFn
+  Plus everything re-exported from ui/timeline-view-math.js.
+
+### ui/timeline-view-math.js
+The timeline's pure math. No DOM or browser APIs (unit-tested under
+node); ui/timeline-view.js is the canvas-bound half that consumes it.
+
+Exports:
+  Data types: TimelineLane {id, label, group?}, TimelineInterval,
+    TimelineSegment {start, end?, kind}, TimelineConnector,
+    TimelineMarker {time, label?, kind?}, TimeView {start, end},
+    TimeRange {start, end}, IntervalStyle, StyleMap, StylePattern,
+    PackItem, LaneMetrics, LaneLayout, HitRect, CategoryColorOptions,
+    CoverageOptions.
+  toMs(t: number | Date) → number
+  Scale/zoom: timeToX(t, view, width), xToTime(x, view, width),
+    panView(view, dt), zoomView(view, anchor, factor, minSpan?, maxSpan?)
+    (anchor-preserving, span clamped; MIN_SPAN_MS = 2s, MAX_SPAN_MS = 7d),
+    wheelDeltaToPixels(delta, deltaMode, lineHeight?, pageHeight?)
+    (deltaMode 0/1/2 → px), zoomFactorForWheel(deltaPx) (exponential,
+    composable; ZOOM_PX_PER_DOUBLE px per doubling).
+  Time ticks: TIME_TICK_STEPS (the 1/2/5/10/15/30 ladder ms→s→min→h→d),
+    timeTickStep(span, maxTicks), timeTicks(view, maxTicks, tzOffsetMs?)
+    (aligned to round local times; pass -new Date().getTimezoneOffset() *
+    60000), formatTimeTick(t, step, tzOffsetMs?) (granularity follows the
+    step; local-midnight ticks label as the date), formatTimeFull(t,
+    tzOffsetMs?, withMs?), formatDuration(ms).
+  Packing/layout: packTracks(items) → {tracks, trackCount} (greedy
+    first-fit; deterministic under re-ordering — sorted by (start, id)
+    internally, results index-aligned to the input; end null = ongoing
+    blocks its track; every item occupies >= PACK_MIN_MS so coincident
+    instants stack), layoutLanes(trackCounts, metrics) → {tops, heights,
+    totalHeight}, trackTop(track, metrics).
+  Labels/instants: fitText(text, availPx, charW, minChars?) (verbatim,
+    'abc…', or '' — never overflows), ELLIPSIS,
+    isInstantWidth(widthPx, threshold?) / INSTANT_THRESHOLD_PX (= 3px —
+    below it an interval renders as an instant pip).
+  Hit testing: expandHitRect(rect, minW) (widen instants' hit targets),
+    hitTestRects(x, y, rects) (topmost = last; -1 on miss),
+    distSqToSegment(px, py, ax, ay, bx, by), hitTestPolyline(px, py, pts,
+    tol), connectorRoute(from, to, samples?) (sampled cubic S-curve from
+    right-center to left-center; 2-point segment when aligned forward).
+  Category color: hashString(s) (FNV-1a 32-bit), categoryHue(s) (stable
+    0..359, golden-ratio spread), categoryJitter(s) (deterministic small
+    {dl, dc} tone offsets), categoryColor(hue, {mode 'oklch'|'hsl',
+    lightness?, chroma?, alpha?}) → CSS color.
+  Styles: DEFAULT_STYLES (the built-in StyleMap described above).
+  Coverage: mergeRanges(ranges), subtractRanges(span, covers), class
+    CoverageTracker({minChunkMs?, backoffMs?, maxBackoffMs?}) —
+    addCovered(start, end), coveredRanges(), pending(),
+    uncoveredIn(span), nextRequest(view, now) (returns the next range to
+    fetch and marks it in flight; one at a time, min-chunk widened, null
+    while covered/in-flight/backing-off/exhausted), settle(range, {ok,
+    exhausted?}, now?) (success covers + optionally pins exhaustedBefore;
+    failure arms exponential backoff), exhaustedBefore.
