@@ -245,6 +245,7 @@ export class TimelineViewElement extends HTMLElement {
 
   // -- Interaction state --
   private pointers = new Map<number, { x: number; y: number }>();
+  private lastMouse: { x: number; y: number; cx: number; cy: number } | null = null;
   private dragTotal = 0;
   private downHit: TimelineHit | null = null;
   private hover: TimelineHit | null = null;
@@ -654,6 +655,11 @@ export class TimelineViewElement extends HTMLElement {
       this.view = next;
     }
     if (wasFollowing !== this.following) this.syncChrome();
+    // The content moved under a resting cursor — keep hover/tooltip honest.
+    if (this.lastMouse && this.pointers.size === 0) {
+      const p = this.lastMouse;
+      this.setHover(this.hitAt(p.x, p.y), p.cx, p.cy);
+    }
     this.emitViewport();
     this.invalidate();
   }
@@ -1111,6 +1117,7 @@ export class TimelineViewElement extends HTMLElement {
   };
 
   private onPointerLeave = (): void => {
+    this.lastMouse = null;
     if (this.pointers.size === 0) this.setHover(null, 0, 0);
   };
 
@@ -1164,6 +1171,7 @@ export class TimelineViewElement extends HTMLElement {
   // -- Hover / tooltip -----------------------------------------------------------
 
   private updateHover(x: number, y: number, e: MouseEvent): void {
+    this.lastMouse = { x, y, cx: e.clientX, cy: e.clientY };
     const hit = this.hitAt(x, y);
     this.setHover(hit, e.clientX, e.clientY);
   }
@@ -1384,13 +1392,13 @@ export class TimelineViewElement extends HTMLElement {
       const lx = Math.min(w - half - 2, Math.max(gx + half + 2, x));
       ctx.fillText(label, lx, AXIS_H / 2 + 0.5);
     }
-    // Context date at the far left of the axis when no tick shows the date.
+    // Context date in the gutter corner when the ticks themselves are
+    // sub-day (a date-step axis already says the date on every tick).
     if (step < 86_400_000 && this.lanes.length > 0) {
       ctx.fillStyle = t.muted;
       ctx.textAlign = 'left';
-      const c = formatTimeTick(Math.ceil((this.view.start + tz) / 86_400_000) * 86_400_000 - tz, 86_400_000, tz);
-      const dateLabel = formatTimeFull(this.view.start, tz).slice(0, c.length);
-      ctx.fillText(dateLabel.split(' ').slice(0, 2).join(' '), 4, AXIS_H / 2 + 0.5);
+      const dateLabel = formatTimeFull(this.view.start, tz).split(' ').slice(0, 2).join(' ');
+      ctx.fillText(dateLabel, 4, AXIS_H / 2 + 0.5);
     }
     void now;
   }
@@ -1472,9 +1480,9 @@ export class TimelineViewElement extends HTMLElement {
     const ex = this.coverage.exhaustedBefore;
     if (ex !== null && ex >= this.view.start && ex <= this.view.end) {
       const x = snap(gx + timeToX(ex, this.view, plotW), this.dpr);
-      // The void before history: slightly darker than the plot bg.
+      // The void before history: clearly darker than the plot bg.
       if (x > gx) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
         ctx.fillRect(gx, AXIS_H, x - gx, h - AXIS_H);
       }
       ctx.strokeStyle = t.muted;
@@ -1624,13 +1632,15 @@ export class TimelineViewElement extends HTMLElement {
       ctx.fill();
     }
 
-    // Label — never allowed to spill out of the bar.
+    // Label — never allowed to spill out of the bar; sticks to the plot's
+    // left edge while the bar's start is scrolled off-screen.
     const pad = 5;
     const glyphPad = style.glyph === 'bang' ? 8 : 0;
-    const label = fitText(n.label, bw - pad * 2 - glyphPad, this.charW);
+    const labelX = Math.max(x0, this.gutterW) + pad;
+    const label = fitText(n.label, x1 - labelX - pad - glyphPad, this.charW);
     if (label !== '') {
       ctx.fillStyle = style.labelColor;
-      ctx.fillText(label, x0 + pad, y + bh / 2 + 0.5);
+      ctx.fillText(label, labelX, y + bh / 2 + 0.5);
     }
 
     if (hovered) {

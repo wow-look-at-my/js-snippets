@@ -442,36 +442,37 @@ export function hitTestPolyline(px: number, py: number, pts: readonly { x: numbe
 }
 
 /**
- * Elbow route for a connector from the right-center of `from` to the
- * left-center of `to`: out `stub` px, across at the midpoint (or straight
- * when the rows align), into the target. When the target starts left of the
- * source end, the route jogs back at the vertical midpoint instead of
- * crossing through the bars.
+ * Route for a connector from the right-center of `from` to the left-center
+ * of `to`: a sampled cubic bezier with horizontal control handles, so the
+ * line leaves the source rightward and enters the target leftward — a
+ * gentle S-curve for forward targets, a readable loop-back for targets that
+ * start earlier. Aligned same-row forward targets get a plain 2-point
+ * segment. Returns `samples + 1` points (polyline: draw it, hit-test it
+ * with hitTestPolyline).
  */
-export function connectorRoute(from: HitRect, to: HitRect, stub = 8): { x: number; y: number }[] {
+export function connectorRoute(from: HitRect, to: HitRect, samples = 24): { x: number; y: number }[] {
   const x0 = from.x + from.w;
   const y0 = from.y + from.h / 2;
   const x1 = to.x;
   const y1 = to.y + to.h / 2;
-  if (Math.abs(y0 - y1) < 0.5) return [{ x: x0, y: y0 }, { x: x1, y: y1 }];
-  if (x1 >= x0 + stub * 2) {
-    const xm = (x0 + x1) / 2;
+  if (Math.abs(y0 - y1) < 0.5 && x1 >= x0) {
     return [
       { x: x0, y: y0 },
-      { x: xm, y: y0 },
-      { x: xm, y: y1 },
       { x: x1, y: y1 },
     ];
   }
-  const ym = (y0 + y1) / 2;
-  return [
-    { x: x0, y: y0 },
-    { x: x0 + stub, y: y0 },
-    { x: x0 + stub, y: ym },
-    { x: x1 - stub, y: ym },
-    { x: x1 - stub, y: y1 },
-    { x: x1, y: y1 },
-  ];
+  const c = Math.min(90, Math.max(24, Math.abs(x1 - x0) * 0.5, Math.abs(y1 - y0) * 0.35));
+  const pts: { x: number; y: number }[] = [];
+  const n = Math.max(2, Math.floor(samples));
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const u = 1 - t;
+    pts.push({
+      x: u * u * u * x0 + 3 * u * u * t * (x0 + c) + 3 * u * t * t * (x1 - c) + t * t * t * x1,
+      y: u * u * u * y0 + 3 * u * u * t * y0 + 3 * u * t * t * y1 + t * t * t * y1,
+    });
+  }
+  return pts;
 }
 
 // -- Category color -----------------------------------------------------------------

@@ -426,7 +426,7 @@ test('hitTestPolyline: within tolerance of any segment', () => {
 
 // -- connectorRoute ----------------------------------------------------------------
 
-test('connectorRoute: straight when rows align', () => {
+test('connectorRoute: straight 2-point segment when rows align going forward', () => {
   const from: HitRect = { x: 0, y: 10, w: 20, h: 10 };
   const to: HitRect = { x: 50, y: 10, w: 20, h: 10 };
   assert.deepEqual(connectorRoute(from, to), [
@@ -435,28 +435,35 @@ test('connectorRoute: straight when rows align', () => {
   ]);
 });
 
-test('connectorRoute: forward elbow crosses at the midpoint', () => {
+test('connectorRoute: forward S-curve — exact endpoints, monotonic y, mid crossing', () => {
   const from: HitRect = { x: 0, y: 0, w: 20, h: 10 };
   const to: HitRect = { x: 60, y: 40, w: 20, h: 10 };
-  const pts = connectorRoute(from, to);
-  assert.equal(pts.length, 4);
+  const pts = connectorRoute(from, to, 24);
+  assert.equal(pts.length, 25);
   assert.deepEqual(pts[0], { x: 20, y: 5 });
-  assert.deepEqual(pts[3], { x: 60, y: 45 });
-  assert.equal(pts[1].x, pts[2].x); // vertical mid-leg
-  assert.equal(pts[1].x, 40);
+  assert.deepEqual(pts[pts.length - 1], { x: 60, y: 45 });
+  for (let i = 1; i < pts.length; i++) {
+    assert.ok(pts[i].y >= pts[i - 1].y - 1e-9, 'y descends monotonically toward the target');
+  }
+  // The horizontal-handle cubic crosses the vertical midpoint at t = 0.5.
+  assert.ok(Math.abs(pts[12].y - 25) < 1e-9);
 });
 
-test('connectorRoute: backward target jogs around instead of crossing the bars', () => {
+test('connectorRoute: backward target loops out of the source and into the target', () => {
   const from: HitRect = { x: 100, y: 0, w: 40, h: 10 }; // ends at 140
   const to: HitRect = { x: 20, y: 40, w: 30, h: 10 }; // starts left of that
-  const pts = connectorRoute(from, to, 8);
-  assert.equal(pts.length, 6);
+  const pts = connectorRoute(from, to, 32);
   assert.deepEqual(pts[0], { x: 140, y: 5 });
   assert.deepEqual(pts[pts.length - 1], { x: 20, y: 45 });
-  // The route leaves forward, comes back at the vertical midpoint.
-  assert.equal(pts[1].x, 148);
-  assert.equal(pts[2].y, 25);
-  assert.equal(pts[3].y, 25);
+  // Leaves the source rightward and enters the target leftward.
+  assert.ok(pts[1].x > 140, 'exits forward');
+  assert.ok(pts[pts.length - 2].x < 20, 'enters backward');
+  // Stays within the control-handle envelope.
+  const c = 90;
+  for (const p of pts) {
+    assert.ok(p.x >= 20 - c - 1e-9 && p.x <= 140 + c + 1e-9);
+    assert.ok(p.y >= 5 - 1e-9 && p.y <= 45 + 1e-9);
+  }
 });
 
 // -- Category hue ------------------------------------------------------------------
