@@ -237,7 +237,8 @@ Viewport / follow:
   jumpToNow()       — re-engage follow, keeping the span.
   Events: 'viewportchange' {start, end, followNow} on user-driven changes,
   'intervalclick' {interval, lane}, 'intervalhover' {interval|null,
-  lane|null}, 'connectorclick' {connector}.
+  lane|null}, 'connectorclick' {connector}, 'laneclick' {lane} (a click on
+  a gutter label — lets consumers make lanes navigable).
   A built-in jump-to-live pill appears while not following (hide it with
   the no-live-pill attribute).
 

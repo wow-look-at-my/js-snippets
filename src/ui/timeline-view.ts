@@ -1111,6 +1111,10 @@ export class TimelineViewElement extends HTMLElement {
         this.dispatchEvent(new CustomEvent('intervalclick', { detail: { interval: hit.interval, lane: hit.lane } }));
       } else if (hit.type === 'connector') {
         this.dispatchEvent(new CustomEvent('connectorclick', { detail: { connector: hit.connector } }));
+      } else if (hit.type === 'lane') {
+        // A click on the gutter label — lets consumers make lanes navigable
+        // (e.g. a lane per CI hook linking to that hook's page).
+        this.dispatchEvent(new CustomEvent('laneclick', { detail: { lane: hit.lane } }));
       }
     }
     this.downHit = null;
@@ -1181,7 +1185,7 @@ export class TimelineViewElement extends HTMLElement {
     const nextId = hit?.type === 'interval' ? hit.interval.id : null;
     this.hoverIntervalId = nextId;
     this.hover = hit;
-    this.canvas.style.cursor = hit && hit.type !== 'lane' ? 'pointer' : '';
+    this.canvas.style.cursor = hit ? 'pointer' : '';
     if (nextId !== prevId) {
       this.dispatchEvent(
         new CustomEvent('intervalhover', {
