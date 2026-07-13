@@ -134,7 +134,26 @@ re-ordering and stable while the window slides over unchanged overlap); a
 historical parallelism burst stops padding its lane once it scrolls out
 of view, a lane with nothing visible collapses to one track, and height
 changes ease over ~150ms (snapped under prefers-reduced-motion;
-hit-testing tracks the animating layout). Everything is data — lanes,
+hit-testing tracks the animating layout). AUTO-FIT (default on; opt out
+with the no-auto-fit attribute): when the natural stack — every lane at
+--timeline-track-height — would overflow the host's height, whole lanes
+are demoted to the compact track height (--timeline-track-height-compact,
+default 4 CSS px; the canvas' DPR scaling supplies device pixels) one at
+a time, tallest (most parallel) lane first — ties demote the LOWER lane
+first, so top-of-chart lanes keep detail longest — until the stack fits
+or every lane is compact (only then does vertical lane scrolling engage,
+as before). Demotion is immediate; re-promotion needs ~10% height
+headroom (hysteresis — heights can't flap at the boundary); the demotion
+set re-derives from the visible window each pass (a parallelism burst
+scrolling away hands its demotion to the now-tallest lane,
+deterministically); and demotion/promotion rides the same ~150ms height
+tween. Compact slivers stay legible: bars keep the 2px minimum width and
+a border capped to the sliver, pips shrink but never below a 4px-tall
+diamond, in-bar labels are suppressed below fit height, and gutter labels
+degrade gracefully (full → smaller/faded → skipped below ~10px lane
+height, where the gutter tooltip still names the lane) without ever
+overlapping a neighbor. Read fitState / listen for 'fitchange' to observe
+the demotion set. Everything is data — lanes,
 intervals, optional connectors between intervals, vertical time markers;
 dynamic lane count (1-50+), smooth with thousands of in-window intervals
 (viewport culling, dirty-flag rAF drawing, DPR-aware backing store capped
@@ -244,6 +263,9 @@ Element <timeline-view> — data API (properties/methods, never attributes):
                       'history ends here' boundary with a darkened void
                       before it and stops further requests.
   nowProvider       — () => msSinceEpoch override for replay/testing.
+  fitState          — read-only {enabled: boolean, demoted: laneId[]}:
+                      the current auto-fit demotion set in display order
+                      (mirrors the latest 'fitchange' event).
 
 Interval shape: {id, laneId, start, end?, label?, category?, state?,
 segments?, data?}. start/end are ms since epoch or Date; end null/
@@ -259,24 +281,33 @@ renders in the emphasis color.
 
 Viewport / follow:
   viewport          — getter {start, end} (ms).
-  setViewport(start, end) — explicit window (span clamped ~2s..~7d).
+  setViewport(start, end) — explicit window (span clamped ~2s..~7d;
+                      hard-stops at now; engages follow only when it
+                      ends within the 2-device-px snap zone of now).
   followNow         — boolean (default true): right edge pinned to live
                       now. Any backward PAN (wheel, drag, arrow keys)
                       disengages immediately — even a tiny step, so
                       trackpad panning escapes the pin; zooming while
-                      pinned stays pinned, and panning forward to the
-                      right edge magnetically re-engages.
+                      pinned stays pinned. User-driven views HARD-STOP at
+                      now (every pan/zoom/pinch/keyboard/setViewport
+                      clamps the right edge there), and a gesture parking
+                      the right edge within 2 DEVICE pixels of that end
+                      stop re-engages follow — dragging to the stop
+                      re-docks reliably, while a view parked merely NEAR
+                      the edge (3+ device px) stays put.
   jumpToNow()       — re-engage follow, keeping the span.
   Events: 'viewportchange' {start, end, followNow} on user-driven changes,
   'intervalclick' {interval, lane}, 'intervalhover' {interval|null,
   lane|null}, 'connectorclick' {connector}, 'laneclick' {lane} (a click on
-  a gutter label — lets consumers make lanes navigable).
+  a gutter label — lets consumers make lanes navigable), 'fitchange'
+  {demoted: laneId[]} whenever auto-fit's demotion set changes.
   A built-in jump-to-live pill appears while not following (hide it with
   the no-live-pill attribute).
 
-Attributes (scalar toggles only): no-live-pill, history-end-text
-(boundary label, default 'history ends here'), empty-text (empty-state
-hint).
+Attributes (scalar toggles only): no-live-pill, no-auto-fit (disable
+compact-lane auto-fit — every lane keeps the full track height),
+history-end-text (boundary label, default 'history ends here'),
+empty-text (empty-state hint).
 
 Interaction: plain wheel / two-finger scroll pans (deltaX ALWAYS pans
 time; deltaY scrolls lanes when they overflow, else pans time; a diagonal
@@ -303,6 +334,9 @@ CSS custom properties (dark Scratch Proto defaults; see THEME_DEFAULTS):
   --timeline-cat-lightness — category oklch L 0..1    (0.62)
   --timeline-cat-chroma    — category oklch chroma    (0.11)
   --timeline-track-height  — sub-track height px      (18, clamped 10..40)
+  --timeline-track-height-compact — auto-fit demoted sub-track height px
+                             (4, clamped 2..track-height; CSS px — DPR
+                             scaling supplies device pixels)
   --timeline-gutter-width  — lane gutter px           (0 = auto-size)
   --timeline-tooltip-bg / --timeline-tooltip-fg — tooltip chrome.
   Category colors use oklch when supported (hsl fallback). refreshTheme()
@@ -335,10 +369,16 @@ Exports:
     routeWheel(WheelInput, lanesOverflow) → WheelRoute {zoomPx, panPx,
     laneScrollPx} (the gesture router: ctrl/meta = zoom, shift = time
     pan, else deltaX pans time + deltaY scrolls-or-pans; deltaMode
-    normalized), followAfterGesture(prevEnd, next, now, isPan) → boolean
-    (the follow rule: a backward pan always disengages; otherwise
-    magnetic within FOLLOW_SNAP_FRAC of now; FOLLOW_LEAD_FRAC is the
-    pinned lead), snapViewToDevicePixels(view, plotWidthCss, dpr) →
+    normalized), clampViewToNow(view, now) → TimeView (the hard right
+    end stop: a user view's end never passes now, span preserved),
+    followAfterGesture(wasFollowing, prevEnd, next, now, isPan,
+    msPerDevicePx) → boolean (the follow rule: a backward pan always
+    disengages; while already following anything else stays pinned —
+    zooming at the live edge keeps following; while not following,
+    re-engage only when the right edge lands within
+    FOLLOW_SNAP_DEVICE_PX (2) DEVICE pixels of the now end stop — pass
+    span / (plotWidthCss * dpr); FOLLOW_LEAD_FRAC is the pinned lead),
+    snapViewToDevicePixels(view, plotWidthCss, dpr) →
     TimeView (origin snapped to whole device pixels, span preserved —
     the single global rounding that makes scrolling translate the scene
     in integer device-pixel steps).
@@ -357,9 +397,23 @@ Exports:
     partial overlap counts, out-of-view items get track -1, trackCount
     >= 1 so an empty window collapses to one track; assignment is a pure
     function of the visible set, so sliding over unchanged overlap never
-    hops tracks), layoutLanes(trackCounts, metrics) → {tops, heights,
-    totalHeight} (fractional counts allowed — used for height tweens),
-    trackTop(track, metrics).
+    hops tracks), layoutLanes(trackCounts, metrics, trackHeights?) →
+    {tops, heights, totalHeight} (per-lane trackHeights override the
+    metrics' track height — compact lanes; fractional counts AND heights
+    allowed — used for height tweens), trackTop(track, metrics,
+    trackHeight?), laneHeight(trackCount, metrics, trackHeight?).
+  Auto-fit: demotionOrder(trackCounts) → laneIdx[] (demotion priority:
+    track count DESC, ties later-in-display-order first),
+    computeAutoFit(trackCounts, metrics, compactTrackHeight, availHeight,
+    prevDemotedCount?, hysteresisFrac?) → FitResult {demoted: boolean[],
+    count} (demote whole lanes to the compact track height, one at a
+    time in demotionOrder, until the stack fits availHeight or all are
+    compact; pure and deterministic; demotion is immediate, promotion
+    needs FIT_HYSTERESIS_FRAC (0.1) headroom — feed `count` back as
+    prevDemotedCount on the next evaluation; the demoted SET re-derives
+    from the CURRENT counts, so window slides hand demotion to the
+    now-tallest lane; compactTrackHeight clamps to the normal height),
+    FIT_HYSTERESIS_FRAC.
   Labels/instants: fitText(text, availPx, charW, minChars?) (verbatim,
     'abc…', or '' — never overflows), ELLIPSIS,
     isInstantWidth(widthPx, threshold?) / INSTANT_THRESHOLD_PX (= 3px —

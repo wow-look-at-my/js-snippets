@@ -1,14 +1,16 @@
 // Tests for the pure math half of <timeline-view> (ui/timeline-view-math.ts):
 // scales + anchor-preserving zoom, wheel normalization + gesture routing,
-// the follow-now engage/disengage rule, whole-device-pixel view snapping,
-// the time tick ladder and label granularity, sub-track packing (whole-set
-// and visible-window, incl. coincident instants), lane layout, label
-// fitting, instant-width thresholds (duration-based, translation-stable),
-// hit testing, connector routing, category hue hashing, coverage /
-// range-request bookkeeping (incl. the loadRange request-flood
-// regression), and render-loop pacing. The element itself
-// (ui/timeline-view.ts) is canvas/DOM-bound and not node-testable — see
-// the Testing section in CLAUDE.md.
+// the follow-now engage/disengage rule (2-device-px re-engage at the hard
+// `now` end stop), whole-device-pixel view snapping, the time tick ladder
+// and label granularity, sub-track packing (whole-set and visible-window,
+// incl. coincident instants), lane layout (incl. per-lane track heights),
+// auto-fit compact-lane demotion (tallest-first order, hysteresis,
+// stability under viewport translation), label fitting, instant-width
+// thresholds (duration-based, translation-stable), hit testing, connector
+// routing, category hue hashing, coverage / range-request bookkeeping
+// (incl. the loadRange request-flood regression), and render-loop pacing.
+// The element itself (ui/timeline-view.ts) is canvas/DOM-bound and not
+// node-testable — see the Testing section in CLAUDE.md.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -55,11 +57,16 @@ import {
   routeWheel,
   followAfterGesture,
   FOLLOW_LEAD_FRAC,
-  FOLLOW_SNAP_FRAC,
+  FOLLOW_SNAP_DEVICE_PX,
+  clampViewToNow,
   snapViewToDevicePixels,
   durationWidthPx,
   MIN_BAR_PX,
   packVisibleTracks,
+  laneHeight,
+  demotionOrder,
+  computeAutoFit,
+  FIT_HYSTERESIS_FRAC,
   frameBudgetMs,
   shouldRender,
   IDLE_FRAME_MS,
@@ -69,6 +76,7 @@ import {
   type PackItem,
   type HitRect,
   type TimeRange,
+  type LaneMetrics,
 } from './timeline-view-math.ts';
 
 const HOUR = 3_600_000;
@@ -362,6 +370,143 @@ test('layoutLanes: heights grow with track count; tops stack; totals add up', ()
 test('layoutLanes: a zero/negative track count still yields a one-track lane', () => {
   const m = { trackHeight: 16, trackGap: 2, lanePad: 4 };
   assert.deepEqual(layoutLanes([0], m).heights, [24]);
+});
+
+test('layoutLanes/trackTop: per-lane track heights override the metrics (compact lanes)', () => {
+  const m: LaneMetrics = { trackHeight: 18, trackGap: 2, lanePad: 3 };
+  const { tops, heights, totalHeight } = layoutLanes([2, 3], m, [4, 18]);
+  assert.deepEqual(heights, [16, 64]); // 6 + 2*4 + 2  |  6 + 3*18 + 2*2
+  assert.deepEqual(tops, [0, 16]);
+  assert.equal(totalHeight, 80);
+  assert.equal(laneHeight(2, m, 4), 16);
+  assert.equal(laneHeight(2, m), 44);
+  // Track offsets within a compact lane shrink with the track height.
+  assert.equal(trackTop(1, m, 4), 3 + 4 + 2);
+  assert.equal(trackTop(1, m), 3 + 18 + 2);
+});
+
+// -- Auto-fit (compact lane demotion) ---------------------------------------------------
+
+// The element's real metrics: laneHeight(n) = 20n + 4; compact(4) = 6n + 4.
+const FIT_M: LaneMetrics = { trackHeight: 18, trackGap: 2, lanePad: 3 };
+
+test('computeAutoFit: a naturally fitting layout demotes nothing', () => {
+  const counts = [1, 2, 1];
+  const natural = 24 + 44 + 24; // 92
+  for (const avail of [natural, natural + 1, 10_000]) {
+    const fit = computeAutoFit(counts, FIT_M, 4, avail, 0);
+    assert.deepEqual(fit.demoted, [false, false, false]);
+    assert.equal(fit.count, 0);
+  }
+});
+
+test('demotionOrder: tallest first; equal counts demote the LATER lane first (top keeps detail longest)', () => {
+  assert.deepEqual(demotionOrder([2, 5, 3, 5]), [3, 1, 2, 0]);
+  assert.deepEqual(demotionOrder([1, 1, 1]), [2, 1, 0]);
+  assert.deepEqual(demotionOrder([]), []);
+});
+
+test('computeAutoFit: demotes strictly tallest-first and stops at the first fit', () => {
+  const counts = [2, 5, 3, 5]; // heights [44, 104, 64, 104], total 316
+  // One demotion (lane 3, the LATER of the two 5-track lanes) fits 250.
+  const one = computeAutoFit(counts, FIT_M, 4, 250, 0);
+  assert.deepEqual(one.demoted, [false, false, false, true]);
+  assert.equal(one.count, 1, 'stops at the first fitting count');
+  // 180 needs two: lane 3 then lane 1 — never lane 2/0 before the 5s.
+  const two = computeAutoFit(counts, FIT_M, 4, 180, 0);
+  assert.deepEqual(two.demoted, [false, true, false, true]);
+  assert.equal(two.count, 2);
+});
+
+test('computeAutoFit: all-compact fallback when even full demotion overflows (lane scroll takes over)', () => {
+  const fit = computeAutoFit([1, 2, 3], FIT_M, 4, 10, 0);
+  assert.deepEqual(fit.demoted, [true, true, true]);
+  assert.equal(fit.count, 3);
+});
+
+test('computeAutoFit: hysteresis — borderline heights do not flap across jittering evaluations', () => {
+  const counts = [4, 1, 1]; // natural 84 + 24 + 24 = 132
+  assert.equal(FIT_HYSTERESIS_FRAC, 0.1);
+  // Overflow at 130 → demote the 4-track lane.
+  let count = computeAutoFit(counts, FIT_M, 4, 130, 0).count;
+  assert.equal(count, 1);
+  // Jitter around the boundary: 132 fits naturally but WITHOUT 10%
+  // headroom, so the demoted lane must stay demoted — repeatedly.
+  for (const avail of [132, 130, 133, 131, 132, 134, 130]) {
+    const fit = computeAutoFit(counts, FIT_M, 4, avail, count);
+    assert.deepEqual(fit.demoted, [true, false, false], `avail ${avail} must not flap`);
+    count = fit.count;
+  }
+  // Only real headroom promotes: 132 <= 150 * 0.9.
+  const promoted = computeAutoFit(counts, FIT_M, 4, 150, count);
+  assert.deepEqual(promoted.demoted, [false, false, false]);
+  assert.equal(promoted.count, 0);
+  // And the clean state is just as stable across the same jitter.
+  let clean = 0;
+  for (const avail of [134, 133, 137, 133, 134]) {
+    const fit = computeAutoFit(counts, FIT_M, 4, avail, clean);
+    assert.equal(fit.count, 0, `avail ${avail} must not demote a fitting layout`);
+    clean = fit.count;
+  }
+});
+
+test('computeAutoFit: stable under pure viewport translation with unchanged overlap', () => {
+  // Two lanes; every item intersects both translated windows, so the
+  // visible-window packing — and therefore the fit — must be identical.
+  const laneA: PackItem[] = [
+    { id: 'a1', start: 0, end: 100 },
+    { id: 'a2', start: 50, end: 150 },
+    { id: 'a3', start: 120, end: 300 },
+  ];
+  const laneB: PackItem[] = [{ id: 'b1', start: 0, end: 400 }];
+  const winA: TimeView = { start: 40, end: 160 };
+  const winB: TimeView = { start: 60, end: 180 };
+  const countsA = [packVisibleTracks(laneA, winA).trackCount, packVisibleTracks(laneB, winA).trackCount];
+  const countsB = [packVisibleTracks(laneA, winB).trackCount, packVisibleTracks(laneB, winB).trackCount];
+  assert.deepEqual(countsA, countsB);
+  const fitA = computeAutoFit(countsA, FIT_M, 4, 50, 0);
+  const fitB = computeAutoFit(countsB, FIT_M, 4, 50, fitA.count);
+  assert.deepEqual(fitA, fitB);
+  assert.deepEqual(fitA.demoted, [true, false]);
+});
+
+test('computeAutoFit: the compact height from the CSS prop drives the math (and clamps to the normal height)', () => {
+  const counts = [4, 1]; // natural 84 + 24 = 108
+  // compact 4: demoting the tall lane alone fits 60 (28 + 24 = 52).
+  const at4 = computeAutoFit(counts, FIT_M, 4, 60, 0);
+  assert.deepEqual(at4.demoted, [true, false]);
+  // compact 12: the same demotion only reaches 60 + 24 = 84 — everything
+  // must go compact (and still overflows → lane scroll's problem).
+  assert.equal(laneHeight(4, FIT_M, 12), 60);
+  const at12 = computeAutoFit(counts, FIT_M, 12, 60, 0);
+  assert.deepEqual(at12.demoted, [true, true]);
+  // compact above the normal height clamps to it: zero savings, saturates.
+  const clamped = computeAutoFit(counts, FIT_M, 25, 60, 0);
+  assert.equal(clamped.count, 2);
+});
+
+test('computeAutoFit: visible-window count changes re-evaluate the fit deterministically', () => {
+  // Lane 0 is the parallel one in the early window; lane 1 in the late one.
+  const mk = (n: number, s: number, e: number, tag: string): PackItem[] =>
+    Array.from({ length: n }, (_, i) => ({ id: `${tag}${i}`, start: s, end: e }));
+  const lane0 = [...mk(10, 0, 100, 'w'), ...mk(2, 200, 300, 'x')];
+  const lane1 = [...mk(2, 0, 100, 'y'), ...mk(12, 200, 300, 'z')];
+  const early: TimeView = { start: 0, end: 100 };
+  const late: TimeView = { start: 200, end: 300 };
+  const countsEarly = [packVisibleTracks(lane0, early).trackCount, packVisibleTracks(lane1, early).trackCount];
+  assert.deepEqual(countsEarly, [10, 2]);
+  const fitEarly = computeAutoFit(countsEarly, FIT_M, 4, 120, 0);
+  assert.deepEqual(fitEarly.demoted, [true, false]);
+  // The window slides: the demotion hands off to the NOW-tallest lane
+  // (same demoted count, different lane — re-derived, not remembered).
+  const countsLate = [packVisibleTracks(lane0, late).trackCount, packVisibleTracks(lane1, late).trackCount];
+  assert.deepEqual(countsLate, [2, 12]);
+  const fitLate = computeAutoFit(countsLate, FIT_M, 4, 120, fitEarly.count);
+  assert.deepEqual(fitLate.demoted, [false, true]);
+  // Re-evaluating the same state is a fixed point (determinism).
+  assert.deepEqual(computeAutoFit(countsLate, FIT_M, 4, 120, fitLate.count), fitLate);
+  // Growing the host promotes everything once headroom is real.
+  assert.equal(computeAutoFit(countsLate, FIT_M, 4, 400, fitLate.count).count, 0);
 });
 
 // -- fitText / instants ----------------------------------------------------------------
@@ -715,38 +860,87 @@ test('routeWheel: deltaMode 1 (lines) normalizes to pixels on every path', () =>
 
 // -- Follow-now rule ----------------------------------------------------------------
 
+// A 1000-CSS-px plot at dpr 1: ms per device pixel for a given span.
+const mppx = (span: number, plotW = 1000, dpr = 1): number => span / (plotW * dpr);
+
 test('followAfterGesture: a small backward PAN disengages follow (trackpad panning must escape now)', () => {
   const now = 1_000_000_000;
   const span = 900_000; // 15 min
   // Pinned view: end = now + lead.
   const end = now + span * FOLLOW_LEAD_FRAC;
   const view: TimeView = { start: end - span, end };
-  // One trackpad wheel step pans ~10s — far inside the old snap zone.
+  // One trackpad wheel step pans ~10s.
   const next = panView(view, -10_000);
-  assert.equal(followAfterGesture(view.end, next, now, true), false, 'backward pan disengages');
-  // The same tiny step as a NON-pan (e.g. programmatic) still snaps back.
-  assert.equal(followAfterGesture(view.end, next, now, false), true);
+  assert.equal(followAfterGesture(true, view.end, next, now, true, mppx(span)), false, 'backward pan disengages');
+  // The same shift as a NON-pan while already following stays pinned.
+  assert.equal(followAfterGesture(true, view.end, next, now, false, mppx(span)), true);
 });
 
-test('followAfterGesture: consecutive backward pans stay disengaged inside the snap zone', () => {
+test('followAfterGesture: consecutive backward pans stay disengaged', () => {
   const now = 1_000_000_000;
   const span = 900_000;
   let view: TimeView = { start: now + span * FOLLOW_LEAD_FRAC - span, end: now + span * FOLLOW_LEAD_FRAC };
+  let following = true;
   for (let i = 0; i < 5; i++) {
     const next = panView(view, -5_000);
-    assert.equal(followAfterGesture(view.end, next, now, true), false, `step ${i} must not re-engage`);
+    following = followAfterGesture(following, view.end, next, now, true, mppx(span));
+    assert.equal(following, false, `step ${i} must not re-engage`);
     view = next;
   }
 });
 
-test('followAfterGesture: panning forward re-docks magnetically near now', () => {
+test('followAfterGesture: re-engages at the end stop — exactly at now, 1 and 2 device px short', () => {
   const now = 1_000_000_000;
   const span = 900_000;
-  const view: TimeView = { start: now - 2 * span, end: now - span }; // well in the past
-  const far = panView(view, 10_000);
-  assert.equal(followAfterGesture(view.end, far, now, true), false, 'still far from now');
-  const near: TimeView = { start: now - span * (1 + FOLLOW_SNAP_FRAC / 2), end: now - span * (FOLLOW_SNAP_FRAC / 2) };
-  assert.equal(followAfterGesture(view.end, near, now, true), true, 'forward pan into the snap zone re-engages');
+  const px = mppx(span);
+  const prevEnd = now - span; // parked well in the past, panning forward
+  for (const devPx of [0, 1, 2]) {
+    const v: TimeView = { start: now - devPx * px - span, end: now - devPx * px };
+    assert.equal(followAfterGesture(false, prevEnd, v, now, true, px), true, `${devPx} device px re-engages`);
+  }
+  assert.equal(FOLLOW_SNAP_DEVICE_PX, 2);
+});
+
+test('followAfterGesture: does NOT re-engage 3+ device px from the stop (near the edge is not at the edge)', () => {
+  const now = 1_000_000_000;
+  const span = 900_000;
+  const px = mppx(span);
+  const prevEnd = now - span;
+  for (const devPx of [3, 4, 10, 200]) {
+    const v: TimeView = { start: now - devPx * px - span, end: now - devPx * px };
+    assert.equal(followAfterGesture(false, prevEnd, v, now, true, px), false, `${devPx} device px stays put`);
+  }
+  // The old span-fraction zone would have grabbed a pan parked 1% of the
+  // span (= 10 CSS px here) from now; the device-pixel zone must not.
+  const nearFrac: TimeView = { start: now - span * 1.01, end: now - span * 0.01 };
+  assert.equal(followAfterGesture(false, prevEnd, nearFrac, now, true, px), false);
+});
+
+test('followAfterGesture: device-pixel conversion — 2 device px is 1 CSS px at dpr 2', () => {
+  const now = 1_000_000_000;
+  const span = 900_000;
+  const plotW = 1000;
+  const cssPx = span / plotW; // ms per CSS px
+  const prevEnd = now - span;
+  // dpr 2: 1 CSS px = 2 device px → exactly at the threshold → re-engages.
+  assert.equal(
+    followAfterGesture(false, prevEnd, { start: now - 1 * cssPx - span, end: now - 1 * cssPx }, now, true, mppx(span, plotW, 2)),
+    true,
+  );
+  // dpr 2: 1.6 CSS px = 3.2 device px → out.
+  assert.equal(
+    followAfterGesture(false, prevEnd, { start: now - 1.6 * cssPx - span, end: now - 1.6 * cssPx }, now, true, mppx(span, plotW, 2)),
+    false,
+  );
+  // dpr 1: 2 CSS px = 2 device px → in; 3 CSS px → out.
+  assert.equal(
+    followAfterGesture(false, prevEnd, { start: now - 2 * cssPx - span, end: now - 2 * cssPx }, now, true, mppx(span, plotW, 1)),
+    true,
+  );
+  assert.equal(
+    followAfterGesture(false, prevEnd, { start: now - 3 * cssPx - span, end: now - 3 * cssPx }, now, true, mppx(span, plotW, 1)),
+    false,
+  );
 });
 
 test('followAfterGesture: zooming while pinned stays pinned (span change is not a pan)', () => {
@@ -756,7 +950,40 @@ test('followAfterGesture: zooming while pinned stays pinned (span change is not 
   const view: TimeView = { start: end - span, end };
   const zoomed = zoomView(view, end - span / 2, 1.05); // anchor mid-screen: end moves back a bit
   assert.ok(zoomed.end < view.end);
-  assert.equal(followAfterGesture(view.end, zoomed, now, false), true, 'zoom keeps follow');
+  // The raw end lands well outside the 2-device-px zone — following must
+  // survive anyway (the explicit wasFollowing rule, not the zone).
+  assert.ok(zoomed.end < now - FOLLOW_SNAP_DEVICE_PX * mppx(zoomed.end - zoomed.start));
+  assert.equal(followAfterGesture(true, view.end, zoomed, now, false, mppx(zoomed.end - zoomed.start)), true, 'zoom keeps follow');
+  // The same zoom while NOT following does not grab the pin.
+  assert.equal(followAfterGesture(false, view.end, zoomed, now, false, mppx(zoomed.end - zoomed.start)), false);
+});
+
+test('clampViewToNow: the hard end stop — end never passes now, span preserved, no-op at/before now', () => {
+  const now = 1_000_000_000;
+  const span = 600_000;
+  for (const overshoot of [1, 5_000, span, 40 * span]) {
+    const c = clampViewToNow({ start: now - span + overshoot, end: now + overshoot }, now);
+    assert.equal(c.end, now, `overshoot ${overshoot} parks at the stop`);
+    assert.equal(c.end - c.start, span, 'span preserved');
+  }
+  const before: TimeView = { start: now - 2 * span, end: now - span };
+  assert.deepEqual(clampViewToNow(before, now), before);
+  const at: TimeView = { start: now - span, end: now };
+  assert.deepEqual(clampViewToNow(at, now), at);
+});
+
+test('clampViewToNow + followAfterGesture: any forward overshoot parks at the stop and reliably re-docks', () => {
+  const now = 1_000_000_000;
+  const span = 900_000;
+  const px = mppx(span);
+  // Every input path funnels through the clamp — wheel pan, drag, pinch,
+  // keyboard, setViewport all produce some raw view; overshooting ones
+  // park exactly at the stop, where re-engage is trivially within 2 px.
+  for (const rawEnd of [now + 1, now + 250 * px, now + span]) {
+    const clamped = clampViewToNow({ start: rawEnd - span, end: rawEnd }, now);
+    assert.equal(clamped.end, now);
+    assert.equal(followAfterGesture(false, now - span, clamped, now, true, px), true);
+  }
 });
 
 // -- Whole-pixel scrolling ------------------------------------------------------------

@@ -4,7 +4,8 @@
 // render origin (whole-pixel scrolling), a nice TIME tick ladder
 // (1/2/5/10/15/30 across ms → s → min → h → days, with per-step label
 // granularity), greedy first-fit sub-track packing (whole-set and
-// visible-window variants), lane layout, label-fit and instant-interval
+// visible-window variants), lane layout, auto-fit lane demotion (compact
+// track heights, tallest lanes first, hysteretic), label-fit and instant-interval
 // (zero/near-zero DURATION) helpers, stable category → hue hashing,
 // data-coverage / range-request bookkeeping for async history loading,
 // render-loop pacing tiers, and hit-testing. No DOM or browser APIs —
@@ -106,6 +107,19 @@ export function panView(view: TimeView, dt: number): TimeView {
 }
 
 /**
+ * The hard right end stop for user-driven views: the right edge never
+ * passes `now` (span preserved; views already at/before now come back
+ * unchanged). Every user input path (wheel, drag, pinch, keyboard,
+ * setViewport) clamps through this, so panning/zooming toward the future
+ * reliably parks EXACTLY at the stop — which is what makes the
+ * FOLLOW_SNAP_DEVICE_PX follow re-engage trivially hittable.
+ */
+export function clampViewToNow(view: TimeView, now: number): TimeView {
+  if (view.end <= now) return view;
+  return { start: now - (view.end - view.start), end: now };
+}
+
+/**
  * Zoom the view by `factor` (> 1 zooms in) keeping `anchor` at the same
  * on-screen fraction — the time under the cursor stays under the cursor.
  * The span is clamped to [minSpan, maxSpan]; clamping preserves the anchor
@@ -195,8 +209,12 @@ export function routeWheel(e: WheelInput, lanesOverflow: boolean): WheelRoute {
 
 /** Fraction of the span "now" sits in from the right edge while following. */
 export const FOLLOW_LEAD_FRAC = 0.02;
-/** A gesture ending with the right edge this close to "now" re-engages follow. */
-export const FOLLOW_SNAP_FRAC = 0.02;
+/**
+ * A gesture ending with the right edge within this many DEVICE pixels
+ * (literal screen pixels — at dpr 2 this is 1 CSS px) of the `now` end
+ * stop re-engages follow.
+ */
+export const FOLLOW_SNAP_DEVICE_PX = 2;
 
 /**
  * Whether follow-now is engaged after a user-driven viewport change.
@@ -205,14 +223,28 @@ export const FOLLOW_SNAP_FRAC = 0.02;
  * disengages. This is load-bearing for trackpads: a two-finger pan arrives
  * as many small wheel events, and an unconditional magnetic rule re-pinned
  * the view after every event smaller than the snap zone — making it
- * impossible to leave "now" by scrolling. Everything else (zooms, forward
- * pans, programmatic jumps) keeps the magnetic rule: engaged iff the right
- * edge lands within FOLLOW_SNAP_FRAC of "now" — so zooming while pinned
- * stays pinned, and panning forward re-docks at the live edge.
+ * impossible to leave "now" by scrolling. While ALREADY following, any
+ * other gesture stays pinned — zooming at the live edge keeps following
+ * even though an anchored zoom nudges the raw end backward. While NOT
+ * following, a gesture re-engages only when the right edge lands within
+ * FOLLOW_SNAP_DEVICE_PX DEVICE pixels of the `now` end stop — pass the
+ * view's ms-per-DEVICE-pixel scale (span / (plotWidthCss * dpr)). The
+ * zone is deliberately tiny (the old span-fraction zone re-docked views
+ * that merely got NEAR the edge): user views hard-stop at now
+ * (clampViewToNow), so a forward drag parks exactly at the stop and
+ * reliably re-docks, while a view parked 3+ device px short stays put.
  */
-export function followAfterGesture(prevEnd: number, next: TimeView, now: number, isPan: boolean): boolean {
+export function followAfterGesture(
+  wasFollowing: boolean,
+  prevEnd: number,
+  next: TimeView,
+  now: number,
+  isPan: boolean,
+  msPerDevicePx: number,
+): boolean {
   if (isPan && next.end < prevEnd) return false;
-  return next.end >= now - (next.end - next.start) * FOLLOW_SNAP_FRAC;
+  if (wasFollowing) return true;
+  return next.end >= now - FOLLOW_SNAP_DEVICE_PX * (Number.isFinite(msPerDevicePx) && msPerDevicePx > 0 ? msPerDevicePx : 0);
 }
 
 // -- Whole-pixel scrolling ------------------------------------------------------------
@@ -465,14 +497,28 @@ export interface LaneLayout {
   totalHeight: number;
 }
 
-/** Stack lanes vertically: lane height grows with its packed track count. */
-export function layoutLanes(trackCounts: readonly number[], m: LaneMetrics): LaneLayout {
+/**
+ * Height of one lane given its track count, at `trackHeight` px per track
+ * (defaults to the metrics' normal height). Fractional counts are allowed —
+ * they drive the lane-height tween.
+ */
+export function laneHeight(trackCount: number, m: LaneMetrics, trackHeight = m.trackHeight): number {
+  const n = Math.max(1, trackCount);
+  return m.lanePad * 2 + n * trackHeight + (n - 1) * m.trackGap;
+}
+
+/**
+ * Stack lanes vertically: lane height grows with its packed track count.
+ * `trackHeights[i]`, when given, overrides the metrics' track height for
+ * lane i — how auto-fit renders demoted lanes at the compact height (and
+ * how height changes tween: fractional per-lane heights are fine).
+ */
+export function layoutLanes(trackCounts: readonly number[], m: LaneMetrics, trackHeights?: readonly number[]): LaneLayout {
   const tops: number[] = [];
   const heights: number[] = [];
   let y = 0;
-  for (const raw of trackCounts) {
-    const n = Math.max(1, raw);
-    const h = m.lanePad * 2 + n * m.trackHeight + (n - 1) * m.trackGap;
+  for (let i = 0; i < trackCounts.length; i++) {
+    const h = laneHeight(trackCounts[i], m, trackHeights?.[i] ?? m.trackHeight);
     tops.push(y);
     heights.push(h);
     y += h;
@@ -480,9 +526,104 @@ export function layoutLanes(trackCounts: readonly number[], m: LaneMetrics): Lan
   return { tops, heights, totalHeight: y };
 }
 
-/** y offset of a sub-track's top within its lane. */
-export function trackTop(track: number, m: LaneMetrics): number {
-  return m.lanePad + track * (m.trackHeight + m.trackGap);
+/** y offset of a sub-track's top within its lane (per-lane `trackHeight` overrides the metrics'). */
+export function trackTop(track: number, m: LaneMetrics, trackHeight = m.trackHeight): number {
+  return m.lanePad + track * (trackHeight + m.trackGap);
+}
+
+// -- Auto-fit (compact lanes) ----------------------------------------------------------
+
+/**
+ * Headroom hysteresis for auto-fit: a demoted lane only re-promotes when
+ * the resulting layout would fit with this fraction of the available
+ * height to spare, so heights can't flap when hovering at the boundary.
+ */
+export const FIT_HYSTERESIS_FRAC = 0.1;
+
+/** Result of computeAutoFit. */
+export interface FitResult {
+  /** Per lane (input order): true = render ALL of that lane's tracks at the compact height. */
+  demoted: boolean[];
+  /**
+   * Number of demoted lanes — the hysteresis state. Feed it back as
+   * `prevDemotedCount` on the next evaluation.
+   */
+  count: number;
+}
+
+/**
+ * The order lanes are demoted to compact in: by visible track count
+ * DESCENDING (the tallest / most parallel lane first — one compact tall
+ * lane recovers the most height), ties broken by LATER display order
+ * first — so when two lanes are equally tall, the one further down the
+ * chart demotes first and top-of-chart lanes keep their detail longest.
+ * Returns lane indices, first-to-demote first. Deterministic for a given
+ * count list.
+ */
+export function demotionOrder(trackCounts: readonly number[]): number[] {
+  const order = trackCounts.map((_, i) => i);
+  order.sort((a, b) => trackCounts[b] - trackCounts[a] || b - a);
+  return order;
+}
+
+/**
+ * Auto-fit: decide which lanes render at the compact track height so the
+ * lane stack fits `availHeight` (the host's plot height). Evaluate with
+ * the NATURAL layout (every lane at the normal track height); while it
+ * overflows, demote lanes one at a time in demotionOrder() until the
+ * total fits or every lane is compact (if all-compact still overflows,
+ * the caller's vertical lane scrolling takes over). Demotion applies to a
+ * whole lane — all of its tracks go compact together.
+ *
+ * Deterministic and oscillation-free: the result is a pure function of
+ * (track counts, metrics, heights, prevDemotedCount). Demotion reacts
+ * immediately (an overflowing layout never persists), but promotion is
+ * hysteretic — a demoted lane is only promoted when the layout stays
+ * fitting with `hysteresisFrac` headroom (so all lanes re-promote only
+ * once the natural layout fits within availHeight * (1 - hysteresisFrac)).
+ * Between the two thresholds the previous demotion COUNT is kept; the
+ * demotion SET is always re-derived from the CURRENT counts, so a lane
+ * whose parallelism left the window hands its demotion to the now-tallest
+ * lane deterministically. `compactTrackHeight` is clamped to at most the
+ * normal track height.
+ */
+export function computeAutoFit(
+  trackCounts: readonly number[],
+  m: LaneMetrics,
+  compactTrackHeight: number,
+  availHeight: number,
+  prevDemotedCount = 0,
+  hysteresisFrac = FIT_HYSTERESIS_FRAC,
+): FitResult {
+  const nLanes = trackCounts.length;
+  const demoted = new Array<boolean>(nLanes).fill(false);
+  if (nLanes === 0) return { demoted, count: 0 };
+  const compact = Math.max(1, Math.min(compactTrackHeight, m.trackHeight));
+  const order = demotionOrder(trackCounts);
+  const savings = new Array<number>(nLanes);
+  let total = 0;
+  for (let i = 0; i < nLanes; i++) {
+    const hN = laneHeight(trackCounts[i], m);
+    total += hN;
+    savings[i] = hN - laneHeight(trackCounts[i], m, compact);
+  }
+  // kMin: fewest demotions (in order) that fit availHeight. kHead: fewest
+  // that fit with headroom (>= kMin). Both saturate at nLanes.
+  const headAvail = availHeight * (1 - hysteresisFrac);
+  let kMin = total <= availHeight ? 0 : nLanes;
+  let kHead = total <= headAvail ? 0 : nLanes;
+  let running = total;
+  for (let k = 1; k <= nLanes && (kMin === nLanes || kHead === nLanes); k++) {
+    running -= savings[order[k - 1]];
+    if (kMin === nLanes && running <= availHeight) kMin = k;
+    if (kHead === nLanes && running <= headAvail) kHead = k;
+  }
+  // Hysteresis on the count: demote immediately when overflowing, promote
+  // only as far as keeps the headroom, otherwise keep the previous count.
+  const prev = Math.max(0, Math.min(nLanes, Math.floor(prevDemotedCount)));
+  const count = prev < kMin ? kMin : prev > kHead ? kHead : prev;
+  for (let i = 0; i < count; i++) demoted[order[i]] = true;
+  return { demoted, count };
 }
 
 // -- Labels / instants ----------------------------------------------------------------
