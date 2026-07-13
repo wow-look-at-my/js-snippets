@@ -61,6 +61,7 @@ import {
   timeToX,
   xToTime,
   panView,
+  clampViewToNow,
   zoomView,
   zoomFactorForWheel,
   routeWheel,
@@ -77,6 +78,7 @@ import {
   packVisibleTracks,
   layoutLanes,
   trackTop,
+  computeAutoFit,
   fitText,
   isInstantWidth,
   durationWidthPx,
@@ -143,6 +145,12 @@ export const THEME_DEFAULTS = {
   catChroma: 0.11,
   /** --timeline-track-height — sub-track bar height in px (clamped 10..40). */
   trackHeight: 18,
+  /**
+   * --timeline-track-height-compact — sub-track height in CSS px for lanes
+   * auto-fit demotes (clamped 2..track-height; the canvas' DPR scaling
+   * already multiplies to device pixels, so 4 here is 8 device px at dpr 2).
+   */
+  trackHeightCompact: 4,
   /** --timeline-gutter-width — lane-label gutter in px (0 = auto-size). */
   gutterWidth: 0,
 };
@@ -213,8 +221,9 @@ interface ResolvedStyle {
 }
 
 const DEFAULT_SPAN_MS = 15 * 60_000;
-const LAYOUT_TWEEN_MS = 150; // lane-height ease on visible-track-count change
+const LAYOUT_TWEEN_MS = 150; // lane-height ease on visible-track-count AND fit-height change
 const AXIS_H = 22;
+const LANE_LABEL_MIN_PX = 10; // below this lane height the gutter label is tooltip-only
 const HIT_MIN_W = 9; // widened hit target for instants (px)
 const CONNECTOR_TOL = 4;
 const CLICK_SLOP = 4;
@@ -228,12 +237,25 @@ const MARKER_DASH = [4, 3];
  * module loads (unless the name is taken). Data arrives via properties and
  * methods — setData / mergeData / setLanes / setIntervals / setConnectors /
  * setMarkers — never attributes; the only attributes are scalar toggles:
- * `no-live-pill` (hide the jump-to-now pill), `history-end-text` (boundary
- * label), `empty-text` (empty-state hint).
+ * `no-live-pill` (hide the jump-to-now pill), `no-auto-fit` (disable
+ * compact-lane auto-fit), `history-end-text` (boundary label), `empty-text`
+ * (empty-state hint).
+ *
+ * Auto-fit (default ON): each layout pass compares the natural lane stack
+ * (every lane at --timeline-track-height) against the host's plot height;
+ * while it overflows, whole lanes are demoted to the compact track height
+ * (--timeline-track-height-compact, default 4px) one at a time — tallest
+ * (most parallel) lane first, ties demoting the LOWER lane first so
+ * top-of-chart lanes keep detail longest — until it fits or every lane is
+ * compact (then the vertical lane scroll takes over as before). Demotion
+ * is immediate; promotion is hysteretic (~10% headroom required) so
+ * heights never flap at the boundary, and changes ease through the same
+ * ~150ms layout tween as track-count changes. Read `fitState` / listen
+ * for 'fitchange' to observe the demotion set.
  */
 export class TimelineViewElement extends HTMLElement {
   static get observedAttributes(): string[] {
-    return ['no-live-pill', 'history-end-text', 'empty-text'];
+    return ['no-live-pill', 'no-auto-fit', 'history-end-text', 'empty-text'];
   }
 
   private canvas: HTMLCanvasElement;
@@ -282,14 +304,19 @@ export class TimelineViewElement extends HTMLElement {
   private batteryDischarging = false;
   private batteryOff: (() => void) | null = null;
 
-  // -- Visible-window lane layout --
+  // -- Visible-window lane layout + auto-fit --
   private packEpoch = 0; // bumped on data changes; forces a re-pack
   private packedEpoch = -1;
   private packedStart = NaN;
   private packedEnd = NaN;
   private targetCounts: number[] = []; // visible track count per lane
   private displayCounts: number[] = []; // animated (float) counts driving layout
-  private layoutAnim: { from: number[]; start: number } | null = null;
+  private targetHeights: number[] = []; // per-lane track height target (normal or compact)
+  private displayHeights: number[] = []; // animated (float) per-lane track heights
+  private layoutAnim: { fromCounts: number[]; fromHeights: number[]; start: number } | null = null;
+  private fitCount = 0; // auto-fit hysteresis state: number of demoted lanes
+  private demotedIds: string[] = []; // current demotion set (lane ids, display order)
+  private fitKey = ''; // demotion-set fingerprint for fitchange dedup
   private rvCache = { start: NaN, end: NaN, w: NaN, dpr: NaN, out: { start: 0, end: 1 } as TimeView };
 
   // -- Rendering state --
@@ -449,13 +476,13 @@ export class TimelineViewElement extends HTMLElement {
       for (const iv of data.intervals) this.ingestInterval(iv);
     }
     if (data.connectors) {
-      const key = (c: TimelineConnector): string => `${c.fromIntervalId} ${c.toIntervalId} ${c.kind ?? ''}`;
+      const key = (c: TimelineConnector): string => `${c.fromIntervalId}\u0000${c.toIntervalId}\u0000${c.kind ?? ''}`;
       const seen = new Map(this.connectors.map((c) => [key(c), c]));
       for (const c of data.connectors) seen.set(key(c), c);
       this.connectors = [...seen.values()];
     }
     if (data.markers) {
-      const key = (m: { time: number; label: string; kind: string }): string => `${m.time} ${m.label} ${m.kind}`;
+      const key = (m: { time: number; label: string; kind: string }): string => `${m.time}\u0000${m.label}\u0000${m.kind}`;
       const seen = new Set(this.markers.map(key));
       for (const m of data.markers) {
         const n = { time: toMs(m.time), label: m.label ?? '', kind: m.kind ?? '' };
@@ -553,6 +580,16 @@ export class TimelineViewElement extends HTMLElement {
   set nowProvider(fn: (() => number) | null | undefined) {
     this.nowFn = fn ?? null;
     this.invalidate();
+  }
+
+  /**
+   * Current auto-fit state (read-only): whether auto-fit is enabled (no
+   * `no-auto-fit` attribute) and which lanes are demoted to the compact
+   * track height right now, as lane ids in display order. Mirrors the
+   * latest 'fitchange' event — cheap to poll, handy for debugging.
+   */
+  get fitState(): { enabled: boolean; demoted: string[] } {
+    return { enabled: !this.hasAttribute('no-auto-fit'), demoted: this.demotedIds.slice() };
   }
 
   // -- Public API: viewport ------------------------------------------------------
@@ -658,21 +695,28 @@ export class TimelineViewElement extends HTMLElement {
    * CURRENT viewport (partial overlap counts; a lane with nothing visible
    * collapses to one track). Deterministic given the visible data — a
    * merely-translating viewport over unchanged overlap recomputes to the
-   * identical result, so nothing jitters frame to frame. Count CHANGES
-   * ease over LAYOUT_TWEEN_MS (snapped under prefers-reduced-motion).
-   * this.layout always reflects the CURRENT (possibly animating) heights,
-   * and hit-testing shares it, so hovers stay aligned mid-tween.
+   * identical result, so nothing jitters frame to frame. Auto-fit then
+   * demotes lanes to the compact track height until the stack fits the
+   * host (computeAutoFit — tallest lanes first, hysteretic promotion, a
+   * pure function of the visible counts + host height, so it shares the
+   * same stability guarantee). Count AND height CHANGES ease over
+   * LAYOUT_TWEEN_MS (snapped under prefers-reduced-motion). this.layout
+   * always reflects the CURRENT (possibly animating) heights, and
+   * hit-testing shares it (rectFor reads displayHeights), so hovers stay
+   * aligned mid-tween.
    */
   private updateVisibleLayout(): void {
     const rv = this.renderView();
+    const m = this.metrics();
     const structure = this.targetCounts.length !== this.perLane.length;
+    let changed = false;
     if (this.packedEpoch !== this.packEpoch || this.packedStart !== rv.start || this.packedEnd !== rv.end || structure) {
       this.packedEpoch = this.packEpoch;
       this.packedStart = rv.start;
       this.packedEnd = rv.end;
       const prev = this.targetCounts;
       const next = new Array<number>(this.perLane.length);
-      let changed = structure;
+      changed = structure;
       for (let i = 0; i < this.perLane.length; i++) {
         const per = this.perLane[i];
         const { tracks, trackCount } = packVisibleTracks(per, rv);
@@ -683,34 +727,91 @@ export class TimelineViewElement extends HTMLElement {
         if (!changed && prev[i] !== trackCount) changed = true;
       }
       this.targetCounts = next;
-      if (changed) {
-        if (this.reducedMotion || structure || this.displayCounts.length !== next.length) {
-          this.displayCounts = next.slice();
-          this.layoutAnim = null;
-        } else {
-          this.layoutAnim = { from: this.displayCounts.slice(), start: this.perfNow() };
+    }
+    // Auto-fit runs every pass (cheap, pure): it must also react to host
+    // resizes and theme changes, not just data/window changes. Disabled —
+    // or the host still unsized — means every lane stays at full height.
+    const compact = this.compactTrackH();
+    const fitOn = !this.hasAttribute('no-auto-fit') && this.cssH > AXIS_H + 4;
+    const fit = fitOn
+      ? computeAutoFit(this.targetCounts, m, compact, this.plotHeight(), this.fitCount)
+      : { demoted: new Array<boolean>(this.targetCounts.length).fill(false), count: 0 };
+    this.fitCount = fit.count;
+    const targetH = new Array<number>(this.targetCounts.length);
+    for (let i = 0; i < targetH.length; i++) targetH[i] = fit.demoted[i] ? compact : m.trackHeight;
+    if (targetH.length !== this.targetHeights.length) {
+      changed = true;
+    } else {
+      for (let i = 0; i < targetH.length; i++) {
+        if (targetH[i] !== this.targetHeights[i]) {
+          changed = true;
+          break;
         }
+      }
+    }
+    this.targetHeights = targetH;
+    this.emitFitChange(fit.demoted);
+    if (changed) {
+      if (this.reducedMotion || structure || this.displayCounts.length !== this.targetCounts.length) {
+        this.displayCounts = this.targetCounts.slice();
+        this.displayHeights = this.targetHeights.slice();
+        this.layoutAnim = null;
+      } else {
+        this.layoutAnim = {
+          fromCounts: this.displayCounts.slice(),
+          fromHeights: this.displayHeights.slice(),
+          start: this.perfNow(),
+        };
       }
     }
     if (this.layoutAnim) {
       const a = this.layoutAnim;
       const p = Math.min(1, (this.perfNow() - a.start) / LAYOUT_TWEEN_MS);
       const ease = p * (2 - p); // easeOutQuad
-      const disp = new Array<number>(this.targetCounts.length);
-      for (let i = 0; i < disp.length; i++) {
-        const from = a.from[i] ?? this.targetCounts[i];
-        disp[i] = from + (this.targetCounts[i] - from) * ease;
+      const n = this.targetCounts.length;
+      const dispC = new Array<number>(n);
+      const dispH = new Array<number>(n);
+      for (let i = 0; i < n; i++) {
+        const fromC = a.fromCounts[i] ?? this.targetCounts[i];
+        const fromH = a.fromHeights[i] ?? this.targetHeights[i];
+        dispC[i] = fromC + (this.targetCounts[i] - fromC) * ease;
+        dispH[i] = fromH + (this.targetHeights[i] - fromH) * ease;
       }
-      this.displayCounts = disp;
+      this.displayCounts = dispC;
+      this.displayHeights = dispH;
       if (p >= 1) this.layoutAnim = null;
-    } else if (this.displayCounts.length !== this.targetCounts.length) {
-      this.displayCounts = this.targetCounts.slice();
+    } else {
+      if (this.displayCounts.length !== this.targetCounts.length) this.displayCounts = this.targetCounts.slice();
+      if (this.displayHeights.length !== this.targetHeights.length) this.displayHeights = this.targetHeights.slice();
     }
-    this.layout = layoutLanes(this.displayCounts, this.metrics());
+    this.layout = layoutLanes(this.displayCounts, m, this.displayHeights);
   }
 
   private metrics(): { trackHeight: number; trackGap: number; lanePad: number } {
     return { trackHeight: this.theme.trackHeight, trackGap: 2, lanePad: 3 };
+  }
+
+  /** Effective compact track height: the themed value, never above the normal height. */
+  private compactTrackH(): number {
+    return Math.min(this.theme.trackHeightCompact, this.theme.trackHeight);
+  }
+
+  /** The (possibly animating) per-track bar height of a lane. */
+  private laneTrackHeight(laneIdx: number): number {
+    return this.displayHeights[laneIdx] ?? this.theme.trackHeight;
+  }
+
+  /** Fire 'fitchange' when the demotion SET (by lane id) actually changes. */
+  private emitFitChange(demoted: readonly boolean[]): void {
+    const ids: string[] = [];
+    for (let i = 0; i < demoted.length; i++) {
+      if (demoted[i] && this.lanes[i]) ids.push(this.lanes[i].id);
+    }
+    const key = ids.join('\u0000');
+    if (key === this.fitKey) return;
+    this.fitKey = key;
+    this.demotedIds = ids;
+    this.dispatchEvent(new CustomEvent('fitchange', { detail: { demoted: ids.slice() } }));
   }
 
   private autoGutter(): void {
@@ -784,20 +885,27 @@ export class TimelineViewElement extends HTMLElement {
 
   /**
    * Apply a user-driven viewport. Backward PANS disengage follow outright;
-   * everything else keeps the magnetic re-engage rule (followAfterGesture —
-   * without the pan carve-out, small trackpad pan steps were re-pinned to
-   * "now" one by one and horizontal panning never escaped follow mode).
+   * everything else re-engages only within FOLLOW_SNAP_DEVICE_PX device
+   * pixels of the `now` end stop (followAfterGesture — the pan carve-out
+   * is load-bearing: without it, small trackpad pan steps were re-pinned
+   * to "now" one by one and horizontal panning never escaped follow mode).
+   * The follow rule reads the RAW gesture (an overshoot past now must
+   * count as "at the stop"); the view actually applied hard-stops at now
+   * (clampViewToNow), so every input path — wheel, drag, pinch, keyboard,
+   * setViewport — parks exactly at the end stop, which is what makes the
+   * tiny re-engage zone reliably hittable.
    */
   private applyUserView(next: TimeView, opts?: { pan?: boolean }): void {
     const span = next.end - next.start;
     const now = this.nowMs();
     const wasFollowing = this.following;
-    this.following = followAfterGesture(this.view.end, next, now, opts?.pan === true);
+    const msPerDevPx = span / (this.plotWidth() * this.dpr);
+    this.following = followAfterGesture(wasFollowing, this.view.end, next, now, opts?.pan === true, msPerDevPx);
     if (this.following) {
       const end = now + span * FOLLOW_LEAD_FRAC;
       this.view = { start: end - span, end };
     } else {
-      this.view = next;
+      this.view = clampViewToNow(next, now);
     }
     if (wasFollowing !== this.following) this.syncChrome();
     // The content moved under a resting cursor — keep hover/tooltip honest.
@@ -1002,6 +1110,7 @@ export class TimelineViewElement extends HTMLElement {
     t.catLightness = readNum(cs, '--timeline-cat-lightness', THEME_DEFAULTS.catLightness, 0.2, 0.95);
     t.catChroma = readNum(cs, '--timeline-cat-chroma', THEME_DEFAULTS.catChroma, 0, 0.3);
     t.trackHeight = readNum(cs, '--timeline-track-height', THEME_DEFAULTS.trackHeight, 10, 40);
+    t.trackHeightCompact = readNum(cs, '--timeline-track-height-compact', THEME_DEFAULTS.trackHeightCompact, 2, 40);
     t.gutterWidth = readNum(cs, '--timeline-gutter-width', THEME_DEFAULTS.gutterWidth, 0, 400);
     this.fontAxis = `${t.fontSize - 1}px ${t.font}`;
     this.fontBar = `${t.fontSize}px ${t.font}`;
@@ -1014,7 +1123,7 @@ export class TimelineViewElement extends HTMLElement {
     }
     this.colorCache.clear();
     this.patternCache.clear();
-    this.layout = layoutLanes(this.displayCounts, this.metrics());
+    this.layout = layoutLanes(this.displayCounts, this.metrics(), this.displayHeights);
     this.autoGutter();
   }
 
@@ -1025,7 +1134,7 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   private resolved(catKey: string, state: string, override: string | null): ResolvedStyle {
-    const cacheKey = `${catKey} ${state} ${override ?? ''}`;
+    const cacheKey = `${catKey}\u0000${state}\u0000${override ?? ''}`;
     const hit = this.colorCache.get(cacheKey);
     if (hit) return hit;
     const st = this.styleFor(state);
@@ -1060,7 +1169,7 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   private patternFor(kind: 'hatch' | 'stipple', color: string): CanvasPattern | null {
-    const key = `${kind} ${color}`;
+    const key = `${kind}\u0000${color}`;
     const hit = this.patternCache.get(key);
     if (hit) return hit;
     const size = 7;
@@ -1111,10 +1220,11 @@ export class TimelineViewElement extends HTMLElement {
     const w = this.plotWidth();
     const m = this.metrics();
     const rv = this.renderView();
+    const th = this.laneTrackHeight(n.laneIdx); // per-lane: compact lanes (and tweens) shrink rect + hit target together
     const xs = this.gutterW + timeToX(n.start, rv, w);
     const xe = this.gutterW + timeToX(n.end ?? now, rv, w);
-    const y = AXIS_H + this.layout.tops[n.laneIdx] - this.laneScroll + trackTop(n.track, m);
-    return { x: xs, y, w: Math.max(0, xe - xs), h: m.trackHeight };
+    const y = AXIS_H + this.layout.tops[n.laneIdx] - this.laneScroll + trackTop(n.track, m, th);
+    return { x: xs, y, w: Math.max(0, xe - xs), h: th };
   }
 
   // -- Hit testing ---------------------------------------------------------------
@@ -1386,9 +1496,12 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   private showTooltip(hit: TimelineHit, clientX: number, clientY: number): void {
-    // Lane tooltips only earn their keep when the gutter label is truncated.
+    // Lane tooltips only earn their keep when the gutter label is degraded:
+    // truncated, downsized (compact lane), or skipped below legibility.
     if (hit.type === 'lane') {
-      const fits = fitText(hit.lane.label, this.gutterW - 16, this.charW) === hit.lane.label;
+      const idx = this.laneIdxById.get(hit.lane.id);
+      const lh = idx !== undefined ? (this.layout.heights[idx] ?? 0) : 0;
+      const fits = lh >= this.theme.fontSize + 5 && fitText(hit.lane.label, this.gutterW - 16, this.charW) === hit.lane.label;
       if (fits) {
         this.hideTooltip();
         return;
@@ -1622,12 +1735,25 @@ export class TimelineViewElement extends HTMLElement {
         ctx.lineTo(w, yBottom);
         ctx.stroke();
       }
-      const label = fitText(this.lanes[i].label, this.gutterW - 16, this.charW);
-      if (label !== '' && top + lh / 2 > AXIS_H + 4 && top + lh / 2 < h - 2) {
-        ctx.fillStyle = t.muted;
-        ctx.fillText(label, 8, top + lh / 2 + 0.5);
+      // Gutter label, graded by the lane's CURRENT height: full while the
+      // lane comfortably fits the base font; smaller + faded while it
+      // doesn't (compact lanes); skipped entirely below legibility
+      // (LANE_LABEL_MIN_PX — the gutter tooltip still names the lane).
+      // Every label is centered in its own band at a font under the band
+      // height, so adjacent lanes' labels can never overlap.
+      if (lh >= LANE_LABEL_MIN_PX && top + lh / 2 > AXIS_H + 4 && top + lh / 2 < h - 2) {
+        const full = lh >= t.fontSize + 5;
+        const fs = full ? t.fontSize : Math.max(7, Math.min(t.fontSize - 2, Math.floor(lh - 3)));
+        const charW = full ? this.charW : (this.charW * fs) / t.fontSize;
+        const label = fitText(this.lanes[i].label, this.gutterW - 16, charW);
+        if (label !== '') {
+          ctx.font = full ? this.fontBar : `${fs}px ${t.font}`;
+          ctx.fillStyle = full ? t.muted : withAlpha(t.muted, 0.7);
+          ctx.fillText(label, 8, top + lh / 2 + 0.5);
+        }
       }
     }
+    ctx.font = this.fontBar; // undo any compact-label font downshift
     // Gutter | plot separator.
     ctx.strokeStyle = t.hairline;
     ctx.lineWidth = hairline;
@@ -1722,7 +1848,7 @@ export class TimelineViewElement extends HTMLElement {
     const t = this.theme;
     const dpr = this.dpr;
     const r = this.rectFor(n, now);
-    const bh = this.metrics().trackHeight;
+    const bh = r.h; // per-lane track height: compact lanes render slivers
     const style = this.resolved(n.catKey, n.state, this.overrideColor(n));
     const hovered = this.hoverIntervalId === n.id;
 
@@ -1813,9 +1939,10 @@ export class TimelineViewElement extends HTMLElement {
       ctx.restore();
     }
 
-    // Border.
+    // Border — width capped for sliver bars so a 2px emphasis border can't
+    // swallow a 4px compact track.
     ctx.strokeStyle = style.border;
-    ctx.lineWidth = style.borderWidth;
+    ctx.lineWidth = Math.min(style.borderWidth, Math.max(1, bh / 4));
     if (style.dash) ctx.setLineDash(style.dash);
     ctx.stroke(path);
     if (style.dash) ctx.setLineDash(EMPTY_DASH);
@@ -1833,19 +1960,23 @@ export class TimelineViewElement extends HTMLElement {
     } else if (style.glyph === 'dot' && bw >= 8) {
       ctx.fillStyle = style.border;
       ctx.beginPath();
-      ctx.arc(x0 + bh * 0.32, y + bh * 0.32, 1.8, 0, Math.PI * 2);
+      ctx.arc(x0 + bh * 0.32, y + bh * 0.32, Math.min(1.8, bh * 0.3), 0, Math.PI * 2);
       ctx.fill();
     }
 
-    // Label — never allowed to spill out of the bar; sticks to the plot's
-    // left edge while the bar's start is scrolled off-screen.
-    const pad = 5;
-    const glyphPad = style.glyph === 'bang' ? 8 : 0;
-    const labelX = Math.max(x0, this.gutterW) + pad;
-    const label = fitText(n.label, x1 - labelX - pad - glyphPad, this.charW);
-    if (label !== '') {
-      ctx.fillStyle = style.labelColor;
-      ctx.fillText(label, labelX, y + bh / 2 + 0.5);
+    // Label — suppressed entirely below fit height (a compact sliver has
+    // no room for text); otherwise never allowed to spill out of the bar,
+    // sticking to the plot's left edge while the bar's start is scrolled
+    // off-screen.
+    if (bh >= t.fontSize + 3) {
+      const pad = 5;
+      const glyphPad = style.glyph === 'bang' ? 8 : 0;
+      const labelX = Math.max(x0, this.gutterW) + pad;
+      const label = fitText(n.label, x1 - labelX - pad - glyphPad, this.charW);
+      if (label !== '') {
+        ctx.fillStyle = style.labelColor;
+        ctx.fillText(label, labelX, y + bh / 2 + 0.5);
+      }
     }
 
     if (hovered) {
@@ -1865,7 +1996,9 @@ export class TimelineViewElement extends HTMLElement {
     hovered: boolean,
   ): void {
     const t = this.theme;
-    const r = Math.min(trackH * 0.42, 8);
+    // Pips shrink with the track but never below a visible 4px diamond
+    // (compact tracks: the pip fills the 4px band instead of vanishing).
+    const r = Math.max(2, Math.min(trackH * 0.42, 8));
     const rx = r * 0.78;
     ctx.beginPath();
     ctx.moveTo(cx, cy - r);
