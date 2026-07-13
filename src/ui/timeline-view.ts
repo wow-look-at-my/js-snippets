@@ -25,7 +25,12 @@
  * Follow-now mode (default) pins the right edge to a live "now"; scroll or
  * drag into the past and a jump-to-now pill appears (panning backward
  * disengages follow immediately; panning forward re-docks magnetically at
- * the live edge). Interaction is trackpad-first: two-finger pan (x = time;
+ * the live edge). Every follow transition is CONTINUOUS: engaging eases
+ * the small follow lead in over ~200ms from where the gesture parked,
+ * disengaging lets the backward deltas consume the lead (any residual
+ * glides out), and the pill glides to the followed position — the view
+ * never teleports in a single frame (reduced motion snaps instead).
+ * Interaction is trackpad-first: two-finger pan (x = time;
  * y scrolls the lane stack when it overflows, and is otherwise left to
  * the PAGE — a plain vertical wheel never pans the chart sideways and
  * never has its default prevented, so page scrolling works across the
@@ -36,6 +41,18 @@
  * forward edge always belongs to the consumer's own setData/mergeData
  * `coverage` — with uncovered regions visibly distinct from empty-but-known
  * ones and an explicit end-of-history boundary.
+ *
+ * FEED STALENESS: every setData/mergeData (or an explicit markFresh())
+ * stamps the feed fresh; when `staleAfterMs` (default 10s) passes without
+ * a stamp the chart STOPS trusting the clock — the live edge (ongoing
+ * bars, the now line, the follow pin, the forward clamp) freezes at the
+ * last vouched timestamp instead of extrapolating a dead feed (a finished
+ * run must never render as "running forever"), ongoing bars restyle as
+ * unknown (dim + hatch), a "live data stale (Ns) — reconnecting…" note
+ * counts up forever, and 'stalechange' fires. The next stamp recovers,
+ * gliding the edge back to the live clock — no teleports in either
+ * direction (reduced motion snaps). Consumers should resync with one full
+ * setData on recovery.
  *
  * Rendering is stability-first: the viewport origin is snapped to WHOLE
  * device pixels once per frame (bars keep exact relative offsets while
@@ -69,6 +86,12 @@ import {
   routeWheel,
   followAfterGesture,
   FOLLOW_LEAD_FRAC,
+  FOLLOW_LEAD_TWEEN_MS,
+  JUMP_TO_NOW_TWEEN_MS,
+  followLeadAt,
+  gestureLeadFrac,
+  STALE_AFTER_DEFAULT_MS,
+  feedIsStale,
   snapViewToDevicePixels,
   MIN_SPAN_MS,
   MAX_SPAN_MS,
@@ -265,6 +288,7 @@ export class TimelineViewElement extends HTMLElement {
   private tooltipEl: HTMLDivElement;
   private pillEl: HTMLButtonElement;
   private emptyEl: HTMLDivElement;
+  private staleEl: HTMLDivElement;
 
   // -- Data (normalized) --
   private lanes: TimelineLane[] = [];
@@ -280,6 +304,26 @@ export class TimelineViewElement extends HTMLElement {
   private view: TimeView = { start: 0, end: 1 }; // set on connect/first data
   private following = true;
   private laneScroll = 0;
+  // The ONE scalar behind every follow transition: the current lead of the
+  // view's end over "now", as a fraction of the span. Steady follow pins
+  // end = now + span * leadFrac with leadFrac == FOLLOW_LEAD_FRAC; steady
+  // parked is 0; transitions tween it (glideLead) so engage/disengage/jump
+  // GLIDE instead of teleporting the view by the full lead in one frame.
+  private leadFrac = FOLLOW_LEAD_FRAC;
+  private leadAnim: { from: number; target: number; start: number; dur: number } | null = null;
+
+  // -- Feed staleness --
+  // The last time the live feed vouched for the data (setData/mergeData/
+  // markFresh); null until data ever arrives. When more than `staleAfter`
+  // ms pass without a stamp the chart goes STALE: the live edge — ongoing
+  // bar ends, the now line, the follow pin, the forward clamp — freezes at
+  // lastFreshMs instead of extrapolating dead data toward now.
+  private lastFreshMs: number | null = null;
+  private staleAfter = STALE_AFTER_DEFAULT_MS;
+  private feedStale = false;
+  private edgeAnim: { from: number; start: number } | null = null; // the eased stale<->fresh live-edge transition
+  private staleTimer: ReturnType<typeof setInterval> | null = null;
+  private staleNoteText = '';
 
   // -- Async history --
   private coverage = new CoverageTracker();
@@ -367,7 +411,10 @@ export class TimelineViewElement extends HTMLElement {
     this.emptyEl = document.createElement('div');
     this.emptyEl.className = 'empty-hint';
     this.emptyEl.hidden = true;
-    shadow.append(this.canvas, this.tooltipEl, this.pillEl, this.emptyEl);
+    this.staleEl = document.createElement('div');
+    this.staleEl.className = 'stale-note';
+    this.staleEl.hidden = true;
+    shadow.append(this.canvas, this.tooltipEl, this.pillEl, this.emptyEl, this.staleEl);
 
     const now = this.nowMs();
     this.view = { start: now - DEFAULT_SPAN_MS, end: now };
@@ -398,6 +445,11 @@ export class TimelineViewElement extends HTMLElement {
     }
     document.addEventListener('visibilitychange', this.onVisibility);
     this.watchBattery();
+    // Staleness watchdog: rAF stops when nothing animates, so a dead feed
+    // on a parked chart would never be NOTICED without an independent
+    // fixed-cadence check. It also drives the stale note's live seconds
+    // counter — forever; a stale chart never gives up announcing itself.
+    this.staleTimer = setInterval(() => this.updateStale(), 500);
 
     // {passive: false} so preventDefault stays AVAILABLE — onWheel calls it
     // only for consumed gestures (an unconsumed vertical wheel must reach
@@ -426,6 +478,10 @@ export class TimelineViewElement extends HTMLElement {
     document.removeEventListener('visibilitychange', this.onVisibility);
     this.batteryOff?.();
     this.batteryOff = null;
+    if (this.staleTimer !== null) {
+      clearInterval(this.staleTimer);
+      this.staleTimer = null;
+    }
     this.canvas.removeEventListener('wheel', this.onWheel);
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
@@ -500,6 +556,50 @@ export class TimelineViewElement extends HTMLElement {
     }
     if (data.coverage) this.coverage.addCovered(toMs(data.coverage.start), toMs(data.coverage.end));
     this.rebuild();
+    // Every delivery proves the feed is alive — stamp freshness (and exit
+    // stale mode; a full setData mid-stale is the documented resync path).
+    this.markFresh();
+  }
+
+  /**
+   * Stamp the live feed FRESH as of `ts` (default: the current clock).
+   * setData/mergeData stamp automatically; call this from polls that
+   * returned "no changes" so a quiet-but-healthy feed never reads as
+   * stale. When more than `staleAfterMs` passes without a stamp the chart
+   * enters stale mode: the live edge (ongoing bars, the now line, the
+   * follow pin) FREEZES at the last stamped time — never extrapolating
+   * state the data no longer vouches for — ongoing bars restyle as
+   * unknown, and a "live data stale — reconnecting" note appears until
+   * the next stamp. On recovery, do ONE full resync (setData) before
+   * resuming incremental merges — runs that ended during the outage
+   * otherwise stay unknown.
+   */
+  markFresh(ts?: number | Date): void {
+    // Capture where the live edge renders BEFORE the stamp moves
+    // lastFreshMs: the recovery glide must start from the FROZEN edge (the
+    // old stamp), not from the new one — else recovery teleports.
+    const edgeBefore = this.liveEdge();
+    this.lastFreshMs = ts == null ? this.nowMs() : toMs(ts);
+    this.updateStale(edgeBefore);
+  }
+
+  /**
+   * ms without a freshness stamp before the chart declares its feed stale
+   * (default STALE_AFTER_DEFAULT_MS = 10s; tune to ~2 poll intervals).
+   * Zero or a non-finite value disables staleness — for static datasets
+   * that are loaded once and never fed.
+   */
+  get staleAfterMs(): number {
+    return this.staleAfter;
+  }
+  set staleAfterMs(v: number) {
+    this.staleAfter = typeof v === 'number' ? v : STALE_AFTER_DEFAULT_MS;
+    this.updateStale();
+  }
+
+  /** Read-back of the staleness state (mirrors the latest 'stalechange'). */
+  get staleState(): { stale: boolean; lastFresh: number | null } {
+    return { stale: this.feedStale, lastFresh: this.lastFreshMs };
   }
 
   /** Individual setters (each replaces just that slice of the data). */
@@ -622,17 +722,27 @@ export class TimelineViewElement extends HTMLElement {
   }
   set followNow(v: boolean) {
     if (v === this.following) return;
-    this.following = v;
-    if (v) this.pinToNow();
+    if (v) {
+      this.engageFollowGlide(JUMP_TO_NOW_TWEEN_MS);
+    } else {
+      this.following = false;
+      // Same continuous exit as a backward-pan disengage: whatever lead the
+      // view holds glides out instead of parking a future-showing view.
+      const span = this.view.end - this.view.start;
+      this.glideLead(Math.max(0, gestureLeadFrac(this.view.end, this.nowMs(), span, this.currentLead())), 0, FOLLOW_LEAD_TWEEN_MS);
+    }
     this.syncChrome();
     this.emitViewport();
     this.invalidate();
   }
 
-  /** Re-engage follow mode, keeping the current span. */
+  /**
+   * Re-engage follow mode, keeping the current span: a fast
+   * JUMP_TO_NOW_TWEEN_MS glide from wherever the view is to the followed
+   * position — never a single-frame teleport (reduced motion snaps).
+   */
   jumpToNow(): void {
-    this.following = true;
-    this.pinToNow();
+    this.engageFollowGlide(JUMP_TO_NOW_TWEEN_MS);
     this.syncChrome();
     this.emitViewport();
     this.invalidate();
@@ -878,17 +988,141 @@ export class TimelineViewElement extends HTMLElement {
 
   /** Current pacing tier: any live gesture/tween = full rate; else idle (AC/battery). */
   private renderTier(): RenderTier {
-    if (this.pointers.size > 0 || this.glidePx !== 0 || this.layoutAnim !== null) return 'interactive';
+    if (this.pointers.size > 0 || this.glidePx !== 0 || this.layoutAnim !== null || this.leadAnim !== null || this.edgeAnim !== null)
+      return 'interactive';
     if (this.perfNow() - this.lastInputTs < INTERACT_GRACE_MS) return 'interactive';
     return this.batteryDischarging ? 'idle-battery' : 'idle';
   }
 
+  // -- Feed staleness ---------------------------------------------------------------
+
+  /**
+   * The LIVE EDGE every live semantic uses — ongoing (end = null) bar
+   * ends, the now line, the follow pin, and the forward clamp on user
+   * views: the real clock while the feed is fresh, FROZEN at lastFreshMs
+   * while it is stale (liveEdgeTarget). The stale <-> fresh transition is
+   * EASED (followLeadAt over JUMP_TO_NOW_TWEEN_MS): entering stale mode
+   * retracts the edge from wherever it had extrapolated back to the last
+   * vouched timestamp as a glide, and recovery advances it to the live
+   * clock the same way — composing with the follow pin, so neither
+   * transition teleports the view. Reduced motion snaps.
+   */
+  private liveEdge(): number {
+    const target = this.feedStale && this.lastFreshMs !== null ? this.lastFreshMs : this.nowMs();
+    const a = this.edgeAnim;
+    if (!a) return target;
+    const dur = this.reducedMotion ? 0 : JUMP_TO_NOW_TWEEN_MS;
+    const elapsed = this.perfNow() - a.start;
+    if (elapsed >= dur) {
+      this.edgeAnim = null;
+      return target;
+    }
+    return followLeadAt(a.from, target, elapsed, dur);
+  }
+
+  /**
+   * Re-evaluate staleness; on a transition, glide the live edge and
+   * announce it. `edgeFrom` overrides the glide's start point — markFresh
+   * passes the edge it captured before moving the stamp.
+   */
+  private updateStale(edgeFrom?: number): void {
+    const now = this.nowMs();
+    const stale = feedIsStale(now, this.lastFreshMs, this.staleAfter);
+    if (stale !== this.feedStale) {
+      const from = edgeFrom ?? this.liveEdge(); // where the edge renders right now, BEFORE the flip
+      this.feedStale = stale;
+      this.edgeAnim = this.reducedMotion ? null : { from, start: this.perfNow() };
+      this.dispatchEvent(new CustomEvent('stalechange', { detail: { stale, lastFresh: this.lastFreshMs } }));
+      this.invalidate();
+    }
+    this.syncStaleNote(now);
+  }
+
+  /** The stale affordance: "live data stale (Ns) — reconnecting…", counting forever. */
+  private syncStaleNote(now: number): void {
+    if (!this.feedStale || this.lastFreshMs === null) {
+      this.staleEl.hidden = true;
+      this.staleNoteText = '';
+      return;
+    }
+    this.staleEl.hidden = false;
+    const secs = Math.max(0, Math.floor((now - this.lastFreshMs) / 1000));
+    const text = `live data stale (${secs}s) — reconnecting…`;
+    if (text !== this.staleNoteText) {
+      this.staleNoteText = text;
+      this.staleEl.textContent = text;
+    }
+  }
+
   // -- Viewport internals -----------------------------------------------------------
+
+  /**
+   * Advance + read the animated follow lead (fraction of span). Time-based
+   * (followLeadAt), so multiple reads within a frame agree; the tween
+   * clears itself the moment it lands on its target. A reduced-motion
+   * preference snaps any in-flight glide to its target.
+   */
+  private currentLead(): number {
+    const a = this.leadAnim;
+    if (a) {
+      this.leadFrac = followLeadAt(a.from, a.target, this.perfNow() - a.start, this.reducedMotion ? 0 : a.dur);
+      if (this.leadFrac === a.target) this.leadAnim = null;
+    }
+    return this.leadFrac;
+  }
+
+  /** Retarget the follow-lead tween from `from` toward `target` (reduced motion snaps). */
+  private glideLead(from: number, target: number, dur: number): void {
+    if (this.reducedMotion || from === target) {
+      this.leadFrac = target;
+      this.leadAnim = null;
+      return;
+    }
+    this.leadFrac = from;
+    this.leadAnim = { from, target, start: this.perfNow(), dur };
+  }
+
+  /**
+   * following := true, easing from the CURRENT view position to the
+   * followed lead over `dur` — jumpToNow's glide (and the followNow
+   * setter's). The seed lead may be deeply negative (a parked view far in
+   * the past): the glide crosses the whole gap, decelerating into the
+   * pin — never a teleport. This frame's pin lands exactly where the view
+   * already is.
+   */
+  private engageFollowGlide(dur: number): void {
+    this.following = true;
+    const span = this.view.end - this.view.start;
+    this.glideLead(gestureLeadFrac(this.view.end, this.liveEdge(), span, this.currentLead()), FOLLOW_LEAD_FRAC, dur);
+    this.pinToNow();
+  }
 
   private pinToNow(): void {
     const span = this.view.end - this.view.start;
-    const end = this.nowMs() + span * FOLLOW_LEAD_FRAC;
+    const end = this.liveEdge() + span * this.currentLead();
     this.view = { start: end - span, end };
+  }
+
+  /**
+   * The disengaged counterpart of the per-tick pin: while residual follow
+   * lead is still gliding out after a backward-pan disengage, the view's
+   * end tracks the DECAYING ceiling now + span * lead — moving backward by
+   * at most the easing step per frame — until the lead is gone or "now"
+   * overtakes the parked end first. Once settled this is a no-op and the
+   * view is an ordinary parked view (end <= now).
+   */
+  private decayLead(): void {
+    if (this.leadAnim === null && this.leadFrac === 0) return;
+    const now = this.liveEdge();
+    if (this.view.end <= now) {
+      // Lead fully consumed (or now caught up): settle to parked.
+      this.leadFrac = 0;
+      this.leadAnim = null;
+      return;
+    }
+    const span = this.view.end - this.view.start;
+    const ceil = now + span * this.currentLead();
+    if (this.view.end > ceil) this.view = { start: ceil - span, end: ceil };
   }
 
   /**
@@ -905,19 +1139,35 @@ export class TimelineViewElement extends HTMLElement {
    * pin while following (zooming at the live edge stays live); a
    * programmatic setViewport (`jump`) is exempt from that — it lands
    * where it says, engaging follow only inside the snap zone.
+   *
+   * The FOLLOW LEAD is eased, never assigned: engaging keeps the view
+   * exactly where the gesture parked it and the per-tick pin glides end
+   * out to now + span * FOLLOW_LEAD_FRAC over FOLLOW_LEAD_TWEEN_MS;
+   * disengaging (a backward pan) lets the gesture's own delta consume the
+   * lead and glides any residual back down (decayLead) instead of slamming
+   * end to now in the same frame — the two single-frame ~2%-of-plot-width
+   * teleports this replaced. Reduced motion snaps both.
    */
   private applyUserView(next: TimeView, opts?: { pan?: boolean; jump?: boolean }): void {
     const span = next.end - next.start;
-    const now = this.nowMs();
+    const now = this.liveEdge(); // stale mode: gestures clamp/dock at the FROZEN edge
     const wasFollowing = this.following;
     const msPerDevPx = span / (this.plotWidth() * this.dpr);
     const stayPinned = wasFollowing && opts?.jump !== true;
     this.following = followAfterGesture(stayPinned, this.view.end, next, now, opts?.pan === true, msPerDevPx);
     if (this.following) {
-      const end = now + span * FOLLOW_LEAD_FRAC;
+      // ENGAGE (or a jump landing in the snap zone) seeds the lead ease
+      // from where the gesture parked; while ALREADY pinned the current
+      // (possibly still easing) lead simply carries over.
+      if (!stayPinned) this.glideLead(gestureLeadFrac(next.end, now, span, this.currentLead()), FOLLOW_LEAD_FRAC, FOLLOW_LEAD_TWEEN_MS);
+      const end = now + span * this.currentLead();
       this.view = { start: end - span, end };
     } else {
-      this.view = clampViewToNow(next, now);
+      // DISENGAGE by a backward pan: the delta consumed lead; the residual
+      // glides out. The hard forward bound is the (decaying) ceiling —
+      // plain "now" once the residual is gone, i.e. for every parked view.
+      if (wasFollowing) this.glideLead(Math.max(0, gestureLeadFrac(next.end, now, span, this.currentLead())), 0, FOLLOW_LEAD_TWEEN_MS);
+      this.view = clampViewToNow(next, now + span * this.currentLead());
     }
     if (wasFollowing !== this.following) this.syncChrome();
     // The content moved under a resting cursor — keep hover/tooltip honest.
@@ -996,13 +1246,17 @@ export class TimelineViewElement extends HTMLElement {
 
   /** True while something time-based needs continuous frames. */
   private animating(): boolean {
-    if (this.following || this.glidePx !== 0 || this.layoutAnim !== null) return true;
+    if (this.glidePx !== 0 || this.layoutAnim !== null || this.leadAnim !== null || this.edgeAnim !== null) return true;
+    // While STALE the followed view is frozen at the dead feed's edge —
+    // nothing moves, so no continuous frames (the watchdog interval keeps
+    // the note's counter alive and notices recovery).
+    if (this.following && !this.feedStale) return true;
     // In-flight history loads AND failed ones waiting out the fixed retry
     // cadence both need frames — without the latter, a rejected loadRange in
     // a paused historical view would park silently until the next input
     // instead of retrying every ~2s.
     if (this.loadRangeFn && (this.coverage.pending() || this.coverage.waitingRetry(this.nowMs()))) return true;
-    if (this.reducedMotion) return false;
+    if (this.reducedMotion || this.feedStale) return false; // frozen stale bars don't pulse
     // Ongoing intervals pulse only while their live edge is in view.
     const now = this.nowMs();
     if (now < this.view.start || this.byId.size === 0) return false;
@@ -1036,8 +1290,10 @@ export class TimelineViewElement extends HTMLElement {
     const dt = this.lastFrame > 0 ? Math.min(100, t - this.lastFrame) : 16;
     this.lastFrame = t;
     this.lastRenderTs = t;
+    this.updateStale(); // frame-accurate stale transitions while animating (the 500ms watchdog covers parked charts)
     this.stepGlide(dt);
     if (this.following) this.pinToNow();
+    else this.decayLead();
     this.pumpLoad();
     this.updateVisibleLayout();
     if (this.dirty || this.animating()) {
@@ -1243,7 +1499,7 @@ export class TimelineViewElement extends HTMLElement {
 
   private hitAt(x: number, y: number): TimelineHit | null {
     if (this.lanes.length === 0) return null;
-    const now = this.nowMs();
+    const now = this.liveEdge(); // ongoing-bar geometry must match what draw() rendered
     // Lane gutter → the lane label.
     if (y >= AXIS_H && x < this.gutterW) {
       const laneIdx = this.laneAtY(y);
@@ -1643,7 +1899,7 @@ export class TimelineViewElement extends HTMLElement {
     const dpr = this.dpr;
     const w = this.cssW;
     const h = this.cssH;
-    const now = this.nowMs();
+    const now = this.liveEdge(); // frozen at lastFresh while stale — bars never extrapolate a dead feed
     const gx = this.gutterW;
     const plotW = this.plotWidth();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1941,18 +2197,34 @@ export class TimelineViewElement extends HTMLElement {
       ctx.restore();
     }
 
-    // Ongoing: animated leading edge at the live end.
+    // Ongoing: animated leading edge at the live end — unless the feed is
+    // STALE: then the bar is frozen at the last vouched timestamp and its
+    // state is UNKNOWN, not "running" — dim it and overlay hatching (the
+    // same visual language as uncovered history) instead of pulsing.
     if (n.end === null && x1 > this.gutterW) {
-      const pulse = this.reducedMotion ? 0.55 : 0.4 + 0.25 * Math.sin(now / 550);
-      const gw = Math.min(14, bw);
-      const grad = ctx.createLinearGradient(x1 - gw, 0, x1, 0);
-      grad.addColorStop(0, withAlpha('#ffffff', 0));
-      grad.addColorStop(1, withAlpha('#ffffff', pulse));
-      ctx.save();
-      ctx.clip(path);
-      ctx.fillStyle = grad;
-      ctx.fillRect(x1 - gw, y, gw, bh);
-      ctx.restore();
+      if (this.feedStale) {
+        ctx.save();
+        ctx.clip(path);
+        ctx.fillStyle = withAlpha('#000000', 0.35); // dim
+        ctx.fillRect(x0, y, bw, bh);
+        const pat = this.patternFor('hatch', withAlpha(t.muted, 0.5));
+        if (pat) {
+          ctx.fillStyle = pat;
+          ctx.fillRect(x0, y, bw, bh);
+        }
+        ctx.restore();
+      } else {
+        const pulse = this.reducedMotion ? 0.55 : 0.4 + 0.25 * Math.sin(now / 550);
+        const gw = Math.min(14, bw);
+        const grad = ctx.createLinearGradient(x1 - gw, 0, x1, 0);
+        grad.addColorStop(0, withAlpha('#ffffff', 0));
+        grad.addColorStop(1, withAlpha('#ffffff', pulse));
+        ctx.save();
+        ctx.clip(path);
+        ctx.fillStyle = grad;
+        ctx.fillRect(x1 - gw, y, gw, bh);
+        ctx.restore();
+      }
     }
 
     // Border — width capped for sliver bars so a 2px emphasis border can't
@@ -2138,14 +2410,19 @@ export class TimelineViewElement extends HTMLElement {
     if (now < rv.start || now > rv.end) return;
     const t = this.theme;
     const x = snap(this.gutterW + timeToX(now, rv, this.plotWidth()), this.dpr);
-    ctx.strokeStyle = withAlpha(t.now, 0.85);
+    // Stale: the line is parked at the last vouched timestamp, not ticking —
+    // muted + dashed so it can't be mistaken for a live edge.
+    const stale = this.feedStale;
+    ctx.strokeStyle = stale ? withAlpha(t.muted, 0.8) : withAlpha(t.now, 0.85);
     ctx.lineWidth = 1;
+    if (stale) ctx.setLineDash(MARKER_DASH);
     ctx.beginPath();
     ctx.moveTo(x, AXIS_H);
     ctx.lineTo(x, this.cssH);
     ctx.stroke();
+    if (stale) ctx.setLineDash(EMPTY_DASH);
     // Small cap at the axis.
-    ctx.fillStyle = t.now;
+    ctx.fillStyle = stale ? t.muted : t.now;
     ctx.beginPath();
     ctx.moveTo(x - 3.5, AXIS_H);
     ctx.lineTo(x + 3.5, AXIS_H);
