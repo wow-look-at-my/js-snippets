@@ -1,7 +1,8 @@
 // Minimal mat4 utilities — column-major Float32Array(16).
 // All functions return new arrays, no mutation.
 
-import { Vec3, subtract, cross, normalize, dot } from './vec3';
+import { subtract, cross, normalize, dot } from './vec3.ts';
+import type { Vec3 } from './vec3.ts';
 
 export type Mat4 = Float32Array;
 
@@ -23,6 +24,23 @@ export function perspective(fovY: number, aspect: number, near: number, far: num
   m[10] = far / (near - far);
   m[11] = -1;
   m[14] = near * far / (near - far);
+  return m;
+}
+
+/**
+ * Perspective projection with the OpenGL/WebGL clip-Z [-1, 1] convention.
+ * Contrast `perspective()`, which maps to WebGPU clip-Z [0, 1]; use this one for
+ * a WebGL2 pipeline (or remap [0,1] -> [-1,1] in the vertex shader instead).
+ */
+export function perspectiveGL(fovY: number, aspect: number, near: number, far: number): Mat4 {
+  const f = 1 / Math.tan(fovY / 2);
+  const nf = 1 / (near - far);
+  const m = new Float32Array(16);
+  m[0] = f / aspect;
+  m[5] = f;
+  m[10] = (far + near) * nf;
+  m[11] = -1;
+  m[14] = 2 * far * near * nf;
   return m;
 }
 
@@ -73,6 +91,13 @@ export function rotateY(m: Mat4, angle: number): Mat4 {
   return multiply(m, r);
 }
 
+export function rotateZ(m: Mat4, angle: number): Mat4 {
+  const c = Math.cos(angle), s = Math.sin(angle);
+  const r = identity();
+  r[0] = c; r[1] = s; r[4] = -s; r[5] = c;
+  return multiply(m, r);
+}
+
 export function scale(m: Mat4, v: Vec3): Mat4 {
   const s = identity();
   s[0] = v[0]; s[5] = v[1]; s[10] = v[2];
@@ -104,6 +129,49 @@ export function normalMatrix(m: Mat4): Mat4 {
   n[4] = inv[1]; n[5] = inv[5]; n[6]  = inv[9];
   n[8] = inv[2]; n[9] = inv[6]; n[10] = inv[10];
   return n;
+}
+
+/**
+ * Transpose-of-inverse of the upper-left 3x3 of `m`, returned as a column-major
+ * `Float32Array(9)` (the GLSL/WGSL `mat3x3` normal-matrix form). Use this for a
+ * WebGL/WebGPU shader that wants a `mat3` normal matrix; `normalMatrix` above
+ * returns the same transform embedded in a 4x4 instead. Returns the identity 3x3
+ * if the upper 3x3 is singular (matching `normalMatrix`'s identity fallback).
+ */
+export function normalMatrix3(m: Mat4): Float32Array {
+  const a00 = m[0], a01 = m[1], a02 = m[2];
+  const a10 = m[4], a11 = m[5], a12 = m[6];
+  const a20 = m[8], a21 = m[9], a22 = m[10];
+
+  const det =
+    a00 * (a11 * a22 - a12 * a21) -
+    a01 * (a10 * a22 - a12 * a20) +
+    a02 * (a10 * a21 - a11 * a20);
+  if (det === 0) return new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+  const id = 1 / det;
+
+  return new Float32Array([
+    (a11 * a22 - a21 * a12) * id,
+    (a20 * a12 - a10 * a22) * id,
+    (a10 * a21 - a20 * a11) * id,
+    (a21 * a02 - a01 * a22) * id,
+    (a00 * a22 - a20 * a02) * id,
+    (a20 * a01 - a00 * a21) * id,
+    (a01 * a12 - a11 * a02) * id,
+    (a10 * a02 - a00 * a12) * id,
+    (a00 * a11 - a10 * a01) * id,
+  ]);
+}
+
+/** Transpose of a 4x4 matrix. */
+export function transpose(m: Mat4): Mat4 {
+  const t = new Float32Array(16);
+  for (let c = 0; c < 4; c++) {
+    for (let r = 0; r < 4; r++) {
+      t[c * 4 + r] = m[r * 4 + c];
+    }
+  }
+  return t;
 }
 
 /** Invert a general 4x4 matrix. Returns null if singular. */
