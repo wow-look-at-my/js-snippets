@@ -7,6 +7,9 @@ permissions:
   pages: write
   id-token: write
 
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,13 +20,27 @@ jobs:
         with:
           node-version: 22
 
-      - run: npm ci
+      # pnpm, pinned via package.json "packageManager" and provisioned by
+      # corepack (ships with Node) — no third-party setup action needed.
+      - name: Enable pnpm
+        run: corepack enable
 
-      - name: Type-check
-        run: npx tsc --noEmit
+      # No lockfile is committed (so ts0 is never pinned to a commit) — `pnpm
+      # install` resolves the ts0 branch dependency to its current HEAD on every
+      # run. ts0's git-dep build script is allowlisted via package.json
+      # "pnpm.onlyBuiltDependencies".
+      - run: pnpm install
+
+      - name: Test
+        # ts0 test type-checks the project (sources + *.test.ts) and runs them
+        # under Node's built-in test runner. A failing test fails CI, and since
+        # `deploy` depends on `build`, it also gates the deploy.
+        run: pnpm test
 
       - name: Build
-        run: npx ts-node build.ts
+        # ts0 build type-checks (tsc --noEmit) and compiles src/ -> dist/;
+        # the build script then assembles dist/llms.txt.
+        run: pnpm build
 
       - name: Upload Pages artifact
         if: github.ref == 'refs/heads/master'

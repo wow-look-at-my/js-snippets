@@ -1,5 +1,7 @@
 // Procedural mesh generators.
 // Each returns { positions, normals, indices } as typed arrays.
+// Winding convention: indices are counter-clockwise viewed from outside the
+// surface — front-facing under WebGPU's default frontFace: 'ccw'.
 
 export interface Mesh {
   positions: Float32Array;
@@ -66,7 +68,7 @@ export function createSphere(radius = 1, segments = 24): Mesh {
     for (let s = 0; s < sectors; s++) {
       const a = r * (sectors + 1) + s;
       const b = a + sectors + 1;
-      indices.push(a, b, a + 1, a + 1, b, b + 1);
+      indices.push(a, a + 1, b, a + 1, b + 1, b);
     }
   }
 
@@ -111,7 +113,7 @@ export function createCylinder(radiusTop = 0.5, radiusBottom = 0.5, height = 1, 
     normals.push(0, 1, 0);
   }
   for (let i = 0; i < segments; i++) {
-    indices.push(topCenter, topCenter + 1 + i, topCenter + 2 + i);
+    indices.push(topCenter, topCenter + 2 + i, topCenter + 1 + i);
   }
 
   // Bottom cap
@@ -124,7 +126,7 @@ export function createCylinder(radiusTop = 0.5, radiusBottom = 0.5, height = 1, 
     normals.push(0, -1, 0);
   }
   for (let i = 0; i < segments; i++) {
-    indices.push(botCenter, botCenter + 2 + i, botCenter + 1 + i);
+    indices.push(botCenter, botCenter + 1 + i, botCenter + 2 + i);
   }
 
   return {
@@ -145,4 +147,85 @@ export function createPlane(width = 20, depth = 20): Mesh {
     ]),
     indices: new Uint16Array([0, 2, 1, 0, 3, 2]),
   };
+}
+
+/**
+ * Axis-aligned box centred at the origin with independent full extents per axis.
+ * (`createCube` is the uniform-size special case.)
+ */
+export function createBox(width = 1, height = 1, depth = 1): Mesh {
+  const X = width / 2, Y = height / 2, Z = depth / 2;
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const indices: number[] = [];
+  let base = 0;
+  const quad = (n: number[], a: number[], b: number[], c: number[], d: number[]) => {
+    for (const v of [a, b, c, d]) { positions.push(v[0], v[1], v[2]); normals.push(n[0], n[1], n[2]); }
+    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    base += 4;
+  };
+  quad([1, 0, 0], [X, -Y, Z], [X, -Y, -Z], [X, Y, -Z], [X, Y, Z]);      // +X
+  quad([-1, 0, 0], [-X, -Y, -Z], [-X, -Y, Z], [-X, Y, Z], [-X, Y, -Z]); // -X
+  quad([0, 1, 0], [-X, Y, Z], [X, Y, Z], [X, Y, -Z], [-X, Y, -Z]);      // +Y
+  quad([0, -1, 0], [-X, -Y, -Z], [X, -Y, -Z], [X, -Y, Z], [-X, -Y, Z]); // -Y
+  quad([0, 0, 1], [-X, -Y, Z], [X, -Y, Z], [X, Y, Z], [-X, Y, Z]);      // +Z
+  quad([0, 0, -1], [X, -Y, -Z], [-X, -Y, -Z], [-X, Y, -Z], [X, Y, -Z]); // -Z
+  return {
+    positions: new Float32Array(positions),
+    normals: new Float32Array(normals),
+    indices: new Uint16Array(indices),
+  };
+}
+
+/**
+ * Torus with its ring in the XZ plane: `radius` is the major (ring) radius and
+ * `tube` the minor (tube cross-section) radius. `radialSegments` subdivides the
+ * tube; `tubularSegments` subdivides the ring.
+ */
+export function createTorus(radius = 1, tube = 0.4, radialSegments = 24, tubularSegments = 48): Mesh {
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const indices: number[] = [];
+  for (let i = 0; i <= tubularSegments; i++) {
+    const u = (i / tubularSegments) * Math.PI * 2;
+    const cu = Math.cos(u), su = Math.sin(u);
+    for (let j = 0; j <= radialSegments; j++) {
+      const v = (j / radialSegments) * Math.PI * 2;
+      const cv = Math.cos(v), sv = Math.sin(v);
+      positions.push((radius + tube * cv) * cu, tube * sv, (radius + tube * cv) * su);
+      normals.push(cv * cu, sv, cv * su);
+    }
+  }
+  const stride = radialSegments + 1;
+  for (let i = 0; i < tubularSegments; i++) {
+    for (let j = 0; j < radialSegments; j++) {
+      const a = i * stride + j;
+      const b = a + stride;
+      indices.push(a, a + 1, b, a + 1, b + 1, b);
+    }
+  }
+  return {
+    positions: new Float32Array(positions),
+    normals: new Float32Array(normals),
+    indices: new Uint16Array(indices),
+  };
+}
+
+/**
+ * Returns a new mesh with every triangle's winding reversed: (a, b, c) →
+ * (a, c, b), so front faces become back faces. The input is not mutated —
+ * positions/normals are passed through as the same arrays and only a new
+ * index array is allocated. Use it to render a mesh's interior, or to
+ * pre-flip geometry drawn under a mirror (determinant < 0) transform so
+ * back-face culling keeps working.
+ */
+export function flipWinding(mesh: Mesh): Mesh {
+  const src = mesh.indices;
+  const indices = new Uint16Array(src.length);
+  for (let t = 0; t < src.length; t += 3) {
+    indices[t] = src[t];
+    indices[t + 1] = src[t + 2];
+    indices[t + 2] = src[t + 1];
+  }
+  return { positions: mesh.positions, normals: mesh.normals, indices };
 }

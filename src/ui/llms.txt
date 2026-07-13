@@ -1,0 +1,455 @@
+### ui/perf-graph.js
+Compact, stackable, canvas-rendered performance graph as a <perf-graph>
+custom element. One element = one scrolling metric strip (frame time, fps,
+heap, any numeric gauge): push(value) appends a sample, the newest sample
+hugs the right edge, history scrolls left. Every pixel — including all text
+(label, current value, avg/min/max readout, tick labels) — is drawn on one
+shadow-DOM <canvas> via fillText: zero DOM text nodes, no layout, no
+dependencies. Redraws only when new data / size / theme arrive (dirty flag,
+at most one rAF pending, none when idle) and skips drawing entirely while
+the tab is hidden or the element is scrolled out of view (one deferred draw
+on becoming visible). DPR-aware backing store (crisp on HiDPI); when
+samples outnumber plot pixels the trace switches from a polyline (+ soft
+area fill) to per-pixel min-max columns via binMinMax. Steady-state draws
+allocate nothing. Re-exports everything from ui/perf-graph-math.js so one
+import is enough.
+
+Importing the module auto-registers <perf-graph> (unless that tag is taken).
+
+  import '.../ui/perf-graph.js';
+
+  <perf-graph label="frame" unit="ms" budget="16.7"></perf-graph>
+
+Element <perf-graph> attributes (all optional; properties mirror them, and
+property setters reflect back to the attributes):
+  label   — name drawn top-left
+  unit    — 'ms' (default) | 'fps' | any custom suffix | '' for bare numbers
+  history — samples kept/displayed (default 240); changing it live preserves
+            the newest samples
+  height  — element height in CSS px (default 48; compact)
+  min/max — fixed scale ends; omit either for autoscale (autoRange + nice
+            1-2-5 gridlines, range quantized so ticks stay put)
+  budget  — guide value (e.g. 16.7) drawn as a dashed amber line, always
+            kept inside the displayed range
+
+Element properties / methods:
+  push(value: number)  — append one sample; schedules (at most) one rAF redraw
+  clear()              — drop all samples
+  refreshTheme()       — re-read the --perf-graph-* custom properties
+  label, unit, history, height: reflected properties for the attributes
+  min, max, budget: number | null (null = attribute absent)
+
+CSS custom properties (read via getComputedStyle, cached; dark Scratch
+Proto defaults — set on the element, an ancestor, or :root):
+  --perf-graph-bg        — background            (#0d0f14)
+  --perf-graph-line      — trace / columns       (#00e47a)
+  --perf-graph-fill      — area fill under the polyline; 'none' disables
+                           (rgba(0, 228, 122, 0.10))
+  --perf-graph-grid      — gridlines             (rgba(200, 205, 216, 0.08))
+  --perf-graph-text      — label/stats/ticks     (#6b7280)
+  --perf-graph-value     — current-value readout (#e8ecf4)
+  --perf-graph-budget    — budget line           (#f0a500)
+  --perf-graph-font      — canvas font family    ('JetBrains Mono', 'SF Mono',
+                           'Cascadia Code', 'Fira Code', monospace)
+  --perf-graph-font-size — base font size in px  (10)
+
+Stacked HUD example — several graphs sit flush in a plain column (:host is
+display:block, width:100%, margin-free), all fed from one rAF loop:
+
+  <div id="hud" style="position: fixed; top: 0; right: 0; width: 260px;">
+    <perf-graph id="ft"  label="frame" unit="ms"  budget="16.7"></perf-graph>
+    <perf-graph id="fps" label="fps"   unit="fps" min="0" max="120"></perf-graph>
+    <perf-graph id="mem" label="heap"  unit="MB"  history="600" height="32"></perf-graph>
+  </div>
+
+  import '.../ui/perf-graph.js';
+  const ft = document.getElementById('ft');
+  const fps = document.getElementById('fps');
+  const mem = document.getElementById('mem');
+  let last = performance.now();
+  requestAnimationFrame(function tick(now) {
+    const dt = now - last;
+    last = now;
+    ft.push(dt);
+    fps.push(1000 / dt);
+    if (performance.memory) mem.push(performance.memory.usedJSHeapSize / 2 ** 20);
+    requestAnimationFrame(tick);
+  });
+
+Exports:
+  class PerfGraphElement extends HTMLElement
+    Exported so you can register under another name:
+    customElements.define('my-graph', PerfGraphElement)
+  THEME_DEFAULTS — the default theme values keyed like the CSS properties
+  Plus everything re-exported from ui/perf-graph-math.js.
+
+### ui/perf-graph-math.js
+The graph's pure math. No DOM or browser APIs (unit-tested under node);
+hot paths are allocation-free — the ring allocates only on construction /
+setCapacity, and computeStats/binMinMax fill caller-owned outputs.
+
+Exports:
+  class SampleRing
+    Fixed-capacity float32 ring buffer: constructor(capacity), push(v),
+    at(i) (0 = oldest; NaN out of range), latest() (NaN when empty),
+    clear(), setCapacity(n) (preserves the newest samples), getters
+    length / capacity. Capacity clamps to >= 1.
+  computeStats(ring, out: PerfStats) → PerfStats
+    Fills the caller-owned { current, avg, min, max } (returns it).
+    Non-finite samples are skipped for avg/min/max; all fields NaN when
+    empty; current is the raw latest sample.
+  autoRange(dataMin, dataMax, opts?: AutoRangeOptions) → DisplayRange
+    Padded display range { min, max }. opts: fixedMin/fixedMax pin an end
+    exactly, pad (default 0.1) pads each free end by pad × span,
+    includeZero extends a free end to 0 (a zero floor from non-negative
+    data is not padded below 0). Degenerate-safe: empty/flat data still
+    yields a usable nonzero span.
+  niceStep(span, maxTicks) → number
+    Smallest 1-2-5 × 10^k step splitting span into <= maxTicks intervals.
+  niceTicks(lo, hi, maxTicks) → number[]
+    Tick positions on that grid within [lo, hi] (at most maxTicks + 1;
+    [] for an invalid range). Allocates — call only when the range moves.
+  binMinMax(ring, bins, outMin: Float32Array, outMax: Float32Array) → number
+    Min-max downsample for more-samples-than-pixels: sample i lands in bin
+    floor(i * bins / count), so every finite sample influences exactly one
+    bin and outMin[b] <= outMax[b]. Empty bins are NaN; bins clamps to the
+    out arrays; returns the number of non-empty bins.
+  formatValue(v, unit) → string
+    Deterministic readout formatting: non-finite → '—'; 'ms' → adaptive
+    decimals (|v| >= 100 → 0, >= 10 → 1, else 2) + 'ms'; 'fps' → rounded +
+    'fps'; other non-empty unit → 1 decimal + suffix; '' → bare adaptive
+    number.
+
+Types: PerfStats, AutoRangeOptions, DisplayRange
+
+### ui/timeline-view.js
+Canvas-rendered realtime swimlane timeline as a <timeline-view> custom
+element. A shared horizontal time axis across the full width; stacked
+labeled lanes (left gutter, ellipsized labels, full text via tooltip;
+lane order = exactly the order supplied — never re-sorted internally),
+each a band of interval bars (left = start, right = end). A lane grows
+extra sub-tracks when intervals VISIBLE in the current window overlap
+(greedy first-fit packing over the visible set, deterministic under
+re-ordering and stable while the window slides over unchanged overlap); a
+historical parallelism burst stops padding its lane once it scrolls out
+of view, a lane with nothing visible collapses to one track, and height
+changes ease over ~150ms (snapped under prefers-reduced-motion;
+hit-testing tracks the animating layout). AUTO-FIT (default on; opt out
+with the no-auto-fit attribute): when the natural stack — every lane at
+--timeline-track-height — would overflow the host's height, whole lanes
+are demoted to the compact track height (--timeline-track-height-compact,
+default 4 CSS px; the canvas' DPR scaling supplies device pixels) one at
+a time, tallest (most parallel) lane first — ties demote the LOWER lane
+first, so top-of-chart lanes keep detail longest — until the stack fits
+or every lane is compact (only then does vertical lane scrolling engage,
+as before). Demotion is immediate; re-promotion needs ~10% height
+headroom (hysteresis — heights can't flap at the boundary); the demotion
+set re-derives from the visible window each pass (a parallelism burst
+scrolling away hands its demotion to the now-tallest lane,
+deterministically); and demotion/promotion rides the same ~150ms height
+tween. Compact slivers stay legible: bars keep the 2px minimum width and
+a border capped to the sliver, pips shrink but never below a 4px-tall
+diamond, in-bar labels are suppressed below fit height, and gutter labels
+degrade gracefully (full → smaller/faded → skipped below ~10px lane
+height, where the gutter tooltip still names the lane) without ever
+overlapping a neighbor. Read fitState / listen for 'fitchange' to observe
+the demotion set. Everything is data — lanes,
+intervals, optional connectors between intervals, vertical time markers;
+dynamic lane count (1-50+), smooth with thousands of in-window intervals
+(viewport culling, dirty-flag rAF drawing, DPR-aware backing store capped
+at 2, adaptive idle pacing — full rate while interacting + a ~500ms
+grace, ~30fps idle, ~10fps idle on battery via navigator.getBattery
+feature-detection, paused while the document is hidden). Rendering is
+stability-first: the viewport origin is snapped to whole DEVICE pixels
+once per frame and nothing else on the time axis is rounded, so
+follow-mode scrolling translates the whole scene in integer device-pixel
+steps and bars never jiggle relative to each other. Not a Gantt (many
+bars per row), not a flame chart (no nesting).
+
+Color encodes CATEGORY: interval.category (default lane.group, then
+laneId) hashes to a stable hue — same category = same color, forever —
+with a small deterministic tone offset so near hues still separate.
+Rendering STYLE encodes state/phase via a named style map: interval.state
+and segment.kind look up a treatment {pattern solid|hatch|stipple|outline,
+alphaScale, saturationScale, lightnessScale, border {width, dash,
+emphasis}, glyph none|bang|dot}. Built-ins: '' solid; 'emphasis'/'failed'
+unmissable (2px emphasis border + corner bang glyph + stipple — hue
+untouched); 'dim'/'queued' translucent + desaturated; 'hatch'/'waiting'
+45-degree stripes; 'outline' hollow. Ongoing intervals (end == null)
+render to the live now edge with a subtly pulsing leading edge (static
+under prefers-reduced-motion). Zero/near-zero-DURATION intervals (mapped
+width under ~3px at the current zoom) render as instant diamond pips at
+their start time — clearly distinct from bars, still category-colored,
+state-styled (a failed instant gets the thick emphasis border + stem),
+hoverable and clickable via a widened hit target, and packed like
+everything else so coincident instants stack instead of vanishing. The
+bar-vs-pip decision comes from the DURATION mapped through the scale
+(durationWidthPx) — translation-invariant, so shapes never flicker while
+the timeline scrolls — and a real-duration bar is clamped to MIN_BAR_PX
+(2px), never demoted to a pip. Bar labels truncate with an ellipsis and are
+suppressed below fit width — they never spill into neighboring bars — and
+stick to the plot edge while a bar's start is scrolled off-screen.
+
+Importing the module auto-registers <timeline-view> (unless the tag is
+taken).
+
+  import '.../ui/timeline-view.js';
+
+  <timeline-view id="tl" style="height: 400px"></timeline-view>
+
+  const tl = document.getElementById('tl');
+  const now = Date.now();
+  tl.setData({
+    lanes: [
+      { id: 'build-queue', label: 'build queue' },
+      { id: 'deploy-queue', label: 'deploy queue', group: 'deploys' },
+    ],
+    intervals: [
+      { id: 'j1', laneId: 'build-queue', start: now - 300_000, end: now - 120_000,
+        label: 'job #17', category: 'build',
+        segments: [{ start: now - 300_000, end: now - 240_000, kind: 'queued' }] },
+      { id: 'j2', laneId: 'build-queue', start: now - 100_000, end: now - 100_000,
+        label: 'skipped', category: 'build', state: 'dim' },     // instant pip
+      { id: 'j3', laneId: 'deploy-queue', start: now - 90_000, end: null,
+        label: 'deploy #4', category: 'deploy' },                 // ongoing
+      { id: 'j4', laneId: 'deploy-queue', start: now - 200_000, end: now - 150_000,
+        label: 'deploy #3', category: 'deploy', state: 'failed' },
+    ],
+    connectors: [{ fromIntervalId: 'j1', toIntervalId: 'j3', label: 'triggers' }],
+    markers: [{ time: now - 150_000, label: 'config change', kind: 'emphasis' }],
+    coverage: { start: now - 300_000, end: now },
+  });
+  tl.loadRange = async (start, end) => {
+    const rows = await fetch(`/api/history?from=${start}&to=${end}`).then(r => r.json());
+    tl.mergeData({ intervals: rows });
+    return { exhausted: rows.length === 0 };
+  };
+  tl.addEventListener('intervalclick', (e) => showDetails(e.detail.interval));
+
+Element <timeline-view> — data API (properties/methods, never attributes):
+  setData({lanes?, intervals?, connectors?, markers?, coverage?})
+    Replace all data. coverage: {start, end} declares the time range the
+    supplied intervals fully cover (async-history bookkeeping).
+  mergeData(data)   — merge into the current set: lanes/intervals dedupe by
+    id (intervals replace in place), connectors by (from, to, kind),
+    markers by (time, label, kind). How loadRange results are supplied.
+  setLanes(lanes) / setIntervals(intervals) / setConnectors(connectors) /
+  setMarkers(markers) — replace one slice of the data.
+  clear()           — drop everything.
+  styles            — StyleMap spread over the built-ins (see above).
+  colorFor          — (interval, lane) => cssColor | null override.
+  tooltipFor        — (hit: TimelineHit) => string | Node | null; null/
+                      undefined hides. Default tooltip shows label,
+                      category, state, start/end, duration, segment
+                      durations. Node content is appended, never innerHTML.
+  loadRange         — (start, end) => Promise<{exhausted?: boolean} | void>.
+                      Invoked (one request at a time, min-chunk widened;
+                      a rejected load is retried on a fixed ~2s cadence
+                      forever — no growing backoff, no attempt cap, no
+                      give-up, and the uncovered hatching stays visible
+                      while it keeps trying) when the viewport reaches
+                      uncovered past. BACKWARD history only: requests
+                      never reach past the covered end, so the sliver
+                      between the last covered time and the live "now" is
+                      never asked for — keep coverage.end current via
+                      setData/mergeData `coverage` on every live update
+                      (a live feed owns the forward edge; loadRange can
+                      then never chase the advancing clock and refire per
+                      round-trip). With no coverage at all, one bootstrap
+                      request may reach "now" and latches once settled.
+                      Uncovered regions draw hatched (with 'loading…'
+                      while in flight) — visually distinct from
+                      covered-but-empty; {exhausted: true} pins a dashed
+                      'history ends here' boundary with a darkened void
+                      before it and stops further requests.
+  nowProvider       — () => msSinceEpoch override for replay/testing.
+  fitState          — read-only {enabled: boolean, demoted: laneId[]}:
+                      the current auto-fit demotion set in display order
+                      (mirrors the latest 'fitchange' event).
+
+Interval shape: {id, laneId, start, end?, label?, category?, state?,
+segments?, data?}. start/end are ms since epoch or Date; end null/
+undefined = ongoing. segments: [{start, end?, kind}] phases WITHIN the
+bar, each styled via kind (e.g. a dim leading 'queued' phase, a hatched
+'waiting' span); end null = to the bar's end. data is opaque and echoed
+back in events/tooltips. Connector: {fromIntervalId, toIntervalId, kind?,
+label?} — a muted S-curve between two bars, endpoint-dotted, highlighted
+on hover; if one endpoint id is missing from the data a dashed stub +
+open circle marks it and the tooltip says which side isn't loaded.
+Marker: {time, label?, kind?} — dashed vertical line; kind 'emphasis'
+renders in the emphasis color.
+
+Viewport / follow:
+  viewport          — getter {start, end} (ms).
+  setViewport(start, end) — explicit window (span clamped ~2s..~7d;
+                      hard-stops at now; engages follow only when it
+                      ends within the 2-device-px snap zone of now).
+  followNow         — boolean (default true): right edge pinned to live
+                      now. Any backward PAN (wheel, drag, arrow keys)
+                      disengages immediately — even a tiny step, so
+                      trackpad panning escapes the pin; zooming while
+                      pinned stays pinned. User-driven views HARD-STOP at
+                      now (every pan/zoom/pinch/keyboard/setViewport
+                      clamps the right edge there), and a gesture parking
+                      the right edge within 2 DEVICE pixels of that end
+                      stop re-engages follow — dragging to the stop
+                      re-docks reliably, while a view parked merely NEAR
+                      the edge (3+ device px) stays put.
+  jumpToNow()       — re-engage follow, keeping the span.
+  Events: 'viewportchange' {start, end, followNow} on user-driven changes,
+  'intervalclick' {interval, lane}, 'intervalhover' {interval|null,
+  lane|null}, 'connectorclick' {connector}, 'laneclick' {lane} (a click on
+  a gutter label — lets consumers make lanes navigable), 'fitchange'
+  {demoted: laneId[]} whenever auto-fit's demotion set changes.
+  A built-in jump-to-live pill appears while not following (hide it with
+  the no-live-pill attribute).
+
+Attributes (scalar toggles only): no-live-pill, no-auto-fit (disable
+compact-lane auto-fit — every lane keeps the full track height),
+history-end-text (boundary label, default 'history ends here'),
+empty-text (empty-state hint).
+
+Interaction: plain wheel / two-finger scroll pans (deltaX ALWAYS pans
+time; deltaY scrolls lanes when they overflow, else pans time; a diagonal
+gesture applies both axes in one event; all deltaMode-normalized);
+ctrl/meta+wheel zooms anchored under the cursor (pixel-precise trackpad
+deltas apply 1:1; discrete wheel steps glide ~130ms); shift+wheel pans
+time; pointer drag pans both axes (pointer capture); two-pointer pinch
+zooms; keyboard when focused (tabindex 0): arrows pan (shift = faster),
++/- zoom, End = jump to now, Home = jump to the earliest known data.
+Wheel events over the canvas are always consumed — the page never
+scrolls instead.
+
+CSS custom properties (dark Scratch Proto defaults; see THEME_DEFAULTS):
+  --timeline-bg            — plot background          (#0d0f14)
+  --timeline-fg            — bar labels / primary     (#e8ecf4)
+  --timeline-muted         — axis/lane labels         (#6b7280)
+  --timeline-grid          — vertical time gridlines  (rgba(200,205,216,0.07))
+  --timeline-hairline      — lane separators          (rgba(200,205,216,0.10))
+  --timeline-row-tint      — alternating lane tint    (rgba(255,255,255,0.015))
+  --timeline-now           — now line + live pill     (#00e47a)
+  --timeline-emphasis      — failed/emphasis accents  (#ff5c5c)
+  --timeline-font          — canvas + chrome font     (JetBrains Mono stack)
+  --timeline-font-size     — base font size px        (11)
+  --timeline-cat-lightness — category oklch L 0..1    (0.62)
+  --timeline-cat-chroma    — category oklch chroma    (0.11)
+  --timeline-track-height  — sub-track height px      (18, clamped 10..40)
+  --timeline-track-height-compact — auto-fit demoted sub-track height px
+                             (4, clamped 2..track-height; CSS px — DPR
+                             scaling supplies device pixels)
+  --timeline-gutter-width  — lane gutter px           (0 = auto-size)
+  --timeline-tooltip-bg / --timeline-tooltip-fg — tooltip chrome.
+  Category colors use oklch when supported (hsl fallback). refreshTheme()
+  re-reads the properties after retheming.
+
+Exports:
+  class TimelineViewElement extends HTMLElement
+  THEME_DEFAULTS — default theme values keyed like the CSS properties
+  Types: TimelineData, TimelineHit, LoadRangeFn, TooltipFn, ColorFn
+  Plus everything re-exported from ui/timeline-view-math.js.
+
+### ui/timeline-view-math.js
+The timeline's pure math. No DOM or browser APIs (unit-tested under
+node); ui/timeline-view.js is the canvas-bound half that consumes it.
+
+Exports:
+  Data types: TimelineLane {id, label, group?}, TimelineInterval,
+    TimelineSegment {start, end?, kind}, TimelineConnector,
+    TimelineMarker {time, label?, kind?}, TimeView {start, end},
+    TimeRange {start, end}, IntervalStyle, StyleMap, StylePattern,
+    PackItem, LaneMetrics, LaneLayout, HitRect, CategoryColorOptions,
+    CoverageOptions.
+  toMs(t: number | Date) → number
+  Scale/zoom: timeToX(t, view, width), xToTime(x, view, width),
+    panView(view, dt), zoomView(view, anchor, factor, minSpan?, maxSpan?)
+    (anchor-preserving, span clamped; MIN_SPAN_MS = 2s, MAX_SPAN_MS = 7d),
+    wheelDeltaToPixels(delta, deltaMode, lineHeight?, pageHeight?)
+    (deltaMode 0/1/2 → px), zoomFactorForWheel(deltaPx) (exponential,
+    composable; ZOOM_PX_PER_DOUBLE px per doubling),
+    routeWheel(WheelInput, lanesOverflow) → WheelRoute {zoomPx, panPx,
+    laneScrollPx} (the gesture router: ctrl/meta = zoom, shift = time
+    pan, else deltaX pans time + deltaY scrolls-or-pans; deltaMode
+    normalized), clampViewToNow(view, now) → TimeView (the hard right
+    end stop: a user view's end never passes now, span preserved),
+    followAfterGesture(wasFollowing, prevEnd, next, now, isPan,
+    msPerDevicePx) → boolean (the follow rule: a backward pan always
+    disengages; while already following anything else stays pinned —
+    zooming at the live edge keeps following; while not following,
+    re-engage only when the right edge lands within
+    FOLLOW_SNAP_DEVICE_PX (2) DEVICE pixels of the now end stop — pass
+    span / (plotWidthCss * dpr); FOLLOW_LEAD_FRAC is the pinned lead),
+    snapViewToDevicePixels(view, plotWidthCss, dpr) →
+    TimeView (origin snapped to whole device pixels, span preserved —
+    the single global rounding that makes scrolling translate the scene
+    in integer device-pixel steps).
+  Time ticks: TIME_TICK_STEPS (the 1/2/5/10/15/30 ladder ms→s→min→h→d),
+    timeTickStep(span, maxTicks), timeTicks(view, maxTicks, tzOffsetMs?)
+    (aligned to round local times; pass -new Date().getTimezoneOffset() *
+    60000), formatTimeTick(t, step, tzOffsetMs?) (granularity follows the
+    step; local-midnight ticks label as the date), formatTimeFull(t,
+    tzOffsetMs?, withMs?), formatDuration(ms).
+  Packing/layout: packTracks(items) → {tracks, trackCount} (greedy
+    first-fit; deterministic under re-ordering — sorted by (start, id)
+    internally, results index-aligned to the input; end null = ongoing
+    blocks its track; every item occupies >= PACK_MIN_MS so coincident
+    instants stack), packVisibleTracks(items, view) → {tracks,
+    trackCount} (same packing over only the items intersecting `view` —
+    partial overlap counts, out-of-view items get track -1, trackCount
+    >= 1 so an empty window collapses to one track; assignment is a pure
+    function of the visible set, so sliding over unchanged overlap never
+    hops tracks), layoutLanes(trackCounts, metrics, trackHeights?) →
+    {tops, heights, totalHeight} (per-lane trackHeights override the
+    metrics' track height — compact lanes; fractional counts AND heights
+    allowed — used for height tweens), trackTop(track, metrics,
+    trackHeight?), laneHeight(trackCount, metrics, trackHeight?).
+  Auto-fit: demotionOrder(trackCounts) → laneIdx[] (demotion priority:
+    track count DESC, ties later-in-display-order first),
+    computeAutoFit(trackCounts, metrics, compactTrackHeight, availHeight,
+    prevDemotedCount?, hysteresisFrac?) → FitResult {demoted: boolean[],
+    count} (demote whole lanes to the compact track height, one at a
+    time in demotionOrder, until the stack fits availHeight or all are
+    compact; pure and deterministic; demotion is immediate, promotion
+    needs FIT_HYSTERESIS_FRAC (0.1) headroom — feed `count` back as
+    prevDemotedCount on the next evaluation; the demoted SET re-derives
+    from the CURRENT counts, so window slides hand demotion to the
+    now-tallest lane; compactTrackHeight clamps to the normal height),
+    FIT_HYSTERESIS_FRAC.
+  Labels/instants: fitText(text, availPx, charW, minChars?) (verbatim,
+    'abc…', or '' — never overflows), ELLIPSIS,
+    isInstantWidth(widthPx, threshold?) / INSTANT_THRESHOLD_PX (= 3px —
+    below it an interval renders as an instant pip),
+    durationWidthPx(startMs, endMs, view, plotWidth) (duration mapped
+    through the scale — the translation-invariant width the bar-vs-pip
+    decision must use), MIN_BAR_PX (= 2px minimum rendered bar width).
+  Hit testing: expandHitRect(rect, minW) (widen instants' hit targets),
+    hitTestRects(x, y, rects) (topmost = last; -1 on miss),
+    distSqToSegment(px, py, ax, ay, bx, by), hitTestPolyline(px, py, pts,
+    tol), connectorRoute(from, to, samples?) (sampled cubic S-curve from
+    right-center to left-center; 2-point segment when aligned forward).
+  Category color: hashString(s) (FNV-1a 32-bit), categoryHue(s) (stable
+    0..359, golden-ratio spread), categoryJitter(s) (deterministic small
+    {dl, dc} tone offsets), categoryColor(hue, {mode 'oklch'|'hsl',
+    lightness?, chroma?, alpha?}) → CSS color.
+  Styles: DEFAULT_STYLES (the built-in StyleMap described above).
+  Coverage: mergeRanges(ranges), subtractRanges(span, covers),
+    historyProbe(view, now, coveredEnd, prefetchFrac?) → TimeRange | null
+    (the range loadRange may be asked about: viewport + backward
+    prefetch, clamped to now AND the covered end — the forward-edge
+    clamp that stops a follow-mode viewport from refiring a request per
+    round-trip as "now" advances), class CoverageTracker({minChunkMs?,
+    retryMs?}) — addCovered(start, end),
+    coveredRanges(), coveredEnd() (end of the newest covered range, null
+    when empty), pending(), uncoveredIn(span), nextRequest(view, now)
+    (returns the next range to fetch and marks it in flight; one at a
+    time, min-chunk widened, null while
+    covered/in-flight/retry-gated/exhausted), settle(range, {ok,
+    exhausted?}, now?) (success covers + optionally pins exhaustedBefore;
+    failure schedules a retry on a FIXED cadence — default 2s, constant
+    forever, no growth/cap/give-up), waitingRetry(now) (true while a
+    failed load waits out the cadence — frame loops must keep pumping
+    while it is), exhaustedBefore.
+  Render pacing: RenderTier ('interactive' | 'idle' | 'idle-battery'),
+    frameBudgetMs(tier) (0 / IDLE_FRAME_MS ≈ 33.3 / IDLE_BATTERY_FRAME_MS
+    = 100), shouldRender(nowTs, lastRenderTs, budgetMs, rafIntervalMs?)
+    (rAF frame gate with anti-aliasing slack), INTERACT_GRACE_MS (= 500ms
+    of full rate after the last input).
