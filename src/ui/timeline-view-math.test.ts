@@ -614,23 +614,30 @@ test('coverage: a fully covered viewport issues no request', () => {
   assert.equal(c.nextRequest({ start: 10_000, end: 90_000 }, 0), null);
 });
 
-test('coverage: rejection backs off, then retries, with exponential growth', () => {
-  const c = new CoverageTracker({ minChunkMs: 1_000, backoffMs: 2_000, maxBackoffMs: 5_000 });
+test('coverage: rejection retries on a fixed cadence — constant gap, no cap, no give-up', () => {
+  const c = new CoverageTracker({ minChunkMs: 1_000, retryMs: 2_000 });
   c.addCovered(10_000, 20_000);
   const view: TimeView = { start: 0, end: 15_000 };
-  const r1 = c.nextRequest(view, 0);
-  assert.ok(r1);
-  c.settle(r1, { ok: false }, 1_000);
-  assert.equal(c.nextRequest(view, 2_000), null, 'still backing off');
-  const r2 = c.nextRequest(view, 3_000);
-  assert.ok(r2, 'retries after the backoff');
-  c.settle(r2, { ok: false }, 3_000);
-  assert.equal(c.nextRequest(view, 6_000), null, 'second backoff doubled (4s)');
-  const r3 = c.nextRequest(view, 7_100);
-  assert.ok(r3);
-  c.settle(r3, { ok: true });
-  const r4 = c.nextRequest({ start: -5_000, end: 1_000 }, 7_200);
-  assert.ok(r4, 'success resets the backoff immediately');
+  assert.equal(c.waitingRetry(0), false, 'no retry pending before any failure');
+  // Many consecutive failures: the gate reopens exactly 2s after EVERY
+  // failure — the delay never grows, never hits a cap, never latches off.
+  let at = 0;
+  for (let i = 0; i < 50; i++) {
+    const req = c.nextRequest(view, at);
+    assert.ok(req, `attempt ${i + 1} is issued (never gives up)`);
+    assert.equal(c.waitingRetry(at), false, 'in flight is not a retry wait');
+    c.settle(req, { ok: false }, at);
+    assert.equal(c.nextRequest(view, at + 1_999), null, 'gated within the cadence window');
+    assert.ok(c.waitingRetry(at + 1_999), 'reports the wait (keeps the frame loop pumping)');
+    assert.equal(c.waitingRetry(at + 2_000), false, 'wait ends exactly at the cadence boundary');
+    at += 2_000;
+  }
+  const r = c.nextRequest(view, at);
+  assert.ok(r, 'attempt 51 fires exactly one cadence step after the 50th failure');
+  c.settle(r, { ok: true });
+  assert.equal(c.waitingRetry(at), false, 'success clears the retry wait');
+  const r2 = c.nextRequest({ start: -5_000, end: 1_000 }, at);
+  assert.ok(r2, 'after a success the next gap is requested immediately');
 });
 
 test('coverage: exhausted pins the history boundary; nothing below is requested', () => {
@@ -961,15 +968,20 @@ test('historyProbe: backward gaps are still requested (panning into uncovered hi
   assert.ok(req.end <= now - 4_000_000 + 1e-6);
 });
 
-test('coverage: a failed request is not retried before its backoff floor (>= 2s), then retries', () => {
-  const c = new CoverageTracker(); // defaults: backoff 2s → 60s cap
+test('coverage: the fixed cadence still storm-proofs a 60Hz frame loop after a failure', () => {
+  const c = new CoverageTracker(); // default: fixed 2s retry cadence
   const view: TimeView = { start: 0, end: 100_000 };
   const req = c.nextRequest(view, 0);
   assert.ok(req);
   c.settle(req, { ok: false }, 1_000);
-  assert.equal(c.nextRequest(view, 1_016), null, 'one frame later: still backing off');
-  assert.equal(c.nextRequest(view, 2_999), null, 'just under the 2s floor');
-  assert.ok(c.nextRequest(view, 3_001), 'retries after the backoff elapses');
+  // A frame loop probing every 16ms issues NOTHING inside the window — the
+  // cadence gate (not backoff growth) is what prevents request storms.
+  let issued = 0;
+  for (let now = 1_016; now < 3_000; now += 16) {
+    if (c.nextRequest(view, now)) issued++;
+  }
+  assert.equal(issued, 0, 'no request storm within the retry window');
+  assert.ok(c.nextRequest(view, 3_001), 'the retry fires once the cadence elapses');
 });
 
 // -- Render pacing ---------------------------------------------------------------------

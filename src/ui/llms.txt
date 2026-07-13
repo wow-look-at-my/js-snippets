@@ -224,8 +224,11 @@ Element <timeline-view> — data API (properties/methods, never attributes):
                       category, state, start/end, duration, segment
                       durations. Node content is appended, never innerHTML.
   loadRange         — (start, end) => Promise<{exhausted?: boolean} | void>.
-                      Invoked (one request at a time, min-chunk widened,
-                      backoff on rejection) when the viewport reaches
+                      Invoked (one request at a time, min-chunk widened;
+                      a rejected load is retried on a fixed ~2s cadence
+                      forever — no growing backoff, no attempt cap, no
+                      give-up, and the uncovered hatching stays visible
+                      while it keeps trying) when the viewport reaches
                       uncovered past. BACKWARD history only: requests
                       never reach past the covered end, so the sliver
                       between the last covered time and the live "now" is
@@ -380,14 +383,17 @@ Exports:
     prefetch, clamped to now AND the covered end — the forward-edge
     clamp that stops a follow-mode viewport from refiring a request per
     round-trip as "now" advances), class CoverageTracker({minChunkMs?,
-    backoffMs?, maxBackoffMs?}) — addCovered(start, end),
+    retryMs?}) — addCovered(start, end),
     coveredRanges(), coveredEnd() (end of the newest covered range, null
     when empty), pending(), uncoveredIn(span), nextRequest(view, now)
     (returns the next range to fetch and marks it in flight; one at a
     time, min-chunk widened, null while
-    covered/in-flight/backing-off/exhausted), settle(range, {ok,
+    covered/in-flight/retry-gated/exhausted), settle(range, {ok,
     exhausted?}, now?) (success covers + optionally pins exhaustedBefore;
-    failure arms exponential backoff, first retry >= 2s), exhaustedBefore.
+    failure schedules a retry on a FIXED cadence — default 2s, constant
+    forever, no growth/cap/give-up), waitingRetry(now) (true while a
+    failed load waits out the cadence — frame loops must keep pumping
+    while it is), exhaustedBefore.
   Render pacing: RenderTier ('interactive' | 'idle' | 'idle-battery'),
     frameBudgetMs(tier) (0 / IDLE_FRAME_MS ≈ 33.3 / IDLE_BATTERY_FRAME_MS
     = 100), shouldRender(nowTs, lastRenderTs, budgetMs, rafIntervalMs?)
