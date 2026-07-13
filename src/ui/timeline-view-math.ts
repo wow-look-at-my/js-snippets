@@ -1,7 +1,10 @@
 // Pure math for the <timeline-view> element: time<->pixel scales, an
 // anchor-preserving zoom (with wheel-delta normalization and gesture
-// routing), the follow-now engage/disengage rule, a device-pixel-snapped
-// render origin (whole-pixel scrolling), a nice TIME tick ladder
+// routing), the follow-now engage/disengage rule (plus the eased follow
+// lead — engage/disengage/jump transitions glide, never teleport), feed
+// staleness (a dead live feed freezes the live edge at the last vouched
+// timestamp instead of extrapolating), a device-pixel-snapped render
+// origin (whole-pixel scrolling), a nice TIME tick ladder
 // (1/2/5/10/15/30 across ms → s → min → h → days, with per-step label
 // granularity), greedy first-fit sub-track packing (whole-set and
 // visible-window variants), lane layout, auto-fit lane demotion (compact
@@ -245,6 +248,87 @@ export function followAfterGesture(
   if (isPan && next.end < prevEnd) return false;
   if (wasFollowing) return true;
   return next.end >= now - FOLLOW_SNAP_DEVICE_PX * (Number.isFinite(msPerDevicePx) && msPerDevicePx > 0 ? msPerDevicePx : 0);
+}
+
+// -- Follow-lead easing ---------------------------------------------------------------
+
+/**
+ * Duration of the follow-lead ease (ms): engaging follow ramps the lead in
+ * from where the gesture parked, and a backward-pan disengage glides any
+ * residual lead back out — both over this window, instead of teleporting
+ * the view by span * FOLLOW_LEAD_FRAC in a single frame (~2% of the plot
+ * width — 50+ device px on a wide monitor).
+ */
+export const FOLLOW_LEAD_TWEEN_MS = 200;
+/** Duration of the jump-to-now glide (ms): fast, deliberate — but continuous. */
+export const JUMP_TO_NOW_TWEEN_MS = 250;
+
+/**
+ * The eased follow lead `elapsedMs` into a glide from `fromFrac` toward
+ * `targetFrac` over `tweenMs`. Leads are FRACTIONS of the span (like
+ * FOLLOW_LEAD_FRAC) — dimensionless, so zooming mid-glide rescales the
+ * lead with the span exactly like the steady-state lead does. easeOutQuad
+ * (the LAYOUT_TWEEN family): monotone from → target with no overshoot,
+ * the per-tick step is bounded by |target - from| * 2 * dt / tweenMs (the
+ * no-teleport guarantee — the ease's steepest slope is at t=0), and it
+ * lands EXACTLY on the target at elapsed >= tweenMs (no asymptote). A
+ * non-positive tweenMs snaps straight to the target — the
+ * prefers-reduced-motion path.
+ */
+export function followLeadAt(fromFrac: number, targetFrac: number, elapsedMs: number, tweenMs: number): number {
+  if (!(tweenMs > 0) || !(elapsedMs < tweenMs)) return targetFrac;
+  if (!(elapsedMs > 0)) return fromFrac;
+  const p = elapsedMs / tweenMs;
+  return fromFrac + (targetFrac - fromFrac) * p * (2 - p);
+}
+
+/**
+ * The lead fraction a user gesture legitimately holds: its own end
+ * relative to `now`, capped at `maxFrac` — the lead the view was already
+ * allowed (a gesture may consume lead or park behind now, never mint
+ * lead). ENGAGE seeds the ease-in from this (a gesture parked at/just
+ * short of the now stop seeds ≈ 0; a jump-to-now from deep in the past
+ * seeds very negative — the glide crosses the gap); DISENGAGE floors it
+ * at 0 for the residual that glides back out.
+ */
+export function gestureLeadFrac(endMs: number, now: number, span: number, maxFrac: number): number {
+  if (!(span > 0)) return Math.min(0, maxFrac);
+  return Math.min((endMs - now) / span, maxFrac);
+}
+
+// -- Feed staleness ---------------------------------------------------------------
+
+/**
+ * Default ms without fresh data before a live chart declares its feed
+ * STALE (the element's `staleAfterMs`). Tune to ~2 poll intervals of the
+ * consumer's live feed; a non-finite or non-positive value disables
+ * staleness entirely (static, never-fed datasets).
+ */
+export const STALE_AFTER_DEFAULT_MS = 10_000;
+
+/**
+ * Whether the live feed is stale: fresh data last arrived at `lastFresh`
+ * (null = no data has EVER arrived — an empty chart is never stale) and
+ * more than `staleAfterMs` has since passed. The guard against a chart
+ * misrepresenting state when its feed silently dies: a finished run whose
+ * end never arrived would otherwise render as "running" forever.
+ */
+export function feedIsStale(now: number, lastFresh: number | null, staleAfterMs: number): boolean {
+  if (lastFresh === null || !Number.isFinite(staleAfterMs) || staleAfterMs <= 0) return false;
+  return now - lastFresh > staleAfterMs;
+}
+
+/**
+ * The LIVE EDGE every live semantic advances to — ongoing (end = null)
+ * bar ends, the now line, the follow-mode pin, and the user-view forward
+ * clamp: real `now` while the feed is fresh, FROZEN at `lastFresh` once
+ * stale. Once stale the chart never extrapolates past the last timestamp
+ * the data actually vouched for — frozen bars can only be honest. (The
+ * element eases the transition between the two targets with followLeadAt;
+ * this is the steady-state value.)
+ */
+export function liveEdgeTarget(now: number, lastFresh: number | null, staleAfterMs: number): number {
+  return feedIsStale(now, lastFresh, staleAfterMs) ? (lastFresh as number) : now;
 }
 
 // -- Whole-pixel scrolling ------------------------------------------------------------

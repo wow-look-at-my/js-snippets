@@ -1,7 +1,9 @@
 // Tests for the pure math half of <timeline-view> (ui/timeline-view-math.ts):
 // scales + anchor-preserving zoom, wheel normalization + gesture routing,
 // the follow-now engage/disengage rule (2-device-px re-engage at the hard
-// `now` end stop), whole-device-pixel view snapping, the time tick ladder
+// `now` end stop), the eased follow lead (engage/disengage/jump-to-now
+// glide continuously — never a one-frame lead teleport; reduced motion
+// snaps), whole-device-pixel view snapping, the time tick ladder
 // and label granularity, sub-track packing (whole-set and visible-window,
 // incl. coincident instants), lane layout (incl. per-lane track heights),
 // auto-fit compact-lane demotion (tallest-first order, hysteresis,
@@ -58,6 +60,13 @@ import {
   followAfterGesture,
   FOLLOW_LEAD_FRAC,
   FOLLOW_SNAP_DEVICE_PX,
+  FOLLOW_LEAD_TWEEN_MS,
+  JUMP_TO_NOW_TWEEN_MS,
+  followLeadAt,
+  gestureLeadFrac,
+  STALE_AFTER_DEFAULT_MS,
+  feedIsStale,
+  liveEdgeTarget,
   clampViewToNow,
   snapViewToDevicePixels,
   durationWidthPx,
@@ -984,6 +993,245 @@ test('clampViewToNow + followAfterGesture: any forward overshoot parks at the st
     assert.equal(clamped.end, now);
     assert.equal(followAfterGesture(false, now - span, clamped, now, true, px), true);
   }
+});
+
+// -- Follow-lead easing (engage/disengage/jump glide, never teleport) ---------------------
+
+const FRAME_MS = 1000 / 60;
+/** Max per-frame lead change the easeOutQuad tween can produce (its slope peaks at t=0). */
+const easeStepBound = (dist: number, dt: number, tween: number): number => Math.abs(dist) * 2 * (dt / tween);
+
+test('gestureLeadFrac: a gesture consumes lead or parks behind now — never mints lead', () => {
+  const now = 1_000_000_000;
+  const span = 900_000;
+  // Parked exactly at the stop: zero lead.
+  assert.equal(gestureLeadFrac(now, now, span, 0), 0);
+  // Parked 2 device px short (a 1000-px plot): a tiny NEGATIVE seed.
+  const twoPx = 2 * mppx(span);
+  const short = gestureLeadFrac(now - twoPx, now, span, 0);
+  assert.ok(short < 0 && short > -0.01, `2 px short seeds slightly negative (${short})`);
+  // A raw overshoot past the ceiling is capped at the lead already held.
+  assert.equal(gestureLeadFrac(now + span, now, span, FOLLOW_LEAD_FRAC), FOLLOW_LEAD_FRAC);
+  assert.equal(gestureLeadFrac(now + span, now, span, 0), 0);
+  // Deep in the past (jump-to-now seed): deeply negative, uncapped below.
+  assert.equal(gestureLeadFrac(now - 10 * span, now, span, 0), -10);
+  // Degenerate span never yields a positive lead.
+  assert.equal(gestureLeadFrac(now + 5, now, 0, FOLLOW_LEAD_FRAC), 0);
+});
+
+test('followLeadAt: engage starts from the parked end and monotonically approaches the lead — no overshoot, exact landing', () => {
+  const from = 0; // the qualifying gesture parked at end = now
+  let prev = from;
+  assert.equal(followLeadAt(from, FOLLOW_LEAD_FRAC, 0, FOLLOW_LEAD_TWEEN_MS), from, 'frame 0 IS the parked position');
+  for (let t = 1; t <= FOLLOW_LEAD_TWEEN_MS + 50; t += 1) {
+    const v = followLeadAt(from, FOLLOW_LEAD_FRAC, t, FOLLOW_LEAD_TWEEN_MS);
+    assert.ok(v >= prev, `monotone at t=${t}`);
+    assert.ok(v <= FOLLOW_LEAD_FRAC, `no overshoot at t=${t}`);
+    prev = v;
+  }
+  assert.equal(followLeadAt(from, FOLLOW_LEAD_FRAC, FOLLOW_LEAD_TWEEN_MS, FOLLOW_LEAD_TWEEN_MS), FOLLOW_LEAD_FRAC, 'lands EXACTLY on the lead');
+});
+
+test('engage: per-frame view displacement is bounded by the easing step — never the one-frame lead teleport', () => {
+  const span = 900_000;
+  const now0 = 1_000_000_000;
+  // The element's per-tick pin while following: end = now + span * lead(t).
+  const endAt = (t: number): number => now0 + t + span * followLeadAt(0, FOLLOW_LEAD_FRAC, t, FOLLOW_LEAD_TWEEN_MS);
+  assert.equal(endAt(0), now0, 'the engaging frame leaves the view where the gesture parked');
+  const teleport = span * FOLLOW_LEAD_FRAC; // what the instant assignment used to move in ONE frame
+  const bound = easeStepBound(FOLLOW_LEAD_FRAC * span, FRAME_MS, FOLLOW_LEAD_TWEEN_MS);
+  let maxStep = 0;
+  for (let t = FRAME_MS; t <= FOLLOW_LEAD_TWEEN_MS + 3 * FRAME_MS; t += FRAME_MS) {
+    const step = endAt(t) - endAt(t - FRAME_MS) - FRAME_MS; // minus the natural follow drift (now advanced)
+    assert.ok(step >= -1e-6, `never moves backward while engaging (t=${t})`);
+    assert.ok(step <= bound + 1e-6, `t=${t}: easing step ${step} within bound ${bound}`);
+    maxStep = Math.max(maxStep, step);
+  }
+  assert.ok(maxStep < teleport / 4, `max per-frame step ${maxStep}ms is a fraction of the old ${teleport}ms teleport`);
+  // Steady state after the tween: the pin is EXACTLY the old end = now + span * FOLLOW_LEAD_FRAC.
+  const t = 10 * FOLLOW_LEAD_TWEEN_MS;
+  assert.equal(endAt(t), now0 + t + span * FOLLOW_LEAD_FRAC);
+});
+
+test('disengage: a backward wheel sequence consumes the lead — no frame moves more than the user delta + easing step', () => {
+  const span = 900_000;
+  const tween = FOLLOW_LEAD_TWEEN_MS;
+  let now = 1_000_000_000;
+  // Steady follow.
+  let lead = FOLLOW_LEAD_FRAC;
+  let view: TimeView = { start: now + span * lead - span, end: now + span * lead };
+  // Backward wheel ticks (~1/3 of the lead each), 3 frames apart — the
+  // recording's disengage gesture shape.
+  const deltas = [6_000, 6_000, 6_000, 6_000];
+  let glide: { from: number; start: number } | null = null;
+  let following = true;
+  let tickIdx = 0;
+  let t = 0;
+  const leadAt = (tt: number): number => (glide ? followLeadAt(glide.from, 0, tt - glide.start, tween) : lead);
+  for (let frame = 0; frame < 60; frame++) {
+    const prevEnd = view.end;
+    let userDelta = 0;
+    t += FRAME_MS;
+    now += FRAME_MS;
+    // The element's per-frame step: pin while following, decay when not.
+    if (following) {
+      view = { start: now + span * lead - span, end: now + span * lead };
+    } else {
+      const ceil = now + span * leadAt(t);
+      if (view.end > ceil) view = { start: ceil - span, end: ceil };
+    }
+    // A wheel tick lands every 3rd frame while any remain (applyUserView).
+    if (frame % 3 === 2 && tickIdx < deltas.length) {
+      userDelta = deltas[tickIdx++];
+      const next = panView(view, -userDelta);
+      if (following) {
+        assert.equal(followAfterGesture(true, view.end, next, now, true, mppx(span)), false, 'backward pan disengages');
+        following = false;
+        const residual = Math.max(0, gestureLeadFrac(next.end, now, span, lead));
+        glide = { from: residual, start: t };
+        view = clampViewToNow(next, now + span * residual);
+        assert.equal(view.end, next.end, "the disengaging tick moves EXACTLY the user's own delta — no lead collapse");
+      } else {
+        view = clampViewToNow(next, now + span * leadAt(t));
+        assert.equal(view.end, next.end, 'later backward ticks stay pure user motion');
+      }
+    }
+    const moved = prevEnd - view.end; // backward displacement this frame
+    const easing = easeStepBound((glide ? glide.from : lead) * span, FRAME_MS, tween);
+    // Forward motion is only ever the natural follow drift (now advancing
+    // while still pinned) — once disengaged the view NEVER moves forward.
+    assert.ok(moved >= (following ? -FRAME_MS : 0) - 1e-6, `frame ${frame}: view never jumps FORWARD while disengaging`);
+    assert.ok(moved <= userDelta + easing + 1e-6, `frame ${frame}: moved ${moved}ms > user ${userDelta}ms + easing ${easing}ms`);
+  }
+  assert.equal(following, false);
+  assert.ok(view.end <= now, 'the lead is fully consumed — the parked view is back behind now');
+});
+
+test('jumpToNow: the pill GLIDES from wherever you are and reaches the followed state exactly', () => {
+  const span = 900_000;
+  const now0 = 1_000_000_000;
+  const parkedEnd = now0 - 10 * span; // deep in the past
+  const from = gestureLeadFrac(parkedEnd, now0, span, 0);
+  assert.equal(from, -10);
+  const endAt = (t: number): number => now0 + t + span * followLeadAt(from, FOLLOW_LEAD_FRAC, t, JUMP_TO_NOW_TWEEN_MS);
+  assert.equal(endAt(0), parkedEnd, 'the jump frame leaves the view where it was — no teleport');
+  let prev = endAt(0);
+  let movingFrames = 0;
+  for (let t = FRAME_MS; t <= JUMP_TO_NOW_TWEEN_MS + FRAME_MS; t += FRAME_MS) {
+    const e = endAt(Math.min(t, JUMP_TO_NOW_TWEEN_MS));
+    assert.ok(e >= prev, `glides monotonically forward (t=${t})`);
+    if (e - prev > FRAME_MS) movingFrames++;
+    prev = e;
+  }
+  assert.ok(movingFrames >= 8, `the travel is spread over many frames (${movingFrames})`);
+  const tEnd = JUMP_TO_NOW_TWEEN_MS;
+  assert.equal(endAt(tEnd), now0 + tEnd + span * FOLLOW_LEAD_FRAC, 'lands EXACTLY on the followed position (end = now + lead)');
+});
+
+test('followLeadAt: reduced motion (non-positive tween) snaps straight to the target', () => {
+  for (const tween of [0, -1]) {
+    assert.equal(followLeadAt(0, FOLLOW_LEAD_FRAC, 0, tween), FOLLOW_LEAD_FRAC, 'engage snaps');
+    assert.equal(followLeadAt(FOLLOW_LEAD_FRAC, 0, 0, tween), 0, 'disengage snaps');
+    assert.equal(followLeadAt(-10, FOLLOW_LEAD_FRAC, 0, tween), FOLLOW_LEAD_FRAC, 'jump snaps');
+  }
+});
+
+test('followLeadAt: steady-state follow is unchanged — at/after the tween the pin IS now + span * FOLLOW_LEAD_FRAC', () => {
+  // from == target (no transition in flight): every elapsed value is the lead.
+  for (const t of [0, 1, FOLLOW_LEAD_TWEEN_MS / 2, FOLLOW_LEAD_TWEEN_MS, 1e6]) {
+    assert.equal(followLeadAt(FOLLOW_LEAD_FRAC, FOLLOW_LEAD_FRAC, t, FOLLOW_LEAD_TWEEN_MS), FOLLOW_LEAD_FRAC);
+  }
+  // And a finished transition parks exactly on the constant.
+  assert.equal(followLeadAt(0, FOLLOW_LEAD_FRAC, FOLLOW_LEAD_TWEEN_MS + 1, FOLLOW_LEAD_TWEEN_MS), FOLLOW_LEAD_FRAC);
+});
+
+// -- Feed staleness (a dead feed must be impossible to misread) -----------------------
+
+test('feedIsStale: trigger timing — fresh within the threshold, stale strictly past it', () => {
+  const fresh = 1_000_000_000;
+  assert.equal(feedIsStale(fresh, fresh, STALE_AFTER_DEFAULT_MS), false, 'just stamped');
+  assert.equal(feedIsStale(fresh + STALE_AFTER_DEFAULT_MS, fresh, STALE_AFTER_DEFAULT_MS), false, 'exactly at the threshold');
+  assert.equal(feedIsStale(fresh + STALE_AFTER_DEFAULT_MS + 1, fresh, STALE_AFTER_DEFAULT_MS), true, 'past the threshold');
+  // A re-stamp resets the clock.
+  assert.equal(feedIsStale(fresh + 60_000, fresh + 55_000, STALE_AFTER_DEFAULT_MS), false);
+});
+
+test('feedIsStale: never-fed charts and disabled thresholds are never stale', () => {
+  assert.equal(feedIsStale(1e12, null, STALE_AFTER_DEFAULT_MS), false, 'no data ever arrived');
+  for (const off of [0, -1, Infinity, NaN]) {
+    assert.equal(feedIsStale(1e12, 0, off), false, `threshold ${off} disables staleness`);
+  }
+});
+
+test('liveEdgeTarget: once stale the edge FREEZES at lastFresh — an ongoing bar can never render past the last vouched timestamp', () => {
+  const fresh = 1_000_000_000;
+  const after = STALE_AFTER_DEFAULT_MS;
+  // While fresh the edge IS the clock (bars advance smoothly).
+  assert.equal(liveEdgeTarget(fresh + 2_000, fresh, after), fresh + 2_000);
+  // Once stale, no matter how long the feed stays dead, the edge (= the
+  // right end of every end=null bar) is pinned at lastFresh: a 5s run
+  // whose end never arrived shows 5-ish seconds, not "running forever".
+  for (const dead of [after + 1, 60_000, 3_600_000, 86_400_000]) {
+    assert.equal(liveEdgeTarget(fresh + dead, fresh, after), fresh);
+  }
+});
+
+test('stale view pinning: a followed view stops scrolling while the feed is dead', () => {
+  const fresh = 1_000_000_000;
+  const span = 900_000;
+  const after = STALE_AFTER_DEFAULT_MS;
+  // The element's follow pin: end = liveEdge + span * lead.
+  const pinned = new Set<number>();
+  for (let t = after + 1; t < after + 60_000; t += FRAME_MS * 10) {
+    pinned.add(liveEdgeTarget(fresh + t, fresh, after) + span * FOLLOW_LEAD_FRAC);
+  }
+  assert.equal(pinned.size, 1, 'the pinned end is one constant value — the frozen content cannot scroll out of view');
+});
+
+test('stale onset: the live edge RETRACTS to lastFresh as a bounded glide, not a one-frame teleport', () => {
+  const fresh = 1_000_000_000;
+  const after = STALE_AFTER_DEFAULT_MS;
+  const from = fresh + after; // where the edge had extrapolated to when staleness was detected
+  let prev = from;
+  for (let t = FRAME_MS; t <= JUMP_TO_NOW_TWEEN_MS; t += FRAME_MS) {
+    const e = followLeadAt(from, fresh, Math.min(t, JUMP_TO_NOW_TWEEN_MS), JUMP_TO_NOW_TWEEN_MS);
+    assert.ok(e <= prev, 'retracts monotonically');
+    assert.ok(e >= fresh, 'never overshoots below the vouched timestamp');
+    const step = prev - e;
+    assert.ok(step <= (after * 2 * FRAME_MS) / JUMP_TO_NOW_TWEEN_MS + 1e-6, `bounded step (${step}ms)`);
+    prev = e;
+  }
+  assert.equal(prev, fresh, 'lands exactly on lastFresh');
+});
+
+test('stale recovery: the edge glides from the frozen point to the LIVE clock and the follow pin composes — no teleport', () => {
+  const fresh = 1_000_000_000;
+  const span = 900_000;
+  const outage = 45_000; // the feed was dead 45s; markFresh arrives now
+  const recoverAt = fresh + outage;
+  const gap = outage; // distance the edge must travel (frozen at fresh, clock at recoverAt)
+  let prevEnd = fresh + span * FOLLOW_LEAD_FRAC; // the frozen followed view
+  for (let t = FRAME_MS; ; t += FRAME_MS) {
+    const e = Math.min(t, JUMP_TO_NOW_TWEEN_MS);
+    const clock = recoverAt + t; // real now keeps advancing during the glide
+    const edge = followLeadAt(fresh, clock, e, JUMP_TO_NOW_TWEEN_MS);
+    const end = edge + span * FOLLOW_LEAD_FRAC; // the element's follow pin
+    const step = end - prevEnd;
+    assert.ok(step >= -1e-6, 'the view only moves forward during recovery');
+    assert.ok(step <= ((gap + JUMP_TO_NOW_TWEEN_MS + FRAME_MS) * 2 * FRAME_MS) / JUMP_TO_NOW_TWEEN_MS + FRAME_MS + 1e-6, 'bounded easing step');
+    prevEnd = end;
+    if (t >= JUMP_TO_NOW_TWEEN_MS) {
+      assert.equal(edge, clock, 'the edge lands exactly on the live clock');
+      assert.equal(end, clock + span * FOLLOW_LEAD_FRAC, 'the followed view is back to steady state');
+      break;
+    }
+  }
+});
+
+test('stale transitions: reduced motion snaps the edge (tween 0)', () => {
+  const fresh = 1_000_000_000;
+  assert.equal(followLeadAt(fresh + STALE_AFTER_DEFAULT_MS, fresh, 0, 0), fresh, 'onset snaps to lastFresh');
+  assert.equal(followLeadAt(fresh, fresh + 45_000, 0, 0), fresh + 45_000, 'recovery snaps to the clock');
 });
 
 // -- Whole-pixel scrolling ------------------------------------------------------------

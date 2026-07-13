@@ -177,7 +177,9 @@ unmissable (2px emphasis border + corner bang glyph + stipple — hue
 untouched); 'dim'/'queued' translucent + desaturated; 'hatch'/'waiting'
 45-degree stripes; 'outline' hollow. Ongoing intervals (end == null)
 render to the live now edge with a subtly pulsing leading edge (static
-under prefers-reduced-motion). Zero/near-zero-DURATION intervals (mapped
+under prefers-reduced-motion; while the feed is STALE they freeze at the
+last vouched timestamp and restyle dim + hatched — see Feed staleness
+below). Zero/near-zero-DURATION intervals (mapped
 width under ~3px at the current zoom) render as instant diamond pips at
 their start time — clearly distinct from bars, still category-colored,
 state-styled (a failed instant gets the thick emphasis border + stem),
@@ -236,6 +238,10 @@ Element <timeline-view> — data API (properties/methods, never attributes):
   setLanes(lanes) / setIntervals(intervals) / setConnectors(connectors) /
   setMarkers(markers) — replace one slice of the data.
   clear()           — drop everything.
+  markFresh(ts?)    — stamp the live feed fresh without merging data
+                      (setData/mergeData stamp automatically; see Feed
+                      staleness below).
+  staleAfterMs      — staleness threshold (see Feed staleness below).
   styles            — StyleMap spread over the built-ins (see above).
   colorFor          — (interval, lane) => cssColor | null override.
   tooltipFor        — (hit: TimelineHit) => string | Node | null; null/
@@ -294,15 +300,49 @@ Viewport / follow:
                       the right edge within 2 DEVICE pixels of that end
                       stop re-engages follow — dragging to the stop
                       re-docks reliably, while a view parked merely NEAR
-                      the edge (3+ device px) stays put.
-  jumpToNow()       — re-engage follow, keeping the span.
+                      the edge (3+ device px) stays put. The small follow
+                      lead (FOLLOW_LEAD_FRAC = 2% of span ahead of the
+                      now line) is EASED, never assigned: engaging keeps
+                      the view exactly where the gesture parked and
+                      glides the lead in over ~200ms; disengaging lets
+                      the backward deltas consume the lead, any residual
+                      gliding out the same way — the view never teleports
+                      in a single frame (prefers-reduced-motion snaps
+                      instead).
+  jumpToNow()       — re-engage follow, keeping the span: a fast ~250ms
+                      glide from wherever the view is to the followed
+                      position, never a teleport (reduced motion snaps).
   Events: 'viewportchange' {start, end, followNow} on user-driven changes,
   'intervalclick' {interval, lane}, 'intervalhover' {interval|null,
   lane|null}, 'connectorclick' {connector}, 'laneclick' {lane} (a click on
   a gutter label — lets consumers make lanes navigable), 'fitchange'
-  {demoted: laneId[]} whenever auto-fit's demotion set changes.
+  {demoted: laneId[]} whenever auto-fit's demotion set changes,
+  'stalechange' {stale, lastFresh} on feed-staleness transitions.
   A built-in jump-to-live pill appears while not following (hide it with
   the no-live-pill attribute).
+
+Feed staleness (a dead live feed is impossible to misread):
+  Every setData/mergeData stamps the feed FRESH; markFresh(ts?) stamps
+  explicitly — call it from polls that returned "no changes" so a
+  quiet-but-healthy feed never reads as stale. When staleAfterMs (default
+  10_000; tune to ~2 poll intervals; 0 or a non-finite value disables —
+  use that for static, loaded-once datasets) passes without a stamp the
+  chart goes STALE instead of extrapolating dead data: the live edge —
+  ongoing (end=null) bar ends, the now line, the follow pin, the forward
+  clamp on user views — FREEZES at the last vouched timestamp (a finished
+  5s run whose end never arrived shows ~5s, never "running forever"),
+  ongoing bars restyle as unknown (dimmed + hatch overlay, no pulse), the
+  now line goes muted + dashed, a built-in "live data stale (Ns) —
+  reconnecting…" note counts up forever (fixed cadence, never gives up),
+  and 'stalechange' {stale: true, lastFresh} fires. A followed view stops
+  scrolling (the frozen content never slides out of view). The next
+  stamp exits stale mode and the live edge GLIDES back to the real clock
+  (~250ms; composes with the follow pin — no teleport on recovery either;
+  reduced motion snaps). On 'stalechange' back to fresh, consumers should
+  do ONE full resync (setData) before resuming incremental merges — runs
+  that ended during the outage otherwise stay unknown; a full setData
+  mid-stale is handled gracefully and recovers in the same call.
+  staleState — read-back getter {stale, lastFresh}.
 
 Attributes (scalar toggles only): no-live-pill, no-auto-fit (disable
 compact-lane auto-fit — every lane keeps the full track height),
@@ -329,6 +369,7 @@ CSS custom properties (dark Scratch Proto defaults; see THEME_DEFAULTS):
   --timeline-row-tint      — alternating lane tint    (rgba(255,255,255,0.015))
   --timeline-now           — now line + live pill     (#00e47a)
   --timeline-emphasis      — failed/emphasis accents  (#ff5c5c)
+  --timeline-stale         — stale-feed note          (#f0a500)
   --timeline-font          — canvas + chrome font     (JetBrains Mono stack)
   --timeline-font-size     — base font size px        (11)
   --timeline-cat-lightness — category oklch L 0..1    (0.62)
@@ -378,10 +419,26 @@ Exports:
     re-engage only when the right edge lands within
     FOLLOW_SNAP_DEVICE_PX (2) DEVICE pixels of the now end stop — pass
     span / (plotWidthCss * dpr); FOLLOW_LEAD_FRAC is the pinned lead),
+    followLeadAt(fromFrac, targetFrac, elapsedMs, tweenMs) → number (the
+    eased follow lead, fractions of span: easeOutQuad, monotone, no
+    overshoot, per-tick step bounded by |target-from|*2*dt/tween, lands
+    exactly on the target at elapsed >= tween; tweenMs <= 0 snaps — the
+    reduced-motion path; FOLLOW_LEAD_TWEEN_MS (200) eases
+    engage/disengage, JUMP_TO_NOW_TWEEN_MS (250) the jump/pill glide and
+    the stale<->fresh live-edge transition),
+    gestureLeadFrac(endMs, now, span, maxFrac) → number (the lead a
+    gesture legitimately holds: (end-now)/span capped at maxFrac — a
+    gesture consumes lead, never mints it; seeds both lead easings),
     snapViewToDevicePixels(view, plotWidthCss, dpr) →
     TimeView (origin snapped to whole device pixels, span preserved —
     the single global rounding that makes scrolling translate the scene
     in integer device-pixel steps).
+  Staleness: STALE_AFTER_DEFAULT_MS (10_000), feedIsStale(now,
+    lastFresh, staleAfterMs) → boolean (never stale before any data or
+    with a non-finite/non-positive threshold; strictly-past-threshold
+    trigger), liveEdgeTarget(now, lastFresh, staleAfterMs) → number (the
+    live edge all live semantics advance to: now while fresh, FROZEN at
+    lastFresh once stale — ongoing bars never extrapolate a dead feed).
   Time ticks: TIME_TICK_STEPS (the 1/2/5/10/15/30 ladder ms→s→min→h→d),
     timeTickStep(span, maxTicks), timeTicks(view, maxTicks, tzOffsetMs?)
     (aligned to round local times; pass -new Date().getTimezoneOffset() *
