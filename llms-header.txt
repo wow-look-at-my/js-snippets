@@ -12,4 +12,8 @@ import { loadHDR } from 'https://wow-look-at-my.github.io/js-snippets/webgpu/hdr
 import * as mat4 from 'https://wow-look-at-my.github.io/js-snippets/math/mat4.js';
 ```
 
+Every module also serves a TypeScript declaration at the same URL with
+`.d.ts` in place of `.js` (e.g. …/math/mat4.d.ts) — fetch types alongside
+the code.
+
 ## Modules

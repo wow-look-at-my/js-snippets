@@ -2,7 +2,7 @@
 
 ## What This Repo Is
 
-A library of reusable ES modules. Source is TypeScript (`.ts`) and WGSL (`.wgsl`) under `src/`. [ts0](https://github.com/wow-look-at-my/ts0) compiles them to JavaScript, which deploys to GitHub Pages. **Only `.ts` and `.wgsl` files are committed — `.js` output is never checked in.**
+A library of reusable ES modules. Source is TypeScript (`.ts`) plus WGSL/GLSL shaders (`.wgsl`/`.glsl`) under `src/`. [ts0](https://github.com/wow-look-at-my/ts0) compiles them to JavaScript, which deploys to GitHub Pages. **Only `.ts` and `.wgsl` files are committed — `.js` output is never checked in.**
 
 Base URL: `https://wow-look-at-my.github.io/js-snippets`
 
@@ -28,6 +28,23 @@ src/
 │   ├── gaussian-kernel.ts ← linear-sampling separable Gaussian kernel builder
 │   └── *.test.ts          ← colocated node:test tests (vec3 / mat4 / sdf /
 │                            noise / sampling / gaussian-kernel)
+├── ui/
+│   ├── llms.txt           ← docs for ui modules
+│   ├── perf-graph-math.ts ← pure graph math: SampleRing ring buffer, stats,
+│   │                        autoRange + 1-2-5 niceTicks, min-max binning,
+│   │                        value formatting
+│   ├── perf-graph-math.test.ts ← colocated node:test tests for the math
+│   ├── perf-graph.ts      ← <perf-graph> custom element (canvas-rendered
+│   │                        stackable perf HUD; re-exports perf-graph-math)
+│   ├── timeline-view-math.ts ← pure timeline math: time scales + anchored
+│   │                        zoom, time tick ladder, sub-track packing,
+│   │                        label fit, hit tests, category hues,
+│   │                        CoverageTracker (async history)
+│   ├── timeline-view-math.test.ts ← colocated node:test tests for the math
+│   ├── timeline-view.ts   ← <timeline-view> custom element (canvas swimlane
+│   │                        timeline; re-exports timeline-view-math)
+│   └── timeline-view.css  ← its shadow-DOM styles (text import, adopted
+│                            constructable stylesheet)
 ├── webgpu/
 │   ├── llms.txt           ← docs for webgpu modules
 │   ├── hdr-loader.ts
@@ -39,21 +56,45 @@ src/
 │   ├── sky.ts
 │   ├── shaders.ts         ← loadShader / loadShaders (fetch shader text)
 │   ├── canvas.ts          ← resizeCanvasToDisplay (HiDPI backing-store sizing)
-│   ├── camera.ts          ← orbit camera (orbitEye / dirFromAzEl / controller)
-│   ├── *.test.ts          ← colocated node:test tests (geometry / camera)
+│   ├── camera.ts          ← orbit + look cameras (orbitEye / dirFromAzEl /
+│   │                        applyLookDrag / controllers)
+│   ├── fly-camera.ts      ← first-person fly camera on camera.ts (WASD flight,
+│   │                        wheel/pinch dolly; pure flyMoveDelta / dollyDelta)
+│   ├── scan.ts            ← GPU exclusive prefix scan (Blelloch) over a u32
+│   │                        region of one storage buffer (element-offset
+│   │                        src/dst/scratch; createScan/prepare/encode)
+│   ├── scan-plan.ts       ← pure planScan level math (no .wgsl import so it
+│   │                        node-tests; re-exported by scan.ts)
+│   ├── *.test.ts          ← colocated node:test tests (geometry / camera /
+│   │                        fly-camera / scan)
 │   └── shaders/
 │       ├── spd.wgsl
 │       ├── sky.wgsl
-│       └── prefilter.wgsl
+│       ├── prefilter.wgsl
+│       └── scan.wgsl
+├── webgl2/
+│   ├── llms.txt           ← docs for webgl2 modules
+│   ├── program.ts         ← shader compile + link (annotateShaderLog errors)
+│   │                        + injectChunk (GLSL chunk after #version)
+│   ├── mesh.ts            ← VAO from typed arrays (+ chooseIndexArray)
+│   ├── fbo.ts             ← float FBO (RGBA16F) with EXT_color_buffer_float
+│   │                        check + ping-pong pair (createPingPong)
+│   ├── video-texture.ts   ← HTMLVideoElement-tracking texture (sRGB or raw)
+│   ├── fullscreen.ts      ← fullscreen-triangle pass (gl_VertexID, no VBO)
+│   ├── *.test.ts          ← colocated node:test tests (program / mesh / fbo)
+│   └── shaders/
+│       └── fullscreen.vert.glsl
 llms-header.txt            ← preamble for combined llms.txt
-ts0.json                   ← ts0 config (js library target, .wgsl text loader)
+ts0.json                   ← ts0 config (js library target, .wgsl/.glsl text loaders)
 scripts/build-llms.mjs     ← assembles dist/llms.txt after the ts0 build
 package.json
 tsconfig.json              ← editor/IDE only (ts0 generates its own for the build)
 wgsl.d.ts                  ← ambient *.wgsl decl + @webgpu/types reference
+glsl.d.ts                  ← ambient *.glsl decl (text imports, mirrors wgsl.d.ts)
+css.d.ts                   ← ambient *.css decl (text imports, mirrors glsl.d.ts)
 ```
 
-Modules are organized by domain (`auto-refresh/`, `editor/`, `math/`, `webgpu/`). The deployed URL mirrors the `src/` structure without the `src/` prefix: `src/webgpu/sky.ts` → `https://…/webgpu/sky.js`.
+Modules are organized by domain (`auto-refresh/`, `editor/`, `math/`, `ui/`, `webgpu/`, `webgl2/`). The deployed URL mirrors the `src/` structure without the `src/` prefix: `src/webgpu/sky.ts` → `https://…/webgpu/sky.js`.
 
 ## Build
 
@@ -62,7 +103,9 @@ pnpm install
 pnpm build      # ts0 build (type-check + compile src/ -> dist/) + assemble dist/llms.txt
 ```
 
-The build is [ts0](https://github.com/wow-look-at-my/ts0)'s **js library target**, selected because `ts0.json`'s `entry` is the `src/` *directory*. ts0 type-checks (`tsc --noEmit`) and then compiles every `.ts` under `src/` to a parallel `.js` under `dist/`, preserving structure (`src/webgpu/sky.ts` → `dist/webgpu/sky.js`). Each file is its own esbuild entry point. Code shared between modules (e.g. `vec3`, imported by `mat4`) is deduplicated into a `dist/chunk-*.js` and imported — never copied into each output; non-shared local imports and `.wgsl` shaders stay inlined. A consumer still imports a single URL — the browser fetches any shared chunk transitively. WGSL is imported as text via the `loaders: { ".wgsl": "text" }` field in `ts0.json`.
+The build is [ts0](https://github.com/wow-look-at-my/ts0)'s **js library target**, selected because `ts0.json`'s `entry` is the `src/` *directory*. ts0 type-checks (`tsc --noEmit`) and then compiles every `.ts` under `src/` to a parallel `.js` under `dist/`, preserving structure (`src/webgpu/sky.ts` → `dist/webgpu/sky.js`). Each file is its own esbuild entry point. Code shared between modules (e.g. `vec3`, imported by `mat4`) is deduplicated into a `dist/chunk-*.js` and imported — never copied into each output; non-shared local imports and `.wgsl`/`.glsl` shaders stay inlined. A consumer still imports a single URL — the browser fetches any shared chunk transitively. Shaders — and component stylesheets — are imported as text via the `loaders: { ".wgsl": "text", ".glsl": "text", ".css": "text" }` field in `ts0.json` (ambient decls in `wgsl.d.ts` / `glsl.d.ts` / `css.d.ts`).
+
+ts0 also emits TypeScript declarations into `dist/` (default-on for the js library target): every compiled module gets a `.d.ts` sibling next to its `.js` (chunks and `*.test.*` excluded), deployed to Pages at the same URL with the extension swapped — nothing new is committed, `dist/` stays gitignored.
 
 `pnpm build` then runs `scripts/build-llms.mjs`, which combines `llms-header.txt` + all `src/**/llms.txt` files into `dist/llms.txt`.
 
@@ -85,7 +128,7 @@ Conventions:
 - Each test file uses `import { test } from 'node:test'` + `import assert from 'node:assert/strict'`, imports the **source** module directly with the `.ts` extension (e.g. `import { … } from './mat4.ts'`), and uses `import type { … }` for type-only symbols — Node's strip-types loader elides `import type` but would fail to import a type as a value at runtime.
 - Source modules import sibling modules with the `.ts` extension on **value** imports (e.g. `import { lookAt } from '../math/mat4.ts'`) and `import type` for type-only ones. Both esbuild (the build) and Node's runtime ESM resolver accept this; an extensionless **value** import resolves under esbuild but NOT under `node --test`, so keep the extension.
 - Pure/algorithmic modules are unit-tested here; several tests are ports of the proven `smoke.mjs` oracles from the `scratch` repo (`sdf` from distance-field-shadows, `gaussian-kernel` from local-contrast).
-- **DOM/fetch/GPU-bound modules are NOT unit-tested under node** — `webgpu/shaders.ts`, `webgpu/canvas.ts`, `webgpu/context.ts`, `webgpu/buffer.ts`, `webgpu/sky.ts`, `webgpu/mip-generator.ts`, `webgpu/env-prefilter.ts`, `webgpu/hdr-loader.ts`, `editor/code-editor.ts`, and `auto-refresh/` need a real browser/GPU, so they're left to manual/integration testing. `webgpu/camera.ts` is split: the pure helpers (`orbitEye`/`dirFromAzEl`) are tested; `createOrbitController` is DOM-bound and is not.
+- **DOM/fetch/GPU-bound modules are NOT unit-tested under node** — `webgpu/shaders.ts`, `webgpu/canvas.ts`, `webgpu/context.ts`, `webgpu/buffer.ts`, `webgpu/sky.ts`, `webgpu/mip-generator.ts`, `webgpu/env-prefilter.ts`, `webgpu/hdr-loader.ts`, `webgl2/video-texture.ts`, `webgl2/fullscreen.ts` (its `.glsl` import also only resolves under the build's text loader, not `node --test`), `editor/code-editor.ts`, and `auto-refresh/` need a real browser/GPU, so they're left to manual/integration testing. Modules mixing pure + bound code are split: `webgpu/camera.ts` tests `orbitEye`/`dirFromAzEl`/`applyLookDrag` but not the DOM-bound controllers; `webgpu/fly-camera.ts` tests `flyMoveDelta`/`dollyDelta` but not `createFlyController`; `webgl2/program.ts` tests `annotateShaderLog` and `injectChunk`; `webgl2/mesh.ts` tests `chooseIndexArray`; `webgl2/fbo.ts` tests `makePingPong` but not the GL-bound `createFloatFbo`/`createPingPong`; `webgpu/scan.ts` splits its pure half into `webgpu/scan-plan.ts` (planScan level math, tested incl. a plan-driven JS emulation of the WGSL) because scan.ts's own `.wgsl` import cannot load under node — the GPU wrapper (`createScan`) is covered by consumer browser harnesses; `ui/perf-graph.ts` is DOM/canvas-bound (the `<perf-graph>` element), so its logic lives in `ui/perf-graph-math.ts` (ring buffer / stats / range / ticks / binning / formatting), which is its fully node-tested pure half; `ui/timeline-view.ts` (the `<timeline-view>` element — its `.css` text import also only resolves under the build's loader) splits its logic into `ui/timeline-view-math.ts` (scales / zoom / ticks / packing / label fit / hit tests / hues / coverage) the same way.
 
 ## Deploy
 
@@ -97,7 +140,9 @@ Each module category has its own `llms.txt` alongside its source files:
 - `src/auto-refresh/llms.txt` — documents the auto-refresh modules
 - `src/editor/llms.txt` — documents the editor modules
 - `src/math/llms.txt` — documents the math modules
+- `src/ui/llms.txt` — documents the ui modules
 - `src/webgpu/llms.txt` — documents the webgpu modules
+- `src/webgl2/llms.txt` — documents the webgl2 modules
 - `llms-header.txt` — preamble (repo description, base URL, usage example)
 
 The build combines these into a single `dist/llms.txt` deployed to the site root.
@@ -124,5 +169,5 @@ If you are reading any `llms.txt` and notice ANY inaccuracy, missing module, wro
 - All math functions return new values — no mutation
 - Mat4 is column-major Float32Array(16), perspective uses WebGPU clip-Z [0,1]
 - WebGPU modules assume `rgba32float` textures unless documented otherwise
-- WGSL shaders live in `src/<category>/shaders/` alongside the `.ts` that imports them
+- Shaders (WGSL and GLSL) live in `src/<category>/shaders/` alongside the `.ts` that imports them; both import as text (`ts0.json` loaders, ambient decls in `wgsl.d.ts`/`glsl.d.ts`)
 - Keep modules self-contained — a consumer should only need one import
