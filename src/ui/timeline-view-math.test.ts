@@ -827,43 +827,91 @@ const wheel = (over: Partial<WheelInput>): WheelInput => ({
   ...over,
 });
 
-test('routeWheel: deltaX always pans time, with and without lane overflow', () => {
+// The full routing matrix: {plain, ctrl, meta, shift} x {deltaX only,
+// deltaY only, diagonal} x {lanes overflow, no overflow}. `consumed` is
+// the preventDefault contract — false means the element must NOT call
+// preventDefault and the page scrolls normally over the chart.
+
+test('routeWheel: deltaX always pans time (consumed), with and without lane overflow', () => {
   for (const lanesOverflow of [false, true]) {
     const r = routeWheel(wheel({ deltaX: -8 }), lanesOverflow);
-    assert.deepEqual(r, { zoomPx: 0, panPx: -8, laneScrollPx: 0 });
+    assert.deepEqual(r, { zoomPx: 0, panPx: -8, laneScrollPx: 0, consumed: true });
   }
 });
 
-test('routeWheel: deltaY scrolls lanes when they overflow, pans time when they do not', () => {
-  assert.deepEqual(routeWheel(wheel({ deltaY: 5 }), true), { zoomPx: 0, panPx: 0, laneScrollPx: 5 });
-  assert.deepEqual(routeWheel(wheel({ deltaY: 5 }), false), { zoomPx: 0, panPx: 5, laneScrollPx: 0 });
+test('routeWheel: plain deltaY scrolls lanes only when they overflow — NEVER pans time', () => {
+  assert.deepEqual(routeWheel(wheel({ deltaY: 5 }), true), { zoomPx: 0, panPx: 0, laneScrollPx: 5, consumed: true });
+  // No overflow: nothing routes and the event is NOT consumed — no
+  // preventDefault, the page scrolls. Vertical scrolling must never
+  // scroll the chart sideways.
+  assert.deepEqual(routeWheel(wheel({ deltaY: 5 }), false), { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false });
+  assert.deepEqual(routeWheel(wheel({ deltaY: -240 }), false), { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false });
 });
 
-test('routeWheel: a diagonal gesture applies both axes in one event', () => {
-  assert.deepEqual(routeWheel(wheel({ deltaX: -6, deltaY: 4 }), true), { zoomPx: 0, panPx: -6, laneScrollPx: 4 });
-  // No overflow: both deltas pan time.
-  assert.deepEqual(routeWheel(wheel({ deltaX: -6, deltaY: 4 }), false), { zoomPx: 0, panPx: -2, laneScrollPx: 0 });
+test('routeWheel: a diagonal gesture routes each axis to its own behavior', () => {
+  assert.deepEqual(routeWheel(wheel({ deltaX: -6, deltaY: 4 }), true), { zoomPx: 0, panPx: -6, laneScrollPx: 4, consumed: true });
+  // No overflow: deltaX pans time, the vertical component is DROPPED (not
+  // half-forwarded to the page — the event is consumed because one axis
+  // routed).
+  assert.deepEqual(routeWheel(wheel({ deltaX: -6, deltaY: 4 }), false), { zoomPx: 0, panPx: -6, laneScrollPx: 0, consumed: true });
 });
 
-test('routeWheel: ctrl/meta+wheel is zoom only (deltaX ignored)', () => {
+test('routeWheel: ctrl/meta+wheel is zoom only (deltaX ignored), always consumed', () => {
   for (const mod of [{ ctrlKey: true }, { metaKey: true }]) {
-    const r = routeWheel(wheel({ deltaX: -6, deltaY: -10, ...mod }), true);
-    assert.deepEqual(r, { zoomPx: -10, panPx: 0, laneScrollPx: 0 });
+    for (const lanesOverflow of [false, true]) {
+      assert.deepEqual(routeWheel(wheel({ deltaX: -6, deltaY: -10, ...mod }), lanesOverflow), {
+        zoomPx: -10,
+        panPx: 0,
+        laneScrollPx: 0,
+        consumed: true,
+      });
+      assert.deepEqual(routeWheel(wheel({ deltaY: -10, ...mod }), lanesOverflow), {
+        zoomPx: -10,
+        panPx: 0,
+        laneScrollPx: 0,
+        consumed: true,
+      });
+      // Even a zero-delta tick mid-pinch is consumed — a ctrl/meta stream
+      // must never leak browser page-zoom.
+      assert.equal(routeWheel(wheel({ ...mod }), lanesOverflow).consumed, true);
+    }
   }
 });
 
-test('routeWheel: shift+wheel pans time; vertical delta wins, else horizontal', () => {
-  assert.deepEqual(routeWheel(wheel({ deltaY: 7, shiftKey: true }), true), { zoomPx: 0, panPx: 7, laneScrollPx: 0 });
-  assert.deepEqual(routeWheel(wheel({ deltaX: 3, shiftKey: true }), false), { zoomPx: 0, panPx: 3, laneScrollPx: 0 });
+test('routeWheel: shift+wheel pans time (vertical delta wins, else horizontal), consumed when nonzero', () => {
+  for (const lanesOverflow of [false, true]) {
+    assert.deepEqual(routeWheel(wheel({ deltaY: 7, shiftKey: true }), lanesOverflow), {
+      zoomPx: 0,
+      panPx: 7,
+      laneScrollPx: 0,
+      consumed: true,
+    });
+    assert.deepEqual(routeWheel(wheel({ deltaX: 3, shiftKey: true }), lanesOverflow), {
+      zoomPx: 0,
+      panPx: 3,
+      laneScrollPx: 0,
+      consumed: true,
+    });
+    assert.deepEqual(routeWheel(wheel({ deltaX: 3, deltaY: 7, shiftKey: true }), lanesOverflow), {
+      zoomPx: 0,
+      panPx: 7,
+      laneScrollPx: 0,
+      consumed: true,
+    });
+    assert.equal(routeWheel(wheel({ shiftKey: true }), lanesOverflow).consumed, false);
+  }
 });
 
 test('routeWheel: deltaMode 1 (lines) normalizes to pixels on every path', () => {
-  assert.deepEqual(routeWheel(wheel({ deltaX: -2, deltaMode: 1 }), false), { zoomPx: 0, panPx: -32, laneScrollPx: 0 });
-  assert.deepEqual(routeWheel(wheel({ deltaY: 3, deltaMode: 1 }), true), { zoomPx: 0, panPx: 0, laneScrollPx: 48 });
+  assert.deepEqual(routeWheel(wheel({ deltaX: -2, deltaMode: 1 }), false), { zoomPx: 0, panPx: -32, laneScrollPx: 0, consumed: true });
+  assert.deepEqual(routeWheel(wheel({ deltaY: 3, deltaMode: 1 }), true), { zoomPx: 0, panPx: 0, laneScrollPx: 48, consumed: true });
+  // Discrete vertical wheel, no overflow: still a pure passthrough.
+  assert.deepEqual(routeWheel(wheel({ deltaY: 3, deltaMode: 1 }), false), { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false });
   assert.deepEqual(routeWheel(wheel({ deltaY: -1, deltaMode: 1, ctrlKey: true }), false), {
     zoomPx: -16,
     panPx: 0,
     laneScrollPx: 0,
+    consumed: true,
   });
 });
 

@@ -187,25 +187,36 @@ export interface WheelRoute {
   panPx: number;
   /** Vertical lane-stack scroll. */
   laneScrollPx: number;
+  /**
+   * False = the chart takes NOTHING from this event — the caller must not
+   * preventDefault, so the page scrolls normally over the chart. True the
+   * moment any axis routes somewhere (preventDefault the whole event; a
+   * diagonal gesture's unconsumed axis is dropped, never half-forwarded).
+   */
+  consumed: boolean;
 }
 
 /**
- * Route a wheel/trackpad gesture: ctrl/meta+wheel zooms; shift+wheel pans
- * time (a vertical wheel pans horizontally); otherwise deltaX ALWAYS pans
- * time, while deltaY scrolls the lane stack when it overflows and joins the
- * time pan when it doesn't. A diagonal two-finger gesture therefore applies
- * both axes in one event, and a pure horizontal swipe is never dropped.
+ * Route a wheel/trackpad gesture: ctrl/meta+wheel zooms (always consumed —
+ * a pinch stream must never leak browser page-zoom, even on a zero-delta
+ * tick); shift+wheel pans time (a vertical wheel pans horizontally);
+ * otherwise deltaX pans time and deltaY scrolls the lane stack ONLY when
+ * it overflows the host. A plain vertical wheel over a non-overflowing
+ * chart is NOT consumed — vertical scrolling must never scroll the chart
+ * sideways, and the page keeps scrolling normally across the chart. A
+ * diagonal two-finger gesture applies each axis to its own behavior and is
+ * consumed iff at least one axis routed.
  */
 export function routeWheel(e: WheelInput, lanesOverflow: boolean): WheelRoute {
   const dx = wheelDeltaToPixels(e.deltaX, e.deltaMode);
   const dy = wheelDeltaToPixels(e.deltaY, e.deltaMode);
-  if (e.ctrlKey || e.metaKey) return { zoomPx: dy, panPx: 0, laneScrollPx: 0 };
-  if (e.shiftKey) return { zoomPx: 0, panPx: dy || dx, laneScrollPx: 0 };
-  return {
-    zoomPx: 0,
-    panPx: dx + (lanesOverflow ? 0 : dy),
-    laneScrollPx: lanesOverflow ? dy : 0,
-  };
+  if (e.ctrlKey || e.metaKey) return { zoomPx: dy, panPx: 0, laneScrollPx: 0, consumed: true };
+  if (e.shiftKey) {
+    const pan = dy || dx;
+    return { zoomPx: 0, panPx: pan, laneScrollPx: 0, consumed: pan !== 0 };
+  }
+  const laneScrollPx = lanesOverflow ? dy : 0;
+  return { zoomPx: 0, panPx: dx, laneScrollPx, consumed: dx !== 0 || laneScrollPx !== 0 };
 }
 
 // -- Follow-now rule ---------------------------------------------------------------

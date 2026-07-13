@@ -30,9 +30,11 @@
  * disengaging lets the backward deltas consume the lead (any residual
  * glides out), and the pill glides to the followed position — the view
  * never teleports in a single frame (reduced motion snaps instead).
- * Interaction is trackpad-first: two-finger pan (x = time,
- * y = lanes — a horizontal swipe always pans time, a diagonal one applies
- * both axes), ctrl/meta+wheel = smooth zoom anchored under the cursor
+ * Interaction is trackpad-first: two-finger pan (x = time;
+ * y scrolls the lane stack when it overflows, and is otherwise left to
+ * the PAGE — a plain vertical wheel never pans the chart sideways and
+ * never has its default prevented, so page scrolling works across the
+ * chart), ctrl/meta+wheel = smooth zoom anchored under the cursor
  * (discrete wheel steps glide), shift+wheel = time pan, drag = pan, pinch =
  * zoom, arrows/±/Home/End when focused. `loadRange` turns scrolling into
  * the past into async history requests — for BACKWARD gaps only; the live
@@ -449,6 +451,9 @@ export class TimelineViewElement extends HTMLElement {
     // counter — forever; a stale chart never gives up announcing itself.
     this.staleTimer = setInterval(() => this.updateStale(), 500);
 
+    // {passive: false} so preventDefault stays AVAILABLE — onWheel calls it
+    // only for consumed gestures (an unconsumed vertical wheel must reach
+    // the page).
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.canvas.addEventListener('pointermove', this.onPointerMove);
@@ -1563,12 +1568,16 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   private onWheel = (e: WheelEvent): void => {
-    // Unconditional: the page must never scroll instead while the gesture
-    // is over the canvas.
+    const route = routeWheel(e, this.maxLaneScroll() > 0);
+    // Consume (preventDefault) ONLY when some axis actually routed to the
+    // chart. A plain vertical wheel while the lanes don't overflow routes
+    // nowhere — it must reach the page and scroll it normally, never pan
+    // the chart sideways. (The listener stays {passive: false} so
+    // preventDefault remains available for the consumed cases.)
+    if (!route.consumed) return;
     e.preventDefault();
     this.noteInput();
     const p = this.toLocal(e);
-    const route = routeWheel(e, this.maxLaneScroll() > 0);
     if (e.ctrlKey || e.metaKey) {
       if (e.deltaMode === 0) {
         // Pixel-precise trackpad pinch: apply 1:1, no smoothing, no lag.

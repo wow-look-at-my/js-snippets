@@ -349,16 +349,18 @@ compact-lane auto-fit — every lane keeps the full track height),
 history-end-text (boundary label, default 'history ends here'),
 empty-text (empty-state hint).
 
-Interaction: plain wheel / two-finger scroll pans (deltaX ALWAYS pans
-time; deltaY scrolls lanes when they overflow, else pans time; a diagonal
-gesture applies both axes in one event; all deltaMode-normalized);
+Interaction: plain wheel / two-finger scroll — deltaX ALWAYS pans time;
+plain deltaY scrolls the lane stack when it overflows the host and is
+otherwise NOT consumed at all (no preventDefault — the page scrolls
+normally over the chart; vertical scrolling never pans the chart
+sideways); a diagonal gesture routes each axis to its own behavior and
+is consumed iff at least one axis routed (all deltaMode-normalized);
 ctrl/meta+wheel zooms anchored under the cursor (pixel-precise trackpad
-deltas apply 1:1; discrete wheel steps glide ~130ms); shift+wheel pans
-time; pointer drag pans both axes (pointer capture); two-pointer pinch
-zooms; keyboard when focused (tabindex 0): arrows pan (shift = faster),
-+/- zoom, End = jump to now, Home = jump to the earliest known data.
-Wheel events over the canvas are always consumed — the page never
-scrolls instead.
+deltas apply 1:1; discrete wheel steps glide ~130ms; always consumed —
+never browser page-zoom); shift+wheel pans time; pointer drag pans both
+axes (pointer capture); two-pointer pinch zooms; keyboard when focused
+(tabindex 0): arrows pan (shift = faster), +/- zoom, End = jump to now,
+Home = jump to the earliest known data.
 
 CSS custom properties (dark Scratch Proto defaults; see THEME_DEFAULTS):
   --timeline-bg            — plot background          (#0d0f14)
@@ -408,9 +410,12 @@ Exports:
     (deltaMode 0/1/2 → px), zoomFactorForWheel(deltaPx) (exponential,
     composable; ZOOM_PX_PER_DOUBLE px per doubling),
     routeWheel(WheelInput, lanesOverflow) → WheelRoute {zoomPx, panPx,
-    laneScrollPx} (the gesture router: ctrl/meta = zoom, shift = time
-    pan, else deltaX pans time + deltaY scrolls-or-pans; deltaMode
-    normalized), clampViewToNow(view, now) → TimeView (the hard right
+    laneScrollPx, consumed} (the gesture router: ctrl/meta = zoom,
+    always consumed; shift = time pan; else deltaX pans time and deltaY
+    scrolls lanes ONLY when they overflow — a plain vertical wheel over
+    a non-overflowing chart routes nowhere and consumed=false means DO
+    NOT preventDefault, let the page scroll; deltaMode normalized),
+    clampViewToNow(view, now) → TimeView (the hard right
     end stop: a user view's end never passes now, span preserved),
     followAfterGesture(wasFollowing, prevEnd, next, now, isPan,
     msPerDevicePx) → boolean (the follow rule: a backward pan always
