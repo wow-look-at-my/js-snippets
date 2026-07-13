@@ -281,7 +281,9 @@ renders in the emphasis color.
 
 Viewport / follow:
   viewport          — getter {start, end} (ms).
-  setViewport(start, end) — explicit window (span clamped ~2s..~7d).
+  setViewport(start, end) — explicit window (span clamped ~2s..~7d;
+                      hard-stops at now; engages follow only when it
+                      ends within the 2-device-px snap zone of now).
   followNow         — boolean (default true): right edge pinned to live
                       now. Any backward PAN (wheel, drag, arrow keys)
                       disengages immediately — even a tiny step, so

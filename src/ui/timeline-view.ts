@@ -599,13 +599,16 @@ export class TimelineViewElement extends HTMLElement {
     return { start: this.view.start, end: this.view.end };
   }
 
-  /** Jump/zoom to an explicit window (disengages follow unless it ends at now). */
+  /**
+   * Jump/zoom to an explicit window (hard-stops at now; disengages follow
+   * unless it ends within the 2-device-px snap zone of now).
+   */
   setViewport(start: number | Date, end: number | Date): void {
     const s = toMs(start);
     const e = toMs(end);
     if (!Number.isFinite(s) || !Number.isFinite(e) || !(e > s)) return;
     const span = Math.min(Math.max(e - s, MIN_SPAN_MS), MAX_SPAN_MS);
-    this.applyUserView({ start: s, end: s + span });
+    this.applyUserView({ start: s, end: s + span }, { jump: true });
   }
 
   /** Whether the right edge is pinned to live "now" (default true). */
@@ -893,14 +896,18 @@ export class TimelineViewElement extends HTMLElement {
    * count as "at the stop"); the view actually applied hard-stops at now
    * (clampViewToNow), so every input path — wheel, drag, pinch, keyboard,
    * setViewport — parks exactly at the end stop, which is what makes the
-   * tiny re-engage zone reliably hittable.
+   * tiny re-engage zone reliably hittable. Interactive gestures keep the
+   * pin while following (zooming at the live edge stays live); a
+   * programmatic setViewport (`jump`) is exempt from that — it lands
+   * where it says, engaging follow only inside the snap zone.
    */
-  private applyUserView(next: TimeView, opts?: { pan?: boolean }): void {
+  private applyUserView(next: TimeView, opts?: { pan?: boolean; jump?: boolean }): void {
     const span = next.end - next.start;
     const now = this.nowMs();
     const wasFollowing = this.following;
     const msPerDevPx = span / (this.plotWidth() * this.dpr);
-    this.following = followAfterGesture(wasFollowing, this.view.end, next, now, opts?.pan === true, msPerDevPx);
+    const stayPinned = wasFollowing && opts?.jump !== true;
+    this.following = followAfterGesture(stayPinned, this.view.end, next, now, opts?.pan === true, msPerDevPx);
     if (this.following) {
       const end = now + span * FOLLOW_LEAD_FRAC;
       this.view = { start: end - span, end };
