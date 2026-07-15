@@ -408,7 +408,8 @@ canvas.minimap[hidden] {
   opacity: 0.4;
 }
 
-/* …cancelled span: hollow + dashed with the bright terminal-cut line… */
+/* …cancelled span: hollow + dashed; the scrimmed kill tail starts at a
+   cut line in the span's own hue… */
 .lg-killed {
   background: transparent;
   border-style: dashed;
@@ -417,12 +418,12 @@ canvas.minimap[hidden] {
 .lg-killed::after {
   content: '';
   position: absolute;
-  top: -1px;
-  bottom: -1px;
-  right: 8px;
-  width: 2px;
-  background: var(--timeline-fg, #e8ecf4);
-  box-shadow: 2px 0 0 rgba(0, 0, 0, 0.5);
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 9px;
+  background: rgba(0, 0, 0, 0.55);
+  border-left: 1px solid rgba(151, 173, 205, 1);
 }
 
 /* …edge fade: the span dissolves where it leaves the window. */
@@ -446,6 +447,7 @@ canvas.minimap[hidden] {
 .lg-cancelled-pip::before {
   background: transparent;
   border-width: 1.5px;
+  border-style: dashed;
 }
 
 /* Cluster: disc + halo ring, with the ×N count badge beside it. */

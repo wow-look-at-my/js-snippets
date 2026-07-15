@@ -1409,8 +1409,10 @@ export type StyleMap = Record<string, IntervalStyle>;
  * 'outline' hollow; 'cancelled' hollow + DASHED category-hue border —
  * reads "stopped, not failed" at a glance: never the emphasis color,
  * never the bang glyph, never a solid success body. (Below dash
- * legibility the element draws the border solid; the hollow body still
- * separates a tiny cancelled bar from a solid one.)
+ * legibility the element draws a BAR's border solid; the hollow body
+ * still separates a tiny cancelled bar from a solid one. Pips are exempt:
+ * a cancelled instant keeps a dashed diamond outline, the pattern
+ * rescaled to close around the perimeter.)
  */
 export const DEFAULT_STYLES: StyleMap = {
   '': { pattern: 'solid' },

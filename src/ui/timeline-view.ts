@@ -327,6 +327,12 @@ const MARKER_DASH = [4, 3];
 // latency), which at a 10-min window maps under half a CSS px and used to
 // vanish entirely, leaving a cancelled bar pixel-identical to a success.
 const TERMINAL_SEG_MIN_DEVICE_PX = 3;
+// The kill-point cut line draws only when the terminal-cut tail is at
+// least this wide (CSS px). Narrower tails render scrim-only: their cut
+// point is within a couple of pixels of the span's end border, where a
+// lone vertical line reads as a stray rendering artifact — and the scrim
+// + the dashed cancelled border already carry the state at that size.
+const CUT_LINE_MIN_TAIL_PX = 4;
 // A dashed border needs room to read as dashes; narrower bars draw it
 // solid (the hollow body still carries the state on a tiny bar).
 const BORDER_DASH_MIN_PX = 12;
@@ -373,7 +379,7 @@ const LEGEND_ROWS: readonly { swatch: string; text: string }[] = [
   { swatch: 'lg-bar lg-failed', text: 'failed — stippled body, red border, corner bang' },
   { swatch: 'lg-bar lg-hatch', text: 'hatched phase — a declared wait (lock, group slot, sleep) or queued time' },
   { swatch: 'lg-bar lg-dim', text: 'dim — queued / de-emphasized (labels stay full-contrast)' },
-  { swatch: 'lg-bar lg-killed', text: 'cancelled span — hollow, dashed; the bright cut marks the kill point' },
+  { swatch: 'lg-bar lg-killed', text: 'cancelled span — hollow, dashed; the darkened tail marks the kill point' },
   { swatch: 'lg-bar lg-fade', text: 'faded end — the span continues past the visible window' },
   { swatch: 'lg-minimap', text: 'minimap — the full loaded history; drag the window to pan, its handles to resize' },
 ];
@@ -2994,15 +3000,21 @@ export class TimelineViewElement extends HTMLElement {
           // Unlike decorative phases it must NEVER vanish: it keeps a
           // minimum device-pixel footprint (grown backward from its end —
           // the tail sits at the bar end) instead of the sub-half-px skip,
-          // and renders visibly — a dark scrim over the dead tail plus a
-          // bright cut line at the kill point — never a near-invisible
-          // low-alpha wash.
+          // and renders visibly as a dark scrim over the dead tail. Once
+          // the tail is wide enough for a line to mark a point INSIDE the
+          // span, a cut line in the segment's own hue (the same color
+          // family as the cancelled border) marks the kill point. Never a
+          // foreground-bright line: on a hairline tail that sat flush
+          // against the end border and read as a stray white artifact.
           const minW = TERMINAL_SEG_MIN_DEVICE_PX / dpr;
           if (sx1 - sx0 < minW) sx0 = Math.max(x0, sx1 - minW);
+          const segW = sx1 - sx0;
           ctx.fillStyle = withAlpha('#000000', 0.45);
-          ctx.fillRect(sx0, y, sx1 - sx0, bh);
-          ctx.fillStyle = withAlpha(t.fg, 0.85);
-          ctx.fillRect(sx0, y, Math.min(1, sx1 - sx0), bh);
+          ctx.fillRect(sx0, y, segW, bh);
+          if (segW >= CUT_LINE_MIN_TAIL_PX) {
+            ctx.fillStyle = ss.border;
+            ctx.fillRect(sx0, y, Math.min(1, segW), bh);
+          }
           continue;
         }
         if (sx1 - sx0 < 0.5) continue;
@@ -3157,7 +3169,21 @@ export class TimelineViewElement extends HTMLElement {
     const emphasis = style.glyph === 'bang' || style.border === t.emphasis;
     ctx.strokeStyle = style.border;
     ctx.lineWidth = emphasis ? 2 : 1;
+    // A dashed state (cancelled) reads dashed at pip size too: the declared
+    // pattern is rescaled so a whole number of dash+gap cycles (3-5) closes
+    // around the diamond's perimeter. Pips deliberately skip the bars'
+    // below-12px dash-to-solid fallback — a closed diamond outline has no
+    // broken-corner failure mode, and a cancelled INSTANT must carry the
+    // same dashed signature as a cancelled span.
+    const dashSum = style.dash ? style.dash.reduce((a, b) => a + b, 0) : 0;
+    if (style.dash && dashSum > 0) {
+      const perim = Math.hypot(rx, r) * 4;
+      const cycles = Math.max(3, Math.min(5, Math.round(perim / 10)));
+      const unit = perim / cycles / (dashSum * (style.dash.length % 2 === 1 ? 2 : 1));
+      ctx.setLineDash(style.dash.map((d) => d * unit));
+    }
     ctx.stroke();
+    if (style.dash) ctx.setLineDash(EMPTY_DASH);
     if (emphasis) {
       // Unmissable: a stem above the diamond, like an exclamation.
       ctx.strokeStyle = t.emphasis;

@@ -190,11 +190,14 @@ unmissable (2px emphasis border + corner bang glyph + stipple — hue
 untouched); 'dim'/'queued' translucent + desaturated; 'hatch'/'waiting'
 45-degree stripes; 'outline' hollow; 'cancelled' hollow + DASHED
 category-hue border — unmissably "stopped, not failed" at any zoom: never
-the emphasis color, never the bang, never a solid success body (a border
-dash falls back to solid below ~12px bar width, where dashes read as
+the emphasis color, never the bang, never a solid success body (a BAR's
+border dash falls back to solid below ~12px width, where dashes read as
 broken corners — the hollow body still separates a tiny cancelled bar
 from a solid one; this solid-below-legibility rule applies to any dashed
-border style). State treatments dim the SPAN BODY only: label text (bar
+border style on bars. Instant PIPS are exempt: a cancelled pip keeps its
+dashed diamond outline — the declared pattern is rescaled so 3-5 whole
+dash cycles close around the perimeter — so a cancelled instant carries
+the same dashed signature as a cancelled span). State treatments dim the SPAN BODY only: label text (bar
 labels and the cluster ×N badge — including adapter-composed badge
 strings like queue ordinals) always renders in the full-contrast
 foreground (--timeline-fg), never a muted tone — a dim/queued/waiting
@@ -380,7 +383,10 @@ bar, each styled via kind (e.g. a dim leading 'queued' phase, a hatched
 'waiting' span); end null = to the bar's end. A segment whose kind
 resolves to the 'outline' pattern is a TERMINAL CUT (e.g. a kill tail:
 cancel requested → finished): it renders as a dark scrim over the dead
-tail plus a bright cut line at the cut point, and NEVER vanishes — it
+tail — plus, once the tail is >= ~4px wide, a cut line in the segment's
+own hue (the cancelled border's color family) marking the kill point;
+hairline tails stay scrim-only, because a lone line flush against the
+span's end border reads as a stray artifact — and NEVER vanishes: it
 keeps a >= 3-device-px footprint (grown backward from its end) at any
 zoom, unlike decorative phases, which skip below half a pixel. data is
 opaque and echoed back in events/tooltips. Connector: {fromIntervalId, toIntervalId, kind?,
