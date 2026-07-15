@@ -116,6 +116,9 @@ import {
   isInstantWidth,
   durationWidthPx,
   edgeContinuation,
+  clusterInstants,
+  clusterMarkerTime,
+  clusterZoomView,
   MIN_BAR_PX,
   expandHitRect,
   hitTestPolyline,
@@ -140,6 +143,7 @@ import {
   type StyleMap,
   type LaneLayout,
   type HitRect,
+  type PackItem,
 } from './timeline-view-math.ts';
 
 import TIMELINE_CSS from './timeline-view.css';
@@ -210,9 +214,16 @@ export interface TimelineData {
  */
 export type LoadRangeFn = (start: number, end: number) => Promise<{ exhausted?: boolean } | void>;
 
-/** What the pointer is over — handed to tooltipFor and hover/click events. */
+/**
+ * What the pointer is over — handed to tooltipFor and hover/click events.
+ * 'cluster' (a ×N group of visually-overlapping instant markers) is the
+ * one hit type NEVER handed to tooltipFor: its summary tooltip is
+ * component-built, and clicking it zooms to the member extent instead of
+ * dispatching intervalclick.
+ */
 export type TimelineHit =
   | { type: 'interval'; interval: TimelineInterval; lane: TimelineLane }
+  | { type: 'cluster'; intervals: TimelineInterval[]; lane: TimelineLane }
   | { type: 'connector'; connector: TimelineConnector; missingEndpoint?: 'from' | 'to' }
   | { type: 'marker'; marker: TimelineMarker }
   | { type: 'lane'; lane: TimelineLane };
@@ -241,6 +252,28 @@ interface NInterval {
   catKey: string;
   state: string;
   segs: NSeg[] | null;
+  track: number;
+  /** True while a ×N cluster represents this instant (it is not drawn/hit itself). */
+  clustered: boolean;
+}
+
+/**
+ * A ×N cluster of instant markers, re-derived per layout pass at the
+ * current scale (clusterInstants). Occupies ONE packing slot spanning its
+ * member extent — coincident instants can never blow up the lane height.
+ */
+interface NCluster {
+  /** 'cluster:' + the FIRST member's id — the sticky packing identity (stable while membership is; see packLane). */
+  id: string;
+  laneIdx: number;
+  /** Member start-time extent — the marker anchor and the click-to-zoom target. */
+  extent: TimeRange;
+  /** Members in (start, id) order. */
+  members: NInterval[];
+  /** Uniform member category, else the lane default (see clusterKeys). */
+  catKey: string;
+  /** Uniform member state, else '' — the neutral treatment for mixed clusters. */
+  state: string;
   track: number;
 }
 
@@ -367,6 +400,7 @@ export class TimelineViewElement extends HTMLElement {
   private downHit: TimelineHit | null = null;
   private hover: TimelineHit | null = null;
   private hoverIntervalId: string | null = null;
+  private hoverClusterId: string | null = null; // first-member id of the hovered ×N cluster
   private glidePx = 0; // pending discrete-wheel zoom, in wheel px
   private glideX = 0; // zoom anchor (canvas x) for the glide
   private lastFrame = 0;
@@ -380,6 +414,9 @@ export class TimelineViewElement extends HTMLElement {
   private packedEpoch = -1;
   private packedStart = NaN;
   private packedEnd = NaN;
+  private packedPlotW = NaN; // clustering is scale-aware: a resize re-derives it
+  // Per-lane ×N clusters for the current window (rebuilt with the pack).
+  private laneClusters: NCluster[][] = [];
   // Sticky row state, one allocator per lane ID (not index — lane
   // insertions must never hand one lane's row memory to another). The
   // state deliberately survives setData: a full resync must not reshuffle
@@ -811,6 +848,7 @@ export class TimelineViewElement extends HTMLElement {
         ? iv.segments.map((s) => ({ start: toMs(s.start), end: s.end == null ? null : toMs(s.end), kind: s.kind }))
         : null,
       track: 0,
+      clustered: false,
     };
     const prev = this.byId.get(iv.id);
     if (prev) {
@@ -864,23 +902,27 @@ export class TimelineViewElement extends HTMLElement {
   private updateVisibleLayout(): void {
     const rv = this.renderView();
     const m = this.metrics();
+    const plotW = this.plotWidth();
     const structure = this.targetCounts.length !== this.perLane.length;
     let changed = false;
-    if (this.packedEpoch !== this.packEpoch || this.packedStart !== rv.start || this.packedEnd !== rv.end || structure) {
+    if (
+      this.packedEpoch !== this.packEpoch ||
+      this.packedStart !== rv.start ||
+      this.packedEnd !== rv.end ||
+      this.packedPlotW !== plotW ||
+      structure
+    ) {
       this.packedEpoch = this.packEpoch;
       this.packedStart = rv.start;
       this.packedEnd = rv.end;
+      this.packedPlotW = plotW;
       const prev = this.targetCounts;
       const next = new Array<number>(this.perLane.length);
       changed = structure;
+      this.laneClusters.length = this.perLane.length;
       for (let i = 0; i < this.perLane.length; i++) {
-        const per = this.perLane[i];
-        const { tracks, trackCount } = this.allocatorFor(this.lanes[i].id).assign(per, rv);
-        for (let j = 0; j < per.length; j++) {
-          if (tracks[j] >= 0) per[j].track = tracks[j];
-        }
-        next[i] = trackCount;
-        if (!changed && prev[i] !== trackCount) changed = true;
+        next[i] = this.packLane(i, rv, plotW);
+        if (!changed && prev[i] !== next[i]) changed = true;
       }
       this.targetCounts = next;
     }
@@ -951,6 +993,68 @@ export class TimelineViewElement extends HTMLElement {
       this.allocators.set(laneId, alloc);
     }
     return alloc;
+  }
+
+  /**
+   * Cluster + row one lane for the current window; returns its visible
+   * track count. Instant markers that visually overlap at this scale
+   * merge into ×N clusters (clusterInstants — component-native and
+   * scale-aware, so zooming in splits them); each cluster then packs as
+   * ONE item spanning its member extent, which is what keeps a burst of
+   * coincident instants from blowing up the lane height. Rows come from
+   * the lane's sticky TrackAllocator; a cluster's packing identity is its
+   * FIRST member's id, stable while membership is (pure pans never change
+   * membership), so a cluster's row doesn't hop frame to frame. Members
+   * ride their cluster's row — hit rects and connector endpoints anchored
+   * on a member resolve to the cluster's position.
+   */
+  private packLane(laneIdx: number, rv: TimeView, plotW: number): number {
+    const per = this.perLane[laneIdx];
+    const lane = this.lanes[laneIdx];
+    const { clusters, memberOf } = clusterInstants(per, rv, plotW);
+    const ncs: NCluster[] = clusters.map((c) => {
+      const members = c.indices.map((j) => per[j]);
+      const keys = this.clusterKeys(members, lane);
+      return { id: `cluster:${members[0].id}`, laneIdx, extent: c.extent, members, catKey: keys.catKey, state: keys.state, track: -1 };
+    });
+    const items: PackItem[] = [];
+    const targets: { track: number }[] = [];
+    for (let j = 0; j < per.length; j++) {
+      per[j].clustered = memberOf[j] >= 0;
+      if (memberOf[j] >= 0) continue;
+      items.push(per[j]);
+      targets.push(per[j]);
+    }
+    for (const nc of ncs) {
+      items.push({ id: nc.id, start: nc.extent.start, end: nc.extent.end });
+      targets.push(nc);
+    }
+    const { tracks, trackCount } = this.allocatorFor(lane.id).assign(items, rv);
+    for (let k = 0; k < tracks.length; k++) {
+      if (tracks[k] >= 0) targets[k].track = tracks[k];
+    }
+    for (const nc of ncs) {
+      if (nc.track >= 0) for (const member of nc.members) member.track = nc.track;
+    }
+    this.laneClusters[laneIdx] = ncs;
+    return trackCount;
+  }
+
+  /**
+   * A cluster's styling keys: the members' shared state/category where
+   * uniform (an all-skipped cluster stays skip-flavored), else the
+   * neutral fallbacks — '' (the default treatment) for mixed states, the
+   * lane's own color for mixed categories.
+   */
+  private clusterKeys(members: readonly NInterval[], lane: TimelineLane): { catKey: string; state: string } {
+    const laneCat = lane.group ?? lane.id;
+    let state = members[0]?.state ?? '';
+    let catKey = members[0]?.catKey ?? laneCat;
+    for (const member of members) {
+      if (member.state !== state) state = '';
+      if (member.catKey !== catKey) catKey = laneCat;
+    }
+    return { catKey, state };
   }
 
   private metrics(): { trackHeight: number; trackGap: number; lanePad: number } {
@@ -1582,12 +1686,25 @@ export class TimelineViewElement extends HTMLElement {
         }
       }
     }
-    // Intervals: topmost = last in draw order within the lane.
+    // Intervals: topmost = last in draw order within the lane — which
+    // puts the lane's ×N cluster markers (drawn after its bars) first.
     const laneIdx = this.laneAtY(y);
     if (laneIdx >= 0) {
+      const ncs = this.laneClusters[laneIdx];
+      if (ncs) {
+        for (let i = ncs.length - 1; i >= 0; i--) {
+          const p = this.clusterPos(ncs[i]);
+          if (!p) continue;
+          const r = expandHitRect({ x: p.cx - (p.r + 2), y: p.y, w: (p.r + 2) * 2, h: p.th }, HIT_MIN_W);
+          if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+            return { type: 'cluster', intervals: ncs[i].members.map((member) => member.src), lane: this.lanes[laneIdx] };
+          }
+        }
+      }
       const per = this.perLane[laneIdx];
       for (let i = per.length - 1; i >= 0; i--) {
         const n = per[i];
+        if (n.clustered) continue; // represented by its cluster's marker
         if (n.start > this.renderView().end) continue;
         const r = expandHitRect(this.rectFor(n, now), HIT_MIN_W);
         if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
@@ -1737,6 +1854,22 @@ export class TimelineViewElement extends HTMLElement {
       const hit = this.downHit;
       if (hit.type === 'interval') {
         this.dispatchEvent(new CustomEvent('intervalclick', { detail: { interval: hit.interval, lane: hit.lane } }));
+      } else if (hit.type === 'cluster') {
+        // A cluster click ZOOMS to the member extent so the group splits
+        // into its true timestamps — never an intervalclick (there is no
+        // single interval to open). Coincident members re-cluster at the
+        // minimum span; their tooltip lists them.
+        let s = Infinity;
+        let e = -Infinity;
+        for (const iv of hit.intervals) {
+          const ms = toMs(iv.start);
+          if (ms < s) s = ms;
+          if (ms > e) e = ms;
+        }
+        if (Number.isFinite(s)) {
+          const v = clusterZoomView({ start: s, end: e });
+          this.setViewport(v.start, v.end);
+        }
       } else if (hit.type === 'connector') {
         this.dispatchEvent(new CustomEvent('connectorclick', { detail: { connector: hit.connector } }));
       } else if (hit.type === 'lane') {
@@ -1823,6 +1956,13 @@ export class TimelineViewElement extends HTMLElement {
       );
       this.invalidate();
     }
+    // Cluster hover ring (keyed by the first member — the cluster's
+    // identity). No intervalhover: a ×N group is not a single interval.
+    const nextCluster = hit?.type === 'cluster' ? (hit.intervals[0]?.id ?? null) : null;
+    if (nextCluster !== this.hoverClusterId) {
+      this.hoverClusterId = nextCluster;
+      this.invalidate();
+    }
     if (hit) this.showTooltip(hit, clientX, clientY);
     else this.hideTooltip();
   }
@@ -1842,7 +1982,10 @@ export class TimelineViewElement extends HTMLElement {
     const tt = this.tooltipEl;
     tt.textContent = '';
     let content: string | Node | null | undefined;
-    if (this.tooltipForFn) {
+    // Clusters never consult tooltipFor: consumers describe INTERVALS,
+    // and the ×N summary (count, extent, member labels) is the
+    // component's own — old adapters keep working untouched.
+    if (this.tooltipForFn && hit.type !== 'cluster') {
       content = this.tooltipForFn(hit);
       if (content == null) {
         this.hideTooltip();
@@ -1919,6 +2062,49 @@ export class TimelineViewElement extends HTMLElement {
           row(s.kind, `${formatDuration((s.end ?? end) - s.start)}`);
         }
       }
+    } else if (hit.type === 'cluster') {
+      // The component-built ×N summary: count, member time extent, up to
+      // 8 member labels, and the zoom affordance.
+      const ivs = hit.intervals;
+      const members: NInterval[] = [];
+      for (const iv of ivs) {
+        const n = this.byId.get(iv.id);
+        if (n) members.push(n);
+      }
+      let s = Infinity;
+      let e = -Infinity;
+      for (const iv of ivs) {
+        const ms = toMs(iv.start);
+        if (ms < s) s = ms;
+        if (ms > e) e = ms;
+      }
+      const keys = this.clusterKeys(members, hit.lane);
+      const title = document.createElement('div');
+      title.className = 'tt-title';
+      const swatch = document.createElement('span');
+      swatch.className = 'tt-swatch';
+      swatch.style.background = this.resolved(keys.catKey, keys.state, null).fill;
+      title.append(swatch, document.createTextNode(`×${ivs.length} events`));
+      frag.append(title);
+      row('lane', hit.lane.label);
+      if (keys.state) row('state', keys.state);
+      const fine = e - s < 10_000;
+      if (e > s) {
+        row('from', formatTimeFull(s, tz, fine));
+        row('to', formatTimeFull(e, tz, fine));
+      } else if (Number.isFinite(s)) {
+        row('time', formatTimeFull(s, tz, true));
+      }
+      const shown = Math.min(ivs.length, 8);
+      for (let i = 0; i < shown; i++) {
+        const n = this.byId.get(ivs[i].id);
+        row('·', n ? n.label || n.id : ivs[i].id);
+      }
+      if (ivs.length > shown) row('·', `+${ivs.length - shown} more`);
+      const hint = document.createElement('div');
+      hint.className = 'tt-k';
+      hint.textContent = 'click to zoom in';
+      frag.append(hint);
     } else if (hit.type === 'connector') {
       const c = hit.connector;
       const title = document.createElement('div');
@@ -2186,8 +2372,12 @@ export class TimelineViewElement extends HTMLElement {
         const n = per[i];
         if (n.start > rv.end) break; // sorted by start
         if ((n.end ?? now) < rv.start && n.end !== null) continue;
+        if (n.clustered) continue; // drawn as its cluster's ×N marker below
         this.drawInterval(ctx, n, now);
       }
+      // The lane's ×N cluster markers, over its bars.
+      const ncs = this.laneClusters[laneIdx];
+      if (ncs) for (const c of ncs) this.drawCluster(ctx, c);
     }
     void dpr;
     void t;
@@ -2446,6 +2636,73 @@ export class TimelineViewElement extends HTMLElement {
       ctx.lineTo(cx, cy + r + 2);
       ctx.lineTo(cx - rx - 2, cy);
       ctx.closePath();
+      ctx.stroke();
+    }
+  }
+
+  /**
+   * Screen geometry of a cluster's marker — shared by drawing and hit
+   * testing so the two can never disagree. Null while the cluster is
+   * unplaced (outside the window) or no part of its extent is visible.
+   */
+  private clusterPos(c: NCluster): { cx: number; cy: number; y: number; th: number; r: number } | null {
+    if (c.track < 0) return null;
+    const rv = this.renderView();
+    const plotW = this.plotWidth();
+    const th = this.laneTrackHeight(c.laneIdx);
+    const r = Math.max(2, Math.min(th * 0.42, 8));
+    const marginMs = ((r + 2) * (rv.end - rv.start)) / plotW;
+    const mt = clusterMarkerTime(c.extent, rv, marginMs);
+    if (mt === null) return null;
+    const m = this.metrics();
+    const y = AXIS_H + this.layout.tops[c.laneIdx] - this.laneScroll + trackTop(c.track, m, th);
+    return { cx: this.gutterW + timeToX(mt, rv, plotW), cy: y + th / 2, y, th, r };
+  }
+
+  /**
+   * A ×N cluster marker: a filled disc + halo ring with a ×N count badge.
+   * ROUND on purpose — a point-like group marker that can never be
+   * confused with the diamond pips (filled diamond = one instant, hollow
+   * diamond = cancelled). Styled by the members' shared state where
+   * uniform (an all-skipped cluster stays skip-flavored) and neutrally
+   * when mixed; sits at the extent midpoint, sliding along the visible
+   * slice at a window edge (clusterMarkerTime). Like pips, clusters get
+   * no edge-continuation fade — a point marker has no clipped extent.
+   */
+  private drawCluster(ctx: CanvasRenderingContext2D, c: NCluster): void {
+    const p = this.clusterPos(c);
+    if (!p) return;
+    const t = this.theme;
+    const style = this.resolved(c.catKey, c.state, null);
+    const rd = Math.max(1.6, p.r * 0.85);
+    ctx.beginPath();
+    ctx.arc(p.cx, p.cy, rd, 0, Math.PI * 2);
+    ctx.fillStyle = style.fill;
+    ctx.fill();
+    ctx.strokeStyle = style.border;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // The halo — the "more than one here" cue — only where the track is
+    // tall enough to contain it (compact slivers keep the bare disc).
+    if (p.th >= (rd + 2) * 2) {
+      ctx.beginPath();
+      ctx.arc(p.cx, p.cy, rd + 2, 0, Math.PI * 2);
+      ctx.strokeStyle = withAlpha(style.border, 0.5);
+      ctx.stroke();
+    }
+    // ×N badge — same fit rule as bar labels (suppressed on slivers).
+    if (p.th >= t.fontSize + 3) {
+      ctx.font = this.fontBar;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = style.labelColor;
+      ctx.fillText(`×${c.members.length}`, this.textPx(p.cx + p.r + 4), this.textPx(p.cy + 0.5));
+    }
+    if (this.hoverClusterId === c.members[0].id) {
+      ctx.beginPath();
+      ctx.arc(p.cx, p.cy, rd + 3.5, 0, Math.PI * 2);
+      ctx.strokeStyle = withAlpha('#ffffff', 0.75);
+      ctx.lineWidth = 1.25;
       ctx.stroke();
     }
   }

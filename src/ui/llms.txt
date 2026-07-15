@@ -202,12 +202,38 @@ below). Zero/near-zero-DURATION intervals (mapped
 width under ~3px at the current zoom) render as instant diamond pips at
 their start time — clearly distinct from bars, still category-colored,
 state-styled (a failed instant gets the thick emphasis border + stem),
-hoverable and clickable via a widened hit target, and packed like
-everything else so coincident instants stack instead of vanishing. The
+hoverable and clickable via a widened hit target. The
 bar-vs-pip decision comes from the DURATION mapped through the scale
 (durationWidthPx) — translation-invariant, so shapes never flicker while
 the timeline scrolls — and a real-duration bar is clamped to MIN_BAR_PX
-(2px), never demoted to a pip. Spans CLIPPED by the viewport carry an
+(2px), never demoted to a pip.
+
+Instant markers CLUSTER at scale: pips whose centers would visually
+overlap in the current window (within ~12px of a neighbor — a greedy
+transitive sweep, re-derived per layout pass) merge into ONE point-like
+×N marker — a filled disc + halo ring with a ×N count badge, round on
+purpose so it can never be confused with the diamond pips (filled = one
+instant, hollow = cancelled) — never a duration bar: an instantaneous
+event has no length, and neither does a pile of them. The cluster packs
+as ONE row slot spanning its member extent, so a burst of coincident
+instants can't blow up the lane height; membership depends only on time
+deltas and the scale, so panning never re-clusters (no jitter — the
+marker sits at the member extent's midpoint, sliding along the visible
+slice at a window edge instead of hiding off-screen), while ZOOMING IN
+progressively splits every cluster until each pip stands at its true
+timestamp. A cluster styles by its members' shared state where uniform
+(an all-'dim' cluster stays dim-flavored; mixed states fall back to the
+neutral default) and hits as {type: 'cluster', intervals, lane}:
+hovering shows a COMPONENT-BUILT summary tooltip (count, time extent,
+up to 8 member labels then '+K more', a zoom hint) — tooltipFor is
+never consulted for clusters — and clicking ZOOMS to the member extent
+(centered, ~60% fill, min-span floored) so the cluster splits, instead
+of dispatching intervalclick; fully coincident members zoom to the
+minimum span and stay one marker (they genuinely share a timestamp —
+the tooltip lists them). Ongoing intervals and real-duration bars never
+cluster. Single pips keep exact tooltipFor/intervalclick behavior.
+
+Spans CLIPPED by the viewport carry an
 edge-continuation cue: the clipped end fades into the background over
 the last ~12px toward that edge (left when the true start is scrolled
 off-screen, right when the true end — or an ongoing bar's extent in a
@@ -280,7 +306,9 @@ Element <timeline-view> — data API (properties/methods, never attributes):
                       run ids/error blobs included; newlines in string
                       content are honored), and pathological content clips
                       at a max height instead of outgrowing the host —
-                      nothing ever spills past the tooltip border.
+                      nothing ever spills past the tooltip border. NEVER
+                      called for ×N cluster hits — their summary tooltip
+                      is component-built (see instant clustering above).
   loadRange         — (start, end) => Promise<{exhausted?: boolean} | void>.
                       Invoked (one request at a time, min-chunk widened;
                       a rejected load is retried on a fixed ~2s cadence
@@ -351,11 +379,13 @@ Viewport / follow:
                       glide from wherever the view is to the followed
                       position, never a teleport (reduced motion snaps).
   Events: 'viewportchange' {start, end, followNow} on user-driven changes,
-  'intervalclick' {interval, lane}, 'intervalhover' {interval|null,
-  lane|null}, 'connectorclick' {connector}, 'laneclick' {lane} (a click on
-  a gutter label — lets consumers make lanes navigable), 'fitchange'
-  {demoted: laneId[]} whenever auto-fit's demotion set changes,
-  'stalechange' {stale, lastFresh} on feed-staleness transitions.
+  'intervalclick' {interval, lane} (single intervals only — a ×N cluster
+  click zooms to its member extent instead), 'intervalhover'
+  {interval|null, lane|null}, 'connectorclick' {connector}, 'laneclick'
+  {lane} (a click on a gutter label — lets consumers make lanes
+  navigable), 'fitchange' {demoted: laneId[]} whenever auto-fit's
+  demotion set changes, 'stalechange' {stale, lastFresh} on
+  feed-staleness transitions.
   A built-in jump-to-live pill appears while not following (hide it with
   the no-live-pill attribute).
 
@@ -544,6 +574,23 @@ Exports:
     slack for the device-pixel view snap, and a side only counts when the
     visible part reaches through fadePx; pass the live edge as endMs for
     ongoing intervals — drives the element's edge fade).
+  Instant clustering: clusterInstants(items, view, plotWidth, joinPx?,
+    instantPx?) → {clusters: InstantCluster[], memberOf: number[]} (the
+    scale-aware greedy transitive sweep behind the element's ×N markers:
+    terminal items whose duration maps under instantPx merge while their
+    starts sit within joinPx (CLUSTER_JOIN_PX = 12) of a neighbor at
+    this scale; clusters have >= 2 members, everything else gets
+    memberOf -1; membership depends only on time deltas + scale — pans
+    never re-cluster, zooming in splits; deterministic under input
+    re-ordering; InstantCluster = {indices, extent} with extent the
+    member start range), clusterZoomView(extent, minSpan?, fillFrac?) →
+    TimeView (the cluster-click zoom target: extent centered at
+    CLUSTER_ZOOM_FILL_FRAC (0.6) fill, floored at minSpan — deep enough
+    to split the cluster; coincident members floor at minSpan),
+    clusterMarkerTime(extent, view, marginMs) → number | null (marker
+    anchor: the extent midpoint, slid along the visible slice when a
+    window edge clips the extent — the sticky-label pattern — inset by
+    marginMs; null once nothing of the extent is visible).
   Hit testing: expandHitRect(rect, minW) (widen instants' hit targets),
     hitTestRects(x, y, rects) (topmost = last; -1 on miss),
     distSqToSegment(px, py, ax, ay, bx, by), hitTestPolyline(px, py, pts,

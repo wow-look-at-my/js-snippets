@@ -75,6 +75,11 @@ import {
   MIN_BAR_PX,
   packVisibleTracks,
   TrackAllocator,
+  clusterInstants,
+  clusterZoomView,
+  clusterMarkerTime,
+  CLUSTER_JOIN_PX,
+  CLUSTER_ZOOM_FILL_FRAC,
   laneHeight,
   demotionOrder,
   computeAutoFit,
@@ -1655,6 +1660,146 @@ test('TrackAllocator: empty input and empty windows collapse to one track', () =
   assert.deepEqual(alloc.assign([], { start: 0, end: 10 }), { tracks: [], trackCount: 1 });
   const r = alloc.assign([ti('a', 100, 110)], { start: 0, end: 10 });
   assert.deepEqual(r, { tracks: [-1], trackCount: 1 });
+});
+
+// -- Instant clustering --------------------------------------------------------------------
+
+// A zero-duration instant (the skipped-run shape: started == finished).
+const pip = (id: string, at: number): PackItem => ({ id, start: at, end: at });
+
+test('clusterInstants: empty and single-instant inputs yield no clusters', () => {
+  const view: TimeView = { start: 0, end: 600_000 };
+  assert.deepEqual(clusterInstants([], view, 1000), { clusters: [], memberOf: [] });
+  const one = clusterInstants([pip('a', 1_000)], view, 1000);
+  assert.equal(one.clusters.length, 0, 'a lone pip is not a cluster');
+  assert.deepEqual(one.memberOf, [-1]);
+});
+
+test('clusterInstants: coincident instants merge into ONE cluster (the lane-height bomb becomes one slot)', () => {
+  const items = Array.from({ length: 50 }, (_, i) => pip(`s${String(i).padStart(2, '0')}`, 5_000));
+  const r = clusterInstants(items, { start: 0, end: 600_000 }, 1000);
+  assert.equal(r.clusters.length, 1);
+  assert.equal(r.clusters[0].indices.length, 50);
+  assert.deepEqual(r.clusters[0].extent, { start: 5_000, end: 5_000 }, 'coincident members: a point extent');
+  assert.ok(r.memberOf.every((m) => m === 0));
+});
+
+test('clusterInstants: threshold boundary — a gap exactly at joinPx merges, just past it stays apart', () => {
+  // 100_000ms over 1000px → 100ms/px → joinMs = CLUSTER_JOIN_PX * 100.
+  const view: TimeView = { start: 0, end: 100_000 };
+  const joinMs = CLUSTER_JOIN_PX * 100;
+  const at = clusterInstants([pip('a', 10_000), pip('b', 10_000 + joinMs)], view, 1000);
+  assert.equal(at.clusters.length, 1, 'exactly at the threshold merges');
+  const past = clusterInstants([pip('a', 10_000), pip('b', 10_000 + joinMs + 1)], view, 1000);
+  assert.equal(past.clusters.length, 0, 'one ms past it stays apart');
+  assert.deepEqual(past.memberOf, [-1, -1]);
+});
+
+test('clusterInstants: transitive chain — pairwise-close pips merge even when the ends are far apart', () => {
+  // 10px apart each (join 12px): a↔d are 30px apart, still ONE cluster.
+  const view: TimeView = { start: 0, end: 100_000 }; // 100ms/px
+  const items = [pip('a', 10_000), pip('b', 11_000), pip('c', 12_000), pip('d', 13_000)];
+  const r = clusterInstants(items, view, 1000);
+  assert.equal(r.clusters.length, 1);
+  assert.deepEqual(r.clusters[0].indices, [0, 1, 2, 3]);
+  assert.deepEqual(r.clusters[0].extent, { start: 10_000, end: 13_000 });
+});
+
+test('clusterInstants: bars and ongoing intervals never cluster', () => {
+  const view: TimeView = { start: 0, end: 100_000 }; // 100ms/px → instants are < 300ms
+  const items: PackItem[] = [
+    pip('a', 10_000),
+    pip('b', 10_100),
+    { id: 'bar', start: 10_000, end: 10_000 + 300 }, // exactly the pip threshold → a bar
+    { id: 'live', start: 10_050, end: null }, // ongoing — will grow into a bar
+  ];
+  const r = clusterInstants(items, view, 1000);
+  assert.equal(r.clusters.length, 1);
+  assert.deepEqual(r.clusters[0].indices, [0, 1], 'only the two pips merged');
+  assert.equal(r.memberOf[2], -1);
+  assert.equal(r.memberOf[3], -1);
+});
+
+test('clusterInstants: deterministic under input re-ordering (memberOf aligned to input positions)', () => {
+  const view: TimeView = { start: 0, end: 100_000 };
+  const sorted = [pip('a', 10_000), pip('b', 10_500), pip('x', 50_000), pip('y', 50_200)];
+  const shuffled = [sorted[3], sorted[1], sorted[0], sorted[2]];
+  const a = clusterInstants(sorted, view, 1000);
+  const b = clusterInstants(shuffled, view, 1000);
+  assert.equal(a.clusters.length, 2);
+  assert.equal(b.clusters.length, 2);
+  const memberIds = (items: PackItem[], c: { indices: number[] }): string[] => c.indices.map((i) => items[i].id);
+  assert.deepEqual(memberIds(sorted, a.clusters[0]), ['a', 'b']);
+  assert.deepEqual(memberIds(shuffled, b.clusters[0]), ['a', 'b'], 'same members, in (start, id) order');
+  assert.deepEqual(a.clusters.map((c) => c.extent), b.clusters.map((c) => c.extent));
+  assert.equal(b.memberOf[2], 0, 'memberOf refers to INPUT positions');
+  assert.equal(b.memberOf[0], 1);
+});
+
+test('clusterInstants: pure pans never change membership or extents (translation-invariant)', () => {
+  const items = [pip('a', 10_000), pip('b', 10_800), pip('c', 40_000)];
+  const span = 100_000;
+  const first = clusterInstants(items, { start: 0, end: span }, 1000);
+  for (let dt = 0; dt <= 30_000; dt += 1_234.5) {
+    const r = clusterInstants(items, { start: dt, end: dt + span }, 1000);
+    assert.deepEqual(r, first, `pan +${dt} keeps identical clusters`);
+  }
+});
+
+test('clusterInstants: zooming in progressively splits clusters until each pip stands alone', () => {
+  // Gaps: a↔b 400ms, b↔c 3_600ms.
+  const items = [pip('a', 10_000), pip('b', 10_400), pip('c', 14_000)];
+  const wide = clusterInstants(items, { start: 0, end: 600_000 }, 1000); // 600ms/px → join 7_200ms
+  assert.equal(wide.clusters.length, 1, 'wide: everything is one blob');
+  assert.equal(wide.clusters[0].indices.length, 3);
+  const mid = clusterInstants(items, { start: 0, end: 60_000 }, 1000); // 60ms/px → join 720ms
+  assert.equal(mid.clusters.length, 1, 'mid: only the close pair remains merged');
+  assert.deepEqual(mid.clusters[0].indices, [0, 1]);
+  assert.equal(mid.memberOf[2], -1);
+  const close = clusterInstants(items, { start: 0, end: 10_000 }, 1000); // 10ms/px → join 120ms
+  assert.equal(close.clusters.length, 0, 'zoomed in: every pip stands at its true timestamp');
+});
+
+test('clusterZoomView: pads the member extent and floors at the minimum span; clicking it splits the cluster', () => {
+  const extent = { start: 10_000, end: 10_400 };
+  const v = clusterZoomView(extent);
+  assert.equal(v.end - v.start, MIN_SPAN_MS, 'a sub-minimum extent floors at MIN_SPAN_MS');
+  assert.equal((v.start + v.end) / 2, (extent.start + extent.end) / 2, 'centered on the extent');
+  // The zoom is deep enough that the members separate → no cluster left.
+  const items = [pip('a', 10_000), pip('b', 10_400)];
+  assert.equal(clusterInstants(items, clusterZoomView(extent), 1000).clusters.length, 0);
+  // A wide extent fills CLUSTER_ZOOM_FILL_FRAC of the window.
+  const big = { start: 0, end: 60_000 };
+  const bv = clusterZoomView(big);
+  assert.ok(Math.abs((bv.end - bv.start) * CLUSTER_ZOOM_FILL_FRAC - 60_000) < 1e-6);
+  // Fully coincident members floor at the minimum span (they can never split).
+  const point = clusterZoomView({ start: 5_000, end: 5_000 });
+  assert.equal(point.end - point.start, MIN_SPAN_MS);
+  assert.equal((point.start + point.end) / 2, 5_000);
+});
+
+test('clusterMarkerTime: midpoint while fully visible; slides at a clipped edge; null once nothing is visible', () => {
+  const view: TimeView = { start: 0, end: 1_000 };
+  // Fully visible: the midpoint, stable.
+  assert.equal(clusterMarkerTime({ start: 100, end: 200 }, view, 10), 150);
+  // Straddling the left edge: slid to the inset window edge, on-screen.
+  assert.equal(clusterMarkerTime({ start: -500, end: 200 }, view, 10), 10);
+  // Straddling the right edge: symmetric.
+  assert.equal(clusterMarkerTime({ start: 800, end: 1_500 }, view, 10), 990);
+  // Entirely outside: no marker.
+  assert.equal(clusterMarkerTime({ start: -500, end: -100 }, view, 10), null);
+  assert.equal(clusterMarkerTime({ start: 1_100, end: 1_200 }, view, 10), null);
+  // A point extent near the edge: margins cross → clamped into the extent.
+  assert.equal(clusterMarkerTime({ start: 50, end: 50 }, view, 100), 50);
+  // Continuity while panning: the marker never jumps, riding the extent's
+  // last visible sliver all the way out.
+  let prev = null as number | null;
+  for (let s = -400; s <= 200; s += 10) {
+    const t = clusterMarkerTime({ start: 100, end: 200 }, { start: s, end: s + 1_000 }, 10);
+    assert.ok(t !== null, `visible at pan ${s}`);
+    if (prev !== null) assert.ok(Math.abs(t - prev) <= 10 + 1e-9, `pan step moves the marker ≤ the pan step`);
+    prev = t;
+  }
 });
 
 // -- historyProbe (the request-flood regression) -----------------------------------------

@@ -10,7 +10,8 @@
 // visible-window variants) plus the STICKY TrackAllocator (rows that stop
 // reshuffling while you watch), lane layout, auto-fit lane demotion (compact
 // track heights, tallest lanes first, hysteretic), label-fit and instant-interval
-// (zero/near-zero DURATION) helpers, stable category → hue hashing,
+// (zero/near-zero DURATION) helpers, scale-aware clustering of instant
+// markers (clusters split as you zoom in), stable category → hue hashing,
 // data-coverage / range-request bookkeeping for async history loading,
 // render-loop pacing tiers, and hit-testing. No DOM or browser APIs —
 // everything here runs (and is tested) under node; ui/timeline-view.ts is
@@ -931,6 +932,134 @@ export function edgeContinuation(
     left: startMs < view.start - eps && timeToX(endMs, view, plotWidth) >= fadePx,
     right: endMs > view.end + eps && timeToX(startMs, view, plotWidth) <= plotWidth - fadePx,
   };
+}
+
+// -- Instant clustering ----------------------------------------------------------------
+
+/**
+ * Instant markers whose centers sit within this many CSS px of their
+ * neighbor merge into one ×N cluster (~the rendered width of a pip incl.
+ * its stroke) — clusters exist exactly while the pips would visually
+ * overlap at the current scale.
+ */
+export const CLUSTER_JOIN_PX = 12;
+
+/** A group of visually-overlapping instant markers (see clusterInstants). */
+export interface InstantCluster {
+  /** Indices into the input array, in (start, id) order. */
+  indices: number[];
+  /**
+   * Member start-time extent [first, last] (equal ends when every member
+   * is coincident) — the click-to-zoom target (clusterZoomView) and the
+   * marker anchor (clusterMarkerTime).
+   */
+  extent: TimeRange;
+}
+
+/**
+ * SCALE-AWARE clustering of instant markers: a greedy transitive sweep
+ * in time order merges instants whose centers sit within `joinPx` CSS px
+ * of their neighbor at the view's scale, so a pile of coincident pips
+ * reads as ONE point-like ×N marker while zooming in progressively
+ * splits every cluster until each pip stands at its true timestamp.
+ *
+ * Only instants participate: an item must be terminal (end != null — an
+ * ongoing interval will grow into a bar) with a duration mapping under
+ * `instantPx` (the pip threshold) at this scale. Membership depends only
+ * on time DELTAS and the scale — never on the viewport's position — so a
+ * pure pan can never change clusters (no jitter), and items beyond the
+ * view still cluster, so a group scrolls into view already formed.
+ * Clusters have >= 2 members (a lone pip is not a cluster; everything
+ * un-clustered gets memberOf -1). Deterministic under input re-ordering:
+ * the sweep runs in (start, id) order and indices refer to input
+ * positions.
+ */
+export function clusterInstants(
+  items: readonly PackItem[],
+  view: TimeView,
+  plotWidth: number,
+  joinPx = CLUSTER_JOIN_PX,
+  instantPx = INSTANT_THRESHOLD_PX,
+): { clusters: InstantCluster[]; memberOf: number[] } {
+  const memberOf = new Array<number>(items.length).fill(-1);
+  const clusters: InstantCluster[] = [];
+  const span = view.end - view.start;
+  if (!(span > 0) || !(plotWidth > 0)) return { clusters, memberOf };
+  const msPerPx = span / plotWidth;
+  const joinMs = joinPx * msPerPx;
+  const instantMaxMs = instantPx * msPerPx;
+  const order: number[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (it.end == null || it.end - it.start >= instantMaxMs) continue;
+    order.push(i);
+  }
+  order.sort((a, b) => {
+    const ia = items[a];
+    const ib = items[b];
+    return ia.start - ib.start || (ia.id < ib.id ? -1 : ia.id > ib.id ? 1 : 0);
+  });
+  let bucket: number[] = [];
+  const flush = (): void => {
+    if (bucket.length > 1) {
+      for (const i of bucket) memberOf[i] = clusters.length;
+      clusters.push({
+        indices: bucket,
+        extent: { start: items[bucket[0]].start, end: items[bucket[bucket.length - 1]].start },
+      });
+    }
+    bucket = [];
+  };
+  for (const i of order) {
+    if (bucket.length > 0 && items[i].start - items[bucket[bucket.length - 1]].start > joinMs) flush();
+    bucket.push(i);
+  }
+  flush();
+  return { clusters, memberOf };
+}
+
+/** Fraction of the zoomed window a clicked cluster's member extent occupies (centered). */
+export const CLUSTER_ZOOM_FILL_FRAC = 0.6;
+
+/**
+ * The view a cluster click zooms to: the member extent centered, filling
+ * CLUSTER_ZOOM_FILL_FRAC of the window, never narrower than `minSpan` —
+ * deep enough that the members separate past the join threshold and the
+ * cluster SPLITS. Fully coincident members zoom to minSpan and stay one
+ * marker: they genuinely share a timestamp, and the tooltip lists them.
+ */
+export function clusterZoomView(extent: TimeRange, minSpan = MIN_SPAN_MS, fillFrac = CLUSTER_ZOOM_FILL_FRAC): TimeView {
+  const dur = Math.max(0, extent.end - extent.start);
+  const span = Math.max(fillFrac > 0 ? dur / fillFrac : dur, minSpan);
+  const mid = (extent.start + extent.end) / 2;
+  return { start: mid - span / 2, end: mid + span / 2 };
+}
+
+/**
+ * Where a cluster's marker sits, in TIME: the extent midpoint while that
+ * fits the window, slid along the visible slice of the extent when the
+ * window clips it (the sticky-label pattern — a transitive chain
+ * straddling a viewport edge keeps an on-screen marker instead of hiding
+ * its members' evidence), and null once no part of the extent is
+ * visible. `marginMs` insets the slid marker from the window edges (pass
+ * the marker radius in ms) so it stays fully visible. Continuous in the
+ * view — panning slides it smoothly, never a jump — and constant (the
+ * midpoint) while the extent is fully inside the window.
+ */
+export function clusterMarkerTime(extent: TimeRange, view: TimeView, marginMs: number): number | null {
+  if (extent.end < view.start || extent.start > view.end) return null;
+  const mid = (extent.start + extent.end) / 2;
+  let lo = Math.max(extent.start, view.start + marginMs);
+  let hi = Math.min(extent.end, view.end - marginMs);
+  if (lo > hi) {
+    // Margins can cross on a tiny window, a near-point extent, or an
+    // extent about to exit — fall back to the UN-inset visible slice
+    // (never empty once the visibility gate above passed), so the marker
+    // stays continuous and on-screen to the last visible sliver.
+    lo = Math.max(extent.start, view.start);
+    hi = Math.min(extent.end, view.end);
+  }
+  return Math.min(Math.max(mid, lo), hi);
 }
 
 // -- Hit testing --------------------------------------------------------------------
