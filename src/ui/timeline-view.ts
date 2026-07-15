@@ -372,16 +372,17 @@ export interface TimelineLegendEntry {
 // row pairs a CSS-drawn swatch (timeline-view.css .lg-*) with its meaning.
 // Swatches use a neutral hue on purpose — they teach shape and pattern,
 // never a specific category color. Consumer rows append after these.
+// Entries name a GLYPH and what it means — nothing meta, no styling-policy
+// notes — and only glyphs that are actually cryptic: self-explanatory
+// chrome (the minimap strip, edge treatments) stays out.
 const LEGEND_ROWS: readonly { swatch: string; text: string }[] = [
   { swatch: 'lg-instant', text: 'instant — a zero-duration event (filled pip)' },
-  { swatch: 'lg-cancelled-pip', text: 'cancelled instant (hollow pip)' },
+  { swatch: 'lg-cancelled-pip', text: 'cancelled instant (hollow, dashed pip)' },
   { swatch: 'lg-cluster', text: '×N — several instants clustered at this zoom; zoom in or click to split' },
   { swatch: 'lg-bar lg-failed', text: 'failed — stippled body, red border, corner bang' },
   { swatch: 'lg-bar lg-hatch', text: 'hatched phase — a declared wait (lock, group slot, sleep) or queued time' },
-  { swatch: 'lg-bar lg-dim', text: 'dim — queued / de-emphasized (labels stay full-contrast)' },
+  { swatch: 'lg-bar lg-dim', text: 'dim — queued / de-emphasized' },
   { swatch: 'lg-bar lg-killed', text: 'cancelled span — hollow, dashed; the darkened tail marks the kill point' },
-  { swatch: 'lg-bar lg-fade', text: 'faded end — the span continues past the visible window' },
-  { swatch: 'lg-minimap', text: 'minimap — the full loaded history; drag the window to pan, its handles to resize' },
 ];
 
 // -- The custom element ----------------------------------------------------------------

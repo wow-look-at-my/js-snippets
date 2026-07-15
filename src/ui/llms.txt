@@ -469,8 +469,10 @@ Legend (the "?" pill): a small button stacked above the fullscreen
   toggle opens an in-place glyph dictionary — the component-owned
   vocabulary (filled/hollow instant pips, the ×N cluster badge, the
   failed stipple + bang, hatched wait/queued phases, dim de-emphasis,
-  the cancelled span's dashed hollow + terminal kill cut, edge fades,
-  the minimap window/handles) followed by any consumer `legendEntries`.
+  the cancelled span's dashed hollow + terminal kill cut) followed by
+  any consumer `legendEntries`. Rows name a GLYPH and its meaning —
+  nothing meta — and cover only glyphs that are actually cryptic:
+  self-explanatory chrome (the minimap, edge treatments) stays out.
   Pure DOM chrome in the shadow root: it works in fullscreen, costs the
   canvas render path nothing (rows build only when the panel opens),
   swatches are CSS-drawn in a neutral hue (they teach shape, not any

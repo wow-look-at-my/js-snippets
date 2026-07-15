@@ -426,13 +426,6 @@ canvas.minimap[hidden] {
   border-left: 1px solid rgba(151, 173, 205, 1);
 }
 
-/* …edge fade: the span dissolves where it leaves the window. */
-.lg-fade {
-  border-right: none;
-  -webkit-mask-image: linear-gradient(90deg, #000 55%, transparent 96%);
-  mask-image: linear-gradient(90deg, #000 55%, transparent 96%);
-}
-
 /* Instant pips: filled diamond = event, hollow diamond = cancelled. A
    cluster is the SAME diamond — the ×N badge alone marks the group. */
 .lg-instant::before,
@@ -457,27 +450,6 @@ canvas.minimap[hidden] {
   content: '×N';
   margin-left: 6px;
   font-size: 10px;
-}
-
-/* Minimap: the extent strip with the brighter draggable window + handles. */
-.lg-minimap {
-  width: 44px;
-  height: 12px;
-  border-radius: 2px;
-  border: 1px solid var(--timeline-grid, #262b36);
-  background: rgba(122, 148, 183, 0.18);
-}
-
-.lg-minimap::before {
-  content: '';
-  position: absolute;
-  top: 1px;
-  bottom: 1px;
-  left: 13px;
-  right: 15px;
-  background: rgba(122, 148, 183, 0.35);
-  border-left: 2px solid rgba(151, 173, 205, 1);
-  border-right: 2px solid rgba(151, 173, 205, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {
