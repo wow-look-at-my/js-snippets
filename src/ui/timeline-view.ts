@@ -346,6 +346,38 @@ const MINIMAP_H = 32;
 // a third of an already-cramped plot.
 const MINIMAP_MIN_HOST_PX = 140;
 
+// -- Legend ------------------------------------------------------------------------
+
+/**
+ * A consumer-supplied legend row (`legendEntries`): a short glyph sample —
+ * rendered verbatim in the swatch column — plus its plain-language
+ * meaning. This is how a consumer teaches the glyphs IT composes into
+ * labels (e.g. an adapter's '⧗ group · 3rd' queue badge or '⏳N' holder
+ * count) alongside the component's own vocabulary.
+ */
+export interface TimelineLegendEntry {
+  /** The glyph/badge sample (e.g. '⧗', '⏳3'). */
+  glyph: string;
+  /** What it means. */
+  text: string;
+}
+
+// The component-OWNED glyph vocabulary shown by the "?" legend pill: each
+// row pairs a CSS-drawn swatch (timeline-view.css .lg-*) with its meaning.
+// Swatches use a neutral hue on purpose — they teach shape and pattern,
+// never a specific category color. Consumer rows append after these.
+const LEGEND_ROWS: readonly { swatch: string; text: string }[] = [
+  { swatch: 'lg-instant', text: 'instant — a zero-duration event (filled pip)' },
+  { swatch: 'lg-cancelled-pip', text: 'cancelled instant (hollow pip)' },
+  { swatch: 'lg-cluster', text: 'cluster of near-coincident instants — zoom in to split, click to zoom there' },
+  { swatch: 'lg-bar lg-failed', text: 'failed — stippled body, red border, corner bang' },
+  { swatch: 'lg-bar lg-hatch', text: 'hatched phase — a declared wait (lock, group slot, sleep) or queued time' },
+  { swatch: 'lg-bar lg-dim', text: 'dim — queued / de-emphasized (labels stay full-contrast)' },
+  { swatch: 'lg-bar lg-killed', text: 'cancelled span — hollow, dashed; the bright cut marks the kill point' },
+  { swatch: 'lg-bar lg-fade', text: 'faded end — the span continues past the visible window' },
+  { swatch: 'lg-minimap', text: 'minimap — the full loaded history; drag the window to pan, its handles to resize' },
+];
+
 // -- The custom element ----------------------------------------------------------------
 
 /**
@@ -358,7 +390,9 @@ const MINIMAP_MIN_HOST_PX = 140;
  * (empty-state hint), `fullscreen` (reflected viewport-fill mode — see the
  * `fullscreen` property), `no-fullscreen-button` (hide the corner toggle;
  * the property/attribute still work programmatically), `no-minimap` (hide
- * the bottom overview strip).
+ * the bottom overview strip), `no-legend` (hide the "?" legend pill —
+ * the in-place glyph dictionary; consumers append their own rows via the
+ * `legendEntries` property).
  *
  * Auto-fit (default ON): each layout pass compares the natural lane stack
  * (every lane at --timeline-track-height) against the host's plot height;
@@ -374,7 +408,7 @@ const MINIMAP_MIN_HOST_PX = 140;
  */
 export class TimelineViewElement extends HTMLElement {
   static get observedAttributes(): string[] {
-    return ['no-live-pill', 'no-auto-fit', 'history-end-text', 'empty-text', 'fullscreen', 'no-fullscreen-button', 'no-minimap'];
+    return ['no-live-pill', 'no-auto-fit', 'history-end-text', 'empty-text', 'fullscreen', 'no-fullscreen-button', 'no-minimap', 'no-legend'];
   }
 
   private canvas: HTMLCanvasElement;
@@ -384,6 +418,12 @@ export class TimelineViewElement extends HTMLElement {
   private fsEl: HTMLButtonElement;
   private emptyEl: HTMLDivElement;
   private staleEl: HTMLDivElement;
+
+  // -- Legend --
+  private legendEl: HTMLButtonElement;
+  private legendPanelEl: HTMLDivElement;
+  private legendOpen = false;
+  private userLegend: TimelineLegendEntry[] = [];
 
   // -- Minimap strip --
   private mmCanvas: HTMLCanvasElement;
@@ -547,6 +587,22 @@ export class TimelineViewElement extends HTMLElement {
     this.fsEl.addEventListener('click', () => {
       this.fullscreen = !this.fullscreen;
     });
+    // The "?" legend pill — stacked above the fullscreen toggle, visible in
+    // both follow and parked modes (and in fullscreen: shadow chrome rides
+    // the host wherever it goes) — opens the glyph-vocabulary panel. Pure
+    // DOM chrome: nothing legend-related runs on the canvas hot path; the
+    // panel's rows are (re)built only when it opens.
+    this.legendEl = document.createElement('button');
+    this.legendEl.className = 'legend-pill';
+    this.legendEl.type = 'button';
+    this.legendEl.textContent = '?';
+    this.legendEl.title = 'legend — what the glyphs mean';
+    this.legendEl.setAttribute('aria-label', 'chart legend');
+    this.legendEl.setAttribute('aria-expanded', 'false');
+    this.legendEl.addEventListener('click', () => this.toggleLegend());
+    this.legendPanelEl = document.createElement('div');
+    this.legendPanelEl.className = 'legend-panel';
+    this.legendPanelEl.hidden = true;
     this.emptyEl = document.createElement('div');
     this.emptyEl.className = 'empty-hint';
     this.emptyEl.hidden = true;
@@ -555,7 +611,7 @@ export class TimelineViewElement extends HTMLElement {
     this.staleEl.hidden = true;
     // fsEl precedes pillEl so `.fs-pill[hidden] ~ .live-pill` can reclaim
     // the corner when the toggle is opted out.
-    shadow.append(this.canvas, this.mmCanvas, this.tooltipEl, this.fsEl, this.pillEl, this.emptyEl, this.staleEl);
+    shadow.append(this.canvas, this.mmCanvas, this.tooltipEl, this.fsEl, this.pillEl, this.emptyEl, this.staleEl, this.legendEl, this.legendPanelEl);
 
     const now = this.nowMs();
     this.view = { start: now - DEFAULT_SPAN_MS, end: now };
@@ -735,11 +791,87 @@ export class TimelineViewElement extends HTMLElement {
   };
 
   private onDocKeyDown = (e: KeyboardEvent): void => {
+    // Legend first: Escape with the panel open closes the PANEL — inside
+    // fullscreen a second Escape then exits the mode.
+    if (e.key === 'Escape' && this.legendOpen) {
+      e.preventDefault();
+      this.closeLegend();
+      return;
+    }
     if (e.key === 'Escape' && this.fullscreen) {
       e.preventDefault();
       this.fullscreen = false;
     }
   };
+
+  // -- Legend ------------------------------------------------------------------------
+
+  /**
+   * Consumer-supplied legend rows, appended under the component-owned
+   * vocabulary in the "?" panel — the additive hook for glyphs a consumer
+   * composes into its LABELS (queue-position badges, holder counts, …),
+   * which the component draws but cannot explain. Entries are copied on
+   * set; malformed values are dropped; an open panel re-renders at once.
+   */
+  get legendEntries(): TimelineLegendEntry[] {
+    return this.userLegend.map((e) => ({ ...e }));
+  }
+  set legendEntries(v: TimelineLegendEntry[]) {
+    this.userLegend = Array.isArray(v)
+      ? v
+          .filter((e) => e !== null && typeof e === 'object' && typeof e.glyph === 'string' && typeof e.text === 'string')
+          .map((e) => ({ glyph: e.glyph, text: e.text }))
+      : [];
+    if (this.legendOpen) this.buildLegendPanel();
+  }
+
+  private toggleLegend(): void {
+    if (this.legendOpen) {
+      this.closeLegend();
+      return;
+    }
+    this.buildLegendPanel();
+    this.legendOpen = true;
+    this.legendPanelEl.hidden = false;
+    this.legendEl.setAttribute('aria-expanded', 'true');
+  }
+
+  private closeLegend(): void {
+    if (!this.legendOpen) return;
+    this.legendOpen = false;
+    this.legendPanelEl.hidden = true;
+    this.legendEl.setAttribute('aria-expanded', 'false');
+  }
+
+  /** (Re)build the panel rows — only ever runs on open / live entry swap. */
+  private buildLegendPanel(): void {
+    const p = this.legendPanelEl;
+    p.textContent = '';
+    const title = document.createElement('div');
+    title.className = 'lg-title';
+    title.textContent = 'legend';
+    p.append(title);
+    for (const row of LEGEND_ROWS) p.append(this.legendRow(row.swatch, null, row.text));
+    if (this.userLegend.length > 0) {
+      const sep = document.createElement('div');
+      sep.className = 'lg-sep';
+      p.append(sep);
+      for (const e of this.userLegend) p.append(this.legendRow('lg-glyph', e.glyph, e.text));
+    }
+  }
+
+  private legendRow(swatchClass: string, glyph: string | null, text: string): HTMLDivElement {
+    const row = document.createElement('div');
+    row.className = 'lg-row';
+    const sw = document.createElement('span');
+    sw.className = `lg-swatch ${swatchClass}`;
+    if (glyph !== null) sw.textContent = glyph; // textContent only — glyphs can't inject markup
+    const tx = document.createElement('span');
+    tx.className = 'lg-text';
+    tx.textContent = text;
+    row.append(sw, tx);
+    return row;
+  }
 
   // -- Public API: data --------------------------------------------------------
 
@@ -1580,6 +1712,8 @@ export class TimelineViewElement extends HTMLElement {
 
   private syncChrome(): void {
     this.pillEl.hidden = this.following || this.hasAttribute('no-live-pill');
+    this.legendEl.hidden = this.hasAttribute('no-legend');
+    if (this.legendEl.hidden) this.closeLegend();
     const fs = this.fullscreen;
     this.fsEl.hidden = this.hasAttribute('no-fullscreen-button');
     this.fsEl.textContent = fs ? '⤡' : '⤢';
@@ -2026,6 +2160,7 @@ export class TimelineViewElement extends HTMLElement {
   private onPointerDown = (e: PointerEvent): void => {
     if (e.button !== 0 && e.pointerType === 'mouse') return;
     this.noteInput();
+    this.closeLegend(); // a chart gesture dismisses the legend panel
     this.canvas.setPointerCapture(e.pointerId);
     const p = this.toLocal(e);
     this.pointers.set(e.pointerId, p);

@@ -330,6 +330,12 @@ Element <timeline-view> — data API (properties/methods, never attributes):
                       staleness below).
   staleAfterMs      — staleness threshold (see Feed staleness below).
   styles            — StyleMap spread over the built-ins (see above).
+  legendEntries     — TimelineLegendEntry[] {glyph, text}: consumer rows
+                      appended under the built-in vocabulary in the "?"
+                      legend panel — how a consumer explains glyphs it
+                      composes into LABELS (queue-position badges like
+                      '⧗ group · 3rd', holder counts like '⏳N'). Copied
+                      on set; an open panel re-renders immediately.
   colorFor          — (interval, lane) => cssColor | null override.
   tooltipFor        — (hit: TimelineHit) => string | Node | null; null/
                       undefined hides. Default tooltip shows label,
@@ -452,6 +458,19 @@ Viewport / follow:
   A built-in jump-to-live pill appears while not following (hide it with
   the no-live-pill attribute).
 
+Legend (the "?" pill): a small button stacked above the fullscreen
+  toggle opens an in-place glyph dictionary — the component-owned
+  vocabulary (filled/hollow instant pips, the ×N cluster disc, the
+  failed stipple + bang, hatched wait/queued phases, dim de-emphasis,
+  the cancelled span's dashed hollow + terminal kill cut, edge fades,
+  the minimap window/handles) followed by any consumer `legendEntries`.
+  Pure DOM chrome in the shadow root: it works in fullscreen, costs the
+  canvas render path nothing (rows build only when the panel opens),
+  swatches are CSS-drawn in a neutral hue (they teach shape, not any
+  category color), Escape or any chart gesture closes it (inside
+  fullscreen, Escape closes the panel first, then the mode), and the
+  no-legend attribute hides the pill entirely.
+
 Feed staleness (a dead live feed is impossible to misread):
   Every setData/mergeData stamps the feed FRESH; markFresh(ts?) stamps
   explicitly — call it from polls that returned "no changes" so a
@@ -480,7 +499,8 @@ compact-lane auto-fit — every lane keeps the full track height),
 history-end-text (boundary label, default 'history ends here'),
 empty-text (empty-state hint), fullscreen (reflected viewport-fill mode
 — see the fullscreen property), no-fullscreen-button (hide the corner
-fullscreen toggle), no-minimap (hide the bottom minimap strip).
+fullscreen toggle), no-minimap (hide the bottom minimap strip),
+no-legend (hide the "?" legend pill).
 
 Interaction: plain wheel / two-finger scroll — deltaX ALWAYS pans time;
 plain deltaY scrolls the lane stack when it overflows the host and is
@@ -535,7 +555,8 @@ CSS custom properties (dark Scratch Proto defaults; see THEME_DEFAULTS):
 Exports:
   class TimelineViewElement extends HTMLElement
   THEME_DEFAULTS — default theme values keyed like the CSS properties
-  Types: TimelineData, TimelineHit, LoadRangeFn, TooltipFn, ColorFn
+  Types: TimelineData, TimelineHit, LoadRangeFn, TooltipFn, ColorFn,
+    TimelineLegendEntry {glyph, text}
   Plus everything re-exported from ui/timeline-view-math.js.
 
 ### ui/timeline-view-math.js
