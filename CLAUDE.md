@@ -84,6 +84,13 @@ src/
 │   ├── *.test.ts          ← colocated node:test tests (program / mesh / fbo)
 │   └── shaders/
 │       └── fullscreen.vert.glsl
+showcase/                  ← timeline-view demo page (its own nested ts0 project — NOT part of the library build; see "Showcase")
+├── ts0.json               ← single-HTML-file target (entry index.html → dist/index.html; esbuild loader override for the .css text import)
+├── index.html             ← page shell (title bar + two <timeline-view>s)
+├── main.ts                ← wiring: styles/legend/tooltip + the live feed
+├── fake-data.ts           ← deterministic fake-run generator (pure fn of absolute time)
+├── page.css               ← page chrome (adopted from main.ts as a text import)
+└── assets.d.ts            ← ambient *.css/*.wgsl/*.glsl decls for the nested project's own type-check
 llms-header.txt            ← preamble for combined llms.txt
 ts0.json                   ← ts0 config (js library target, .wgsl/.glsl text loaders)
 scripts/build-llms.mjs     ← assembles dist/llms.txt after the ts0 build
@@ -132,7 +139,48 @@ Conventions:
 
 ## Deploy
 
-GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` job enables pnpm via corepack, runs `pnpm test` (type-check + `node --test`), then `pnpm build` (ts0 type-checks + compiles, then `dist/llms.txt` is assembled). A failing test fails CI. The `deploy` job (master only) `needs` the `build` job, so tests gate deploy too; it uploads `dist/` to GitHub Pages via `actions/deploy-pages`.
+GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` job enables pnpm via corepack, runs `pnpm test` (type-check + `node --test`), then `pnpm build` (ts0 type-checks + compiles, then `dist/llms.txt` is assembled). A failing test fails CI. The `deploy` job (master only) `needs` the `build` job, so tests gate deploy too; it uploads `dist/` to GitHub Pages via `actions/deploy-pages`. The `showcase` job publishes the timeline demo page to buildhost per branch (see "Showcase" below); it self-gates on chart/showcase paths and succeeds as a no-op otherwise, so it never blocks the org's all-builds aggregation.
+
+## Showcase (`showcase/`)
+
+A live demo page for `<timeline-view>`: ONE self-contained HTML file whose
+fake, local, infinite feed keeps every visual treatment of the chart on
+screen — queued lead-ins, declared-wait hatching with ⧗/⏳ labels, failures,
+timeouts (a consumer style-map key), cancelled runs with kill tails of
+cycling sizes, instant-pip bursts, a viewport-crossing long span, packing
+bursts, markers, connectors, lazy backward history with an end-of-history
+boundary, plus a second compact instance demoing `--timeline-*` retheming and
+auto-fit. No network: data is generated deterministically as a pure function
+of absolute time (`fake-data.ts`), so live ticks, lazy history, and resyncs
+always agree, and the demo never runs dry.
+
+- **Build**: `pnpm build:showcase` → `showcase/dist/index.html` (gitignored via
+  the root `dist/` pattern). `showcase/ts0.json` selects ts0's single-HTML
+  target (`entry: index.html`); the component and page code are bundled and
+  inlined from THIS branch's `../src/ui/`, so every branch previews its own
+  chart. The `esbuild.loader` override (not `loaders`) is what makes the
+  component's `.css` text import work under the HTML target — and it replaces
+  the loader map of build-html's `<link>` stylesheet pass, which is why
+  `page.css` is imported/adopted from `main.ts` instead of `<link>`ed.
+- **Isolation**: `showcase/ts0.json` makes it a nested ts0 project, so the
+  root build/type-check/test skip it entirely (library `dist/` is
+  byte-identical with or without `showcase/`). Do not add `*.test.ts` here.
+- **CI**: the `showcase` job in deploy.yml publishes `showcase/dist/` to
+  buildhost (project `timeline-showcase`) via the org composite action
+  `wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master`
+  (OIDC — needs job-level `id-token: write`). Branch preview URL:
+  `https://sites.pazer.build/timeline-showcase/branch/<branch>/` with `/`
+  in branch names flattened to `-` (e.g. `claude/foo` → `claude-foo`).
+- **Path gate**: the job publishes only when the branch's diff vs
+  origin/master touches `src/ui/`, `showcase/`, or deploy.yml itself
+  (master pushes always publish). The gate is in-job (a TypeScript-action
+  step), NEVER a workflow-level paths filter — the same workflow runs the
+  library build.
+- **Post-#39 note**: the page feature-detects newer component API
+  (`legendEntries`, the built-in `cancelled` style) so it builds against any
+  branch's `src/ui`; rendering-side features (minimap, fullscreen, skip
+  clustering, kill-tail scrims, edge fades) light up automatically once the
+  bundled component has them.
 
 ## llms.txt — CRITICAL
 
