@@ -70,6 +70,7 @@ import {
   clampViewToNow,
   snapViewToDevicePixels,
   durationWidthPx,
+  edgeContinuation,
   MIN_BAR_PX,
   packVisibleTracks,
   laneHeight,
@@ -1368,6 +1369,54 @@ test('durationWidthPx: zero-duration events are pips at any zoom; real widths cl
   assert.ok(MIN_BAR_PX >= 2 && MIN_BAR_PX < INSTANT_THRESHOLD_PX);
   const wide = durationWidthPx(0, 3_600, view, 1000); // 6px
   assert.equal(isInstantWidth(wide), false);
+});
+
+// -- Edge continuation (the clipped-span fade) --------------------------------------------
+
+test('edgeContinuation: clipped ends are flagged; fully visible spans are not', () => {
+  // 1000px plot over 600s → 600ms per px.
+  const view: TimeView = { start: 600_000, end: 1_200_000 };
+  const inside = edgeContinuation(700_000, 900_000, view, 1000, 12);
+  assert.deepEqual(inside, { left: false, right: false });
+  assert.deepEqual(edgeContinuation(100_000, 900_000, view, 1000, 12), { left: true, right: false });
+  assert.deepEqual(edgeContinuation(700_000, 1_500_000, view, 1000, 12), { left: false, right: true });
+  assert.deepEqual(edgeContinuation(100_000, 1_500_000, view, 1000, 12), { left: true, right: true });
+});
+
+test('edgeContinuation: an end coinciding with the window edge genuinely starts/ends there — no fade', () => {
+  const view: TimeView = { start: 600_000, end: 1_200_000 };
+  assert.deepEqual(edgeContinuation(view.start, 900_000, view, 1000, 12), { left: false, right: false });
+  assert.deepEqual(edgeContinuation(700_000, view.end, view, 1000, 12), { left: false, right: false });
+  // …including sub-half-pixel overhangs: the device-pixel view snap can
+  // shift an exact edge by up to a pixel, which must not read as
+  // continuation. (600ms/px here → half a px = 300ms.)
+  assert.deepEqual(edgeContinuation(view.start - 299, 900_000, view, 1000, 12), { left: false, right: false });
+  assert.deepEqual(edgeContinuation(700_000, view.end + 299, view, 1000, 12), { left: false, right: false });
+  // A real overhang past the slack fades.
+  assert.equal(edgeContinuation(view.start - 601, 900_000, view, 1000, 12).left, true);
+  assert.equal(edgeContinuation(700_000, view.end + 601, view, 1000, 12).right, true);
+});
+
+test('edgeContinuation: a stub not reaching through the fade zone stays a visible stub', () => {
+  const view: TimeView = { start: 600_000, end: 1_200_000 }; // 600ms per px
+  // Continues far left but only 5px poke in (< 12px zone): fading it
+  // would erase it entirely — no fade.
+  assert.deepEqual(edgeContinuation(0, view.start + 5 * 600, view, 1000, 12), { left: false, right: false });
+  assert.deepEqual(edgeContinuation(view.end - 5 * 600, 9_999_999, view, 1000, 12), { left: false, right: false });
+  // Reaching exactly through the zone qualifies.
+  assert.equal(edgeContinuation(0, view.start + 12 * 600, view, 1000, 12).left, true);
+  assert.equal(edgeContinuation(view.end - 12 * 600, 9_999_999, view, 1000, 12).right, true);
+});
+
+test('edgeContinuation: an ongoing bar at the live edge never fades (the caller passes endMs = now, inside the view)', () => {
+  const now = 1_150_000;
+  const view: TimeView = { start: 600_000, end: 1_200_000 }; // follow lead keeps now < view.end
+  assert.deepEqual(edgeContinuation(700_000, now, view, 1000, 12), { left: false, right: false });
+});
+
+test('edgeContinuation: degenerate view or plot width flags nothing', () => {
+  assert.deepEqual(edgeContinuation(0, 100, { start: 5, end: 5 }, 1000, 12), { left: false, right: false });
+  assert.deepEqual(edgeContinuation(0, 100, { start: 0, end: 1000 }, 0, 12), { left: false, right: false });
 });
 
 // -- Visible-window packing --------------------------------------------------------------

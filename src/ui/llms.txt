@@ -194,9 +194,18 @@ everything else so coincident instants stack instead of vanishing. The
 bar-vs-pip decision comes from the DURATION mapped through the scale
 (durationWidthPx) — translation-invariant, so shapes never flicker while
 the timeline scrolls — and a real-duration bar is clamped to MIN_BAR_PX
-(2px), never demoted to a pip. Bar labels truncate with an ellipsis and are
-suppressed below fit width — they never spill into neighboring bars — and
-stick to the plot edge while a bar's start is scrolled off-screen.
+(2px), never demoted to a pip. Spans CLIPPED by the viewport carry an
+edge-continuation cue: the clipped end fades into the background over
+the last ~12px toward that edge (left when the true start is scrolled
+off-screen, right when the true end — or an ongoing bar's extent in a
+parked view — exceeds the window), over every treatment (solid, hollow,
+hatched, terminal cuts). Spans whose edge coincides with the window edge
+are exempt (they genuinely start/end there), as are stubs too short to
+reach through the fade zone (fading those would erase them). Bar labels
+truncate with an ellipsis and are suppressed below fit width — they
+never spill into neighboring bars — and stick to the plot edge while a
+bar's start is scrolled off-screen (just past the continuation fade when
+one is active).
 
 Importing the module auto-registers <timeline-view> (unless the tag is
 taken).
@@ -498,7 +507,13 @@ Exports:
     below it an interval renders as an instant pip),
     durationWidthPx(startMs, endMs, view, plotWidth) (duration mapped
     through the scale — the translation-invariant width the bar-vs-pip
-    decision must use), MIN_BAR_PX (= 2px minimum rendered bar width).
+    decision must use), MIN_BAR_PX (= 2px minimum rendered bar width),
+    edgeContinuation(startMs, endMs, view, plotWidth, fadePx) → {left,
+    right} (which ends the view CLIPS — the span truly continues
+    off-screen past them; exact-edge ends are exempt with half-a-pixel
+    slack for the device-pixel view snap, and a side only counts when the
+    visible part reaches through fadePx; pass the live edge as endMs for
+    ongoing intervals — drives the element's edge fade).
   Hit testing: expandHitRect(rect, minW) (widen instants' hit targets),
     hitTestRects(x, y, rects) (topmost = last; -1 on miss),
     distSqToSegment(px, py, ax, ay, bx, by), hitTestPolyline(px, py, pts,

@@ -764,6 +764,33 @@ export function durationWidthPx(startMs: number, endMs: number, view: TimeView, 
   return span > 0 ? ((endMs - startMs) / span) * plotWidth : 0;
 }
 
+/**
+ * Which ends of [startMs, endMs] are CLIPPED by the view — the interval's
+ * true extent continues off-screen past that edge. Drives the element's
+ * edge-continuation fade. Two deliberate exemptions: an end within half a
+ * pixel of the window edge does NOT count (the interval genuinely
+ * starts/ends there — and the device-pixel view snap shifts edges by up
+ * to a pixel, which must never read as continuation); and a side only
+ * counts when the visible part reaches all the way through the fade zone
+ * (`fadePx`), so a barely-poking stub stays a visible stub instead of
+ * fading to nothing. Pass the live edge as `endMs` for ongoing intervals.
+ */
+export function edgeContinuation(
+  startMs: number,
+  endMs: number,
+  view: TimeView,
+  plotWidth: number,
+  fadePx: number,
+): { left: boolean; right: boolean } {
+  const span = view.end - view.start;
+  if (!(span > 0) || !(plotWidth > 0)) return { left: false, right: false };
+  const eps = span / plotWidth / 2; // half a CSS px, in ms
+  return {
+    left: startMs < view.start - eps && timeToX(endMs, view, plotWidth) >= fadePx,
+    right: endMs > view.end + eps && timeToX(startMs, view, plotWidth) <= plotWidth - fadePx,
+  };
+}
+
 // -- Hit testing --------------------------------------------------------------------
 
 /** An axis-aligned hit rectangle (CSS px). */

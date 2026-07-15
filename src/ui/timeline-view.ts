@@ -107,6 +107,7 @@ import {
   fitText,
   isInstantWidth,
   durationWidthPx,
+  edgeContinuation,
   MIN_BAR_PX,
   expandHitRect,
   hitTestPolyline,
@@ -262,6 +263,10 @@ const TERMINAL_SEG_MIN_DEVICE_PX = 3;
 // A dashed border needs room to read as dashes; narrower bars draw it
 // solid (the hollow body still carries the state on a tiny bar).
 const BORDER_DASH_MIN_PX = 12;
+// Width (CSS px) of the edge-continuation fade on a span the viewport
+// clips: the clipped end dissolves toward the edge — the cue that it
+// continues off-screen (see edgeContinuation for the exemptions).
+const EDGE_FADE_PX = 12;
 
 // -- The custom element ----------------------------------------------------------------
 
@@ -2132,6 +2137,8 @@ export class TimelineViewElement extends HTMLElement {
   private drawInterval(ctx: CanvasRenderingContext2D, n: NInterval, now: number): void {
     const t = this.theme;
     const dpr = this.dpr;
+    const rv = this.renderView();
+    const plotW = this.plotWidth();
     const r = this.rectFor(n, now);
     const bh = r.h; // per-lane track height: compact lanes render slivers
     const style = this.resolved(n.catKey, n.state, this.overrideColor(n));
@@ -2143,11 +2150,16 @@ export class TimelineViewElement extends HTMLElement {
     // subpixel phase). Zero/near-zero-duration events are pips; anything
     // wider draws as a bar, clamped to MIN_BAR_PX so a real duration is
     // never demoted to a pip by rounding.
-    const trueW = durationWidthPx(n.start, n.end ?? now, this.renderView(), this.plotWidth());
+    const trueW = durationWidthPx(n.start, n.end ?? now, rv, plotW);
     if (isInstantWidth(trueW)) {
       this.drawInstant(ctx, n, style, r.x + r.w / 2, r.y + bh / 2, bh, hovered);
       return;
     }
+
+    // Which ends the viewport clips (the span truly continues off-screen
+    // past them) — those ends get the edge-continuation fade, painted
+    // last so it applies over every treatment.
+    const fade = edgeContinuation(n.start, n.end ?? now, rv, plotW, EDGE_FADE_PX);
 
     // Unrounded coordinates on purpose: renderView is the single global
     // rounding step; rounding again per bar would jiggle neighbors
@@ -2184,11 +2196,9 @@ export class TimelineViewElement extends HTMLElement {
     if (n.segs) {
       ctx.save();
       ctx.clip(path);
-      const w = this.plotWidth();
-      const rv = this.renderView();
       for (const s of n.segs) {
-        let sx0 = Math.max(x0, this.gutterW + timeToX(s.start, rv, w));
-        const sx1 = Math.min(x1, this.gutterW + timeToX(s.end ?? (n.end ?? now), rv, w));
+        let sx0 = Math.max(x0, this.gutterW + timeToX(s.start, rv, plotW));
+        const sx1 = Math.min(x1, this.gutterW + timeToX(s.end ?? (n.end ?? now), rv, plotW));
         const ss = this.resolved(n.catKey, s.kind, null);
         if (ss.pattern === 'outline') {
           // A terminal cut (e.g. a kill tail: cancel requested → finished).
@@ -2287,11 +2297,12 @@ export class TimelineViewElement extends HTMLElement {
     // Label — suppressed entirely below fit height (a compact sliver has
     // no room for text); otherwise never allowed to spill out of the bar,
     // sticking to the plot's left edge while the bar's start is scrolled
-    // off-screen.
+    // off-screen — just past the continuation fade when one is active, so
+    // the sticky label never sits inside the dissolved zone.
     if (bh >= t.fontSize + 3) {
       const pad = 5;
       const glyphPad = style.glyph === 'bang' ? 8 : 0;
-      const labelX = Math.max(x0, this.gutterW) + pad;
+      const labelX = Math.max(x0, this.gutterW + (fade.left ? EDGE_FADE_PX : 0)) + pad;
       const label = fitText(n.label, x1 - labelX - pad - glyphPad, this.charW);
       if (label !== '') {
         ctx.fillStyle = style.labelColor;
@@ -2303,6 +2314,32 @@ export class TimelineViewElement extends HTMLElement {
       ctx.strokeStyle = withAlpha('#ffffff', 0.75);
       ctx.lineWidth = 1.25;
       ctx.stroke(path);
+    }
+
+    // Edge-continuation fade: the clipped end dissolves into the
+    // background over the last EDGE_FADE_PX toward the viewport edge —
+    // the cue that the span continues off-screen. Painted OVER the
+    // finished bar (fill, segments, border, hover ring) as a gradient to
+    // the background color — not an alpha erase — so it reads identically
+    // for solid, hollow, hatched, and scrimmed treatments and stays
+    // correct on an opaque canvas. The rect overshoots the bar by 1px
+    // vertically to catch the border's outer half (still inside the 2px
+    // track gap).
+    if (fade.left) {
+      const gx = this.gutterW;
+      const grad = ctx.createLinearGradient(gx, 0, gx + EDGE_FADE_PX, 0);
+      grad.addColorStop(0, t.bg);
+      grad.addColorStop(1, withAlpha(t.bg, 0));
+      ctx.fillStyle = grad;
+      ctx.fillRect(gx, y - 1, EDGE_FADE_PX, bh + 2);
+    }
+    if (fade.right) {
+      const ex = this.gutterW + plotW;
+      const grad = ctx.createLinearGradient(ex - EDGE_FADE_PX, 0, ex, 0);
+      grad.addColorStop(0, withAlpha(t.bg, 0));
+      grad.addColorStop(1, t.bg);
+      ctx.fillStyle = grad;
+      ctx.fillRect(ex - EDGE_FADE_PX, y - 1, EDGE_FADE_PX, bh + 2);
     }
   }
 
