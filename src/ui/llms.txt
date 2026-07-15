@@ -254,6 +254,11 @@ Element <timeline-view> — data API (properties/methods, never attributes):
                       undefined hides. Default tooltip shows label,
                       category, state, start/end, duration, segment
                       durations. Node content is appended, never innerHTML.
+                      Long lines WRAP inside the box (unbroken tokens like
+                      run ids/error blobs included; newlines in string
+                      content are honored), and pathological content clips
+                      at a max height instead of outgrowing the host —
+                      nothing ever spills past the tooltip border.
   loadRange         — (start, end) => Promise<{exhausted?: boolean} | void>.
                       Invoked (one request at a time, min-chunk widened;
                       a rejected load is retried on a fixed ~2s cadence

@@ -1806,6 +1806,11 @@ export class TimelineViewElement extends HTMLElement {
     if (typeof content === 'string') tt.textContent = content;
     else tt.append(content);
     tt.classList.add('visible');
+    // Measure at a neutral position: a stale left/top from the previous
+    // show could squeeze the box against the host edge and mis-measure
+    // the wrapped size the flip-to-fit math is about to use.
+    tt.style.left = '0px';
+    tt.style.top = '0px';
     // Position near the cursor, flipped to stay inside the host.
     const host = this.getBoundingClientRect();
     let x = clientX - host.left + 14;

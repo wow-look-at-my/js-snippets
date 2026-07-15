@@ -43,6 +43,10 @@ canvas {
   position: absolute;
   z-index: 3;
   max-width: 340px;
+  /* Pathological content (a wall of wrapped error text) clips instead of
+   * outgrowing the host; the % keeps it inside even a short host. */
+  max-height: min(240px, 85%);
+  overflow: hidden;
   padding: 6px 9px;
   pointer-events: none;
   background: var(--timeline-tooltip-bg, rgba(20, 24, 32, 0.96));
@@ -52,7 +56,11 @@ canvas {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
   font-size: calc(var(--timeline-font-size, 11px) + 0px);
   line-height: 1.45;
-  white-space: nowrap;
+  /* Long lines WRAP inside the box (they used to spill past it under
+   * nowrap); pre-line keeps intentional newlines in string content, and
+   * anywhere lets unbroken tokens (run ids, error blobs) break too. */
+  white-space: pre-line;
+  overflow-wrap: anywhere;
   opacity: 0;
   transition: opacity 90ms ease-out;
 }
@@ -74,6 +82,14 @@ canvas {
 .tooltip .tt-k {
   color: var(--timeline-muted, #6b7280);
   min-width: 52px;
+  flex-shrink: 0;
+}
+
+.tooltip .tt-v {
+  /* Flex items refuse to shrink below their content by default; letting
+   * the value column shrink is what makes long values wrap instead of
+   * pushing the row past the tooltip border. */
+  min-width: 0;
 }
 
 .tooltip .tt-swatch {
