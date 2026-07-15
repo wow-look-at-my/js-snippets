@@ -336,10 +336,15 @@ const CUT_LINE_MIN_TAIL_PX = 4;
 // A dashed border needs room to read as dashes; narrower bars draw it
 // solid (the hollow body still carries the state on a tiny bar).
 const BORDER_DASH_MIN_PX = 12;
-// Width (CSS px) of the edge-continuation fade on a span the viewport
-// clips: the clipped end dissolves toward the edge — the cue that it
-// continues off-screen (see edgeContinuation for the exemptions).
+// Width (CSS px) of the edge-continuation shadow on a span the viewport
+// clips: the clipped end darkens toward the edge — the span reads as
+// sliding UNDER the window edge, which casts a shadow on it (see
+// edgeContinuation for the exemptions).
 const EDGE_FADE_PX = 12;
+// Shadow strength at the window edge itself: black at this alpha over
+// any span body (or background sliver) lands clearly DARKER than the
+// page background, so the end reads covered-up, never dissolved.
+const EDGE_SHADOW_ALPHA = 0.85;
 // Backing-store cap: 3 keeps >2-DPR displays (150% 4K scaling, many
 // laptops/mobiles) sharp instead of compositor-upscaled soft, without the
 // fully-uncapped perf cliff on 4k+ screens.
@@ -2953,7 +2958,7 @@ export class TimelineViewElement extends HTMLElement {
     }
 
     // Which ends the viewport clips (the span truly continues off-screen
-    // past them) — those ends get the edge-continuation fade, painted
+    // past them) — those ends get the edge-continuation shadow, painted
     // last so it applies over every treatment.
     const fade = edgeContinuation(n.start, n.end ?? now, rv, plotW, EDGE_FADE_PX);
 
@@ -3099,8 +3104,8 @@ export class TimelineViewElement extends HTMLElement {
     // Label — suppressed entirely below fit height (a compact sliver has
     // no room for text); otherwise never allowed to spill out of the bar,
     // sticking to the plot's left edge while the bar's start is scrolled
-    // off-screen — just past the continuation fade when one is active, so
-    // the sticky label never sits inside the dissolved zone.
+    // off-screen — just past the continuation shadow when one is active,
+    // so the sticky label never sits inside the darkened zone.
     if (bh >= t.fontSize + 3) {
       const pad = 5;
       const glyphPad = style.glyph === 'bang' ? 8 : 0;
@@ -3118,30 +3123,40 @@ export class TimelineViewElement extends HTMLElement {
       ctx.stroke(path);
     }
 
-    // Edge-continuation fade: the clipped end dissolves into the
-    // background over the last EDGE_FADE_PX toward the viewport edge —
-    // the cue that the span continues off-screen. Painted OVER the
-    // finished bar (fill, segments, border, hover ring) as a gradient to
-    // the background color — not an alpha erase — so it reads identically
-    // for solid, hollow, hatched, and scrimmed treatments and stays
-    // correct on an opaque canvas. The rect overshoots the bar by 1px
-    // vertically to catch the border's outer half (still inside the 2px
-    // track gap).
+    // Edge-continuation shadow: the clipped end darkens over the last
+    // EDGE_FADE_PX toward the viewport edge — the span reads as sliding
+    // UNDER the window edge, which casts a shadow on it. NEVER a fade to
+    // the background color: dissolving the span made it look like it
+    // evaporates there instead of continuing. Painted OVER the finished
+    // bar (fill, segments, border, hover ring) as a black gradient —
+    // full EDGE_SHADOW_ALPHA at the edge (clearly darker than the page
+    // background over any body), eased via a mid stop, clear at the
+    // inner side — plus a 1px near-black line at the boundary itself to
+    // strengthen the occluding-edge read. Reads identically over solid,
+    // hollow, hatched, and scrimmed treatments and stays correct on an
+    // opaque canvas. The rect overshoots the bar by 1px vertically to
+    // catch the border's outer half (still inside the 2px track gap).
     if (fade.left) {
       const gx = this.gutterW;
       const grad = ctx.createLinearGradient(gx, 0, gx + EDGE_FADE_PX, 0);
-      grad.addColorStop(0, t.bg);
-      grad.addColorStop(1, withAlpha(t.bg, 0));
+      grad.addColorStop(0, withAlpha('#000000', EDGE_SHADOW_ALPHA));
+      grad.addColorStop(0.55, withAlpha('#000000', EDGE_SHADOW_ALPHA * 0.35));
+      grad.addColorStop(1, withAlpha('#000000', 0));
       ctx.fillStyle = grad;
       ctx.fillRect(gx, y - 1, EDGE_FADE_PX, bh + 2);
+      ctx.fillStyle = withAlpha('#000000', 0.9);
+      ctx.fillRect(gx, y - 1, 1, bh + 2);
     }
     if (fade.right) {
       const ex = this.gutterW + plotW;
       const grad = ctx.createLinearGradient(ex - EDGE_FADE_PX, 0, ex, 0);
-      grad.addColorStop(0, withAlpha(t.bg, 0));
-      grad.addColorStop(1, t.bg);
+      grad.addColorStop(0, withAlpha('#000000', 0));
+      grad.addColorStop(0.45, withAlpha('#000000', EDGE_SHADOW_ALPHA * 0.35));
+      grad.addColorStop(1, withAlpha('#000000', EDGE_SHADOW_ALPHA));
       ctx.fillStyle = grad;
       ctx.fillRect(ex - EDGE_FADE_PX, y - 1, EDGE_FADE_PX, bh + 2);
+      ctx.fillStyle = withAlpha('#000000', 0.9);
+      ctx.fillRect(ex - 1, y - 1, 1, bh + 2);
     }
   }
 

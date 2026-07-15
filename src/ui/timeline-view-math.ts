@@ -920,13 +920,14 @@ export function durationWidthPx(startMs: number, endMs: number, view: TimeView, 
 /**
  * Which ends of [startMs, endMs] are CLIPPED by the view — the interval's
  * true extent continues off-screen past that edge. Drives the element's
- * edge-continuation fade. Two deliberate exemptions: an end within half a
- * pixel of the window edge does NOT count (the interval genuinely
+ * edge-continuation shadow. Two deliberate exemptions: an end within half
+ * a pixel of the window edge does NOT count (the interval genuinely
  * starts/ends there — and the device-pixel view snap shifts edges by up
  * to a pixel, which must never read as continuation); and a side only
- * counts when the visible part reaches all the way through the fade zone
- * (`fadePx`), so a barely-poking stub stays a visible stub instead of
- * fading to nothing. Pass the live edge as `endMs` for ongoing intervals.
+ * counts when the visible part reaches all the way through the shadow
+ * zone (`fadePx`), so a barely-poking stub stays a visible stub instead
+ * of being swallowed by it. Pass the live edge as `endMs` for ongoing
+ * intervals.
  */
 export function edgeContinuation(
   startMs: number,
