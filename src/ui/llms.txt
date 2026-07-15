@@ -378,6 +378,23 @@ Viewport / follow:
   jumpToNow()       — re-engage follow, keeping the span: a fast ~250ms
                       glide from wherever the view is to the followed
                       position, never a teleport (reduced motion snaps).
+  fullscreen        — boolean property, reflected as the `fullscreen`
+                      attribute: viewport-fill mode. The host goes
+                      position:fixed inset:0 over the whole viewport
+                      (deliberately NOT the Fullscreen API — no permission
+                      prompt; the :host([fullscreen]) rules are !important
+                      so they beat page styles sizing the host), the page
+                      scroll locks while active (html overflow hidden,
+                      previous value restored — the page's scroll offset
+                      survives the round trip exactly), and everything
+                      re-derives through the normal resize path (the DPR
+                      cap stays at 3). Escape exits (handled only while
+                      fullscreen — never swallowed otherwise). A corner
+                      ⤢/⤡ toggle button sits at bottom-right, visible in
+                      BOTH follow and parked modes (the jump-to-live pill
+                      slides in to its left); hide the button with the
+                      no-fullscreen-button attribute (the property and
+                      attribute keep working programmatically).
   Events: 'viewportchange' {start, end, followNow} on user-driven changes,
   'intervalclick' {interval, lane} (single intervals only — a ×N cluster
   click zooms to its member extent instead), 'intervalhover'
@@ -385,7 +402,8 @@ Viewport / follow:
   {lane} (a click on a gutter label — lets consumers make lanes
   navigable), 'fitchange' {demoted: laneId[]} whenever auto-fit's
   demotion set changes, 'stalechange' {stale, lastFresh} on
-  feed-staleness transitions.
+  feed-staleness transitions, 'fullscreenchange' {fullscreen} on
+  viewport-fill transitions.
   A built-in jump-to-live pill appears while not following (hide it with
   the no-live-pill attribute).
 
@@ -415,7 +433,9 @@ Feed staleness (a dead live feed is impossible to misread):
 Attributes (scalar toggles only): no-live-pill, no-auto-fit (disable
 compact-lane auto-fit — every lane keeps the full track height),
 history-end-text (boundary label, default 'history ends here'),
-empty-text (empty-state hint).
+empty-text (empty-state hint), fullscreen (reflected viewport-fill mode
+— see the fullscreen property), no-fullscreen-button (hide the corner
+fullscreen toggle).
 
 Interaction: plain wheel / two-finger scroll — deltaX ALWAYS pans time;
 plain deltaY scrolls the lane stack when it overflows the host and is
@@ -428,7 +448,16 @@ deltas apply 1:1; discrete wheel steps glide ~130ms; always consumed —
 never browser page-zoom); shift+wheel pans time; pointer drag pans both
 axes (pointer capture); two-pointer pinch zooms; keyboard when focused
 (tabindex 0): arrows pan (shift = faster), +/- zoom, End = jump to now,
-Home = jump to the earliest known data.
+Home = jump to the earliest known data. The wheel listener sits on the
+HOST, so those rules apply over the DOM chrome (live pill, fullscreen
+toggle, stale note) exactly as over the canvas — a horizontal delta is
+consumed wherever it lands — and the host + canvas carry
+overscroll-behavior: none, so pulling further at the left pan boundary
+(or any edge) never chains into the browser's history-back/forward
+navigation gesture, wheel or touch (chrome buttons keep
+touch-action: manipulation so taps stay instant; the canvas stays
+touch-action: none). Page-LEVEL containment (html/body) stays the
+embedding page's own business.
 
 CSS custom properties (dark Scratch Proto defaults; see THEME_DEFAULTS):
   --timeline-bg            — plot background          (#0d0f14)

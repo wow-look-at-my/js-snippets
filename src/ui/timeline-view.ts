@@ -40,7 +40,15 @@
  * the past into async history requests — for BACKWARD gaps only; the live
  * forward edge always belongs to the consumer's own setData/mergeData
  * `coverage` — with uncovered regions visibly distinct from empty-but-known
- * ones and an explicit end-of-history boundary.
+ * ones and an explicit end-of-history boundary. Browser navigation
+ * gestures never fire over the component: the wheel listener lives on the
+ * HOST (horizontal deltas over the DOM chrome are consumed like over the
+ * canvas) and the host carries overscroll-behavior: none, so panning hard
+ * into exhausted history can't turn into a history-back swipe. A corner
+ * ⤢ toggle (always visible; `no-fullscreen-button` hides it) flips the
+ * reflected `fullscreen` attribute: viewport-fill via position:fixed —
+ * deliberately NOT the Fullscreen API — with the page scroll locked while
+ * active, Escape to exit, and a 'fullscreenchange' event.
  *
  * FEED STALENESS: every setData/mergeData (or an explicit markFresh())
  * stamps the feed fresh; when `staleAfterMs` (default 10s) passes without
@@ -322,7 +330,9 @@ const MAX_DPR = 3;
  * setMarkers — never attributes; the only attributes are scalar toggles:
  * `no-live-pill` (hide the jump-to-now pill), `no-auto-fit` (disable
  * compact-lane auto-fit), `history-end-text` (boundary label), `empty-text`
- * (empty-state hint).
+ * (empty-state hint), `fullscreen` (reflected viewport-fill mode — see the
+ * `fullscreen` property), `no-fullscreen-button` (hide the corner toggle;
+ * the property/attribute still work programmatically).
  *
  * Auto-fit (default ON): each layout pass compares the natural lane stack
  * (every lane at --timeline-track-height) against the host's plot height;
@@ -338,15 +348,32 @@ const MAX_DPR = 3;
  */
 export class TimelineViewElement extends HTMLElement {
   static get observedAttributes(): string[] {
-    return ['no-live-pill', 'no-auto-fit', 'history-end-text', 'empty-text'];
+    return ['no-live-pill', 'no-auto-fit', 'history-end-text', 'empty-text', 'fullscreen', 'no-fullscreen-button'];
   }
 
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D | null = null;
   private tooltipEl: HTMLDivElement;
   private pillEl: HTMLButtonElement;
+  private fsEl: HTMLButtonElement;
   private emptyEl: HTMLDivElement;
   private staleEl: HTMLDivElement;
+
+  // -- Fullscreen (viewport-fill) --
+  // While the host carries the `fullscreen` attribute it is position:fixed
+  // over the whole viewport and the PAGE scroll is locked (html overflow
+  // hidden, previous inline value restored on exit) — so the page behind
+  // can neither scroll nor scroll-chain, and the page's scroll offset is
+  // exactly where the user left it when fullscreen exits.
+  private fsLocked = false;
+  private fsPrevOverflow = '';
+  // The page scroll offset as last seen BEFORE the lock. Snapshotted by a
+  // passive window scroll listener (frozen while locked) because reading
+  // scrollY inside the attribute callback is too late: the fixed host has
+  // already left the flow, the page shrank, and the browser clamped the
+  // offset — the direct read would save the clamped 0, not the user's spot.
+  private fsSeenScrollX = 0;
+  private fsSeenScrollY = 0;
 
   // -- Data (normalized) --
   private lanes: TimelineLane[] = [];
@@ -475,13 +502,23 @@ export class TimelineViewElement extends HTMLElement {
     this.pillEl.textContent = '▸ now';
     this.pillEl.hidden = true;
     this.pillEl.addEventListener('click', () => this.jumpToNow());
+    // The fullscreen toggle sits in the corner the pill slides in next to,
+    // and — unlike the pill — is visible in BOTH follow and parked modes.
+    this.fsEl = document.createElement('button');
+    this.fsEl.className = 'fs-pill';
+    this.fsEl.type = 'button';
+    this.fsEl.addEventListener('click', () => {
+      this.fullscreen = !this.fullscreen;
+    });
     this.emptyEl = document.createElement('div');
     this.emptyEl.className = 'empty-hint';
     this.emptyEl.hidden = true;
     this.staleEl = document.createElement('div');
     this.staleEl.className = 'stale-note';
     this.staleEl.hidden = true;
-    shadow.append(this.canvas, this.tooltipEl, this.pillEl, this.emptyEl, this.staleEl);
+    // fsEl precedes pillEl so `.fs-pill[hidden] ~ .live-pill` can reclaim
+    // the corner when the toggle is opted out.
+    shadow.append(this.canvas, this.tooltipEl, this.fsEl, this.pillEl, this.emptyEl, this.staleEl);
 
     const now = this.nowMs();
     this.view = { start: now - DEFAULT_SPAN_MS, end: now };
@@ -511,6 +548,13 @@ export class TimelineViewElement extends HTMLElement {
       this.motionMq.addEventListener?.('change', this.onMotionPref);
     }
     document.addEventListener('visibilitychange', this.onVisibility);
+    // Escape exits fullscreen from anywhere (focus may sit on the toggle
+    // button, the page body, …). Document-level on purpose; the handler
+    // acts ONLY while fullscreen — Escape is never swallowed otherwise.
+    document.addEventListener('keydown', this.onDocKeyDown);
+    this.fsSeenScrollX = window.scrollX;
+    this.fsSeenScrollY = window.scrollY;
+    window.addEventListener('scroll', this.onWinScroll, { passive: true });
     this.watchBattery();
     // Staleness watchdog: rAF stops when nothing animates, so a dead feed
     // on a parked chart would never be NOTICED without an independent
@@ -520,8 +564,12 @@ export class TimelineViewElement extends HTMLElement {
 
     // {passive: false} so preventDefault stays AVAILABLE — onWheel calls it
     // only for consumed gestures (an unconsumed vertical wheel must reach
-    // the page).
-    this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
+    // the page). On the HOST, not the canvas: horizontal trackpad deltas
+    // over the DOM chrome floating above the plot (live pill, fullscreen
+    // toggle, stale note) must be consumed too, or a back-swipe at the pan
+    // boundary leaks to the browser as history navigation the moment the
+    // cursor crosses a button.
+    this.addEventListener('wheel', this.onWheel, { passive: false });
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.canvas.addEventListener('pointermove', this.onPointerMove);
     this.canvas.addEventListener('pointerup', this.onPointerUp);
@@ -529,6 +577,7 @@ export class TimelineViewElement extends HTMLElement {
     this.canvas.addEventListener('pointerleave', this.onPointerLeave);
     this.addEventListener('keydown', this.onKeyDown);
 
+    this.syncScrollLock(); // an already-fullscreen element locks on (re)connect
     this.resizeBackingStore();
     this.syncChrome();
     this.invalidate();
@@ -543,13 +592,16 @@ export class TimelineViewElement extends HTMLElement {
     this.motionMq?.removeEventListener?.('change', this.onMotionPref);
     this.motionMq = null;
     document.removeEventListener('visibilitychange', this.onVisibility);
+    document.removeEventListener('keydown', this.onDocKeyDown);
+    window.removeEventListener('scroll', this.onWinScroll);
+    this.syncScrollLock(); // never leave a removed element's page scroll-locked
     this.batteryOff?.();
     this.batteryOff = null;
     if (this.staleTimer !== null) {
       clearInterval(this.staleTimer);
       this.staleTimer = null;
     }
-    this.canvas.removeEventListener('wheel', this.onWheel);
+    this.removeEventListener('wheel', this.onWheel);
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
     this.canvas.removeEventListener('pointerup', this.onPointerUp);
@@ -562,10 +614,84 @@ export class TimelineViewElement extends HTMLElement {
     }
   }
 
-  attributeChangedCallback(): void {
+  attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null): void {
+    if (name === 'fullscreen' && oldValue !== newValue) this.applyFullscreen(newValue !== null);
     this.syncChrome();
     this.invalidate();
   }
+
+  // -- Fullscreen (viewport-fill) ---------------------------------------------------
+
+  /**
+   * Viewport-fill mode (NOT the Fullscreen API — deliberately: no
+   * permission prompt, no browser chrome transition, plain CSS): the host
+   * gets the reflected boolean `fullscreen` attribute and
+   * :host([fullscreen]) pins it position:fixed over the whole viewport;
+   * the existing ResizeObserver → resizeBackingStore path re-derives
+   * everything (layout, clustering, DPR backing store — which stays
+   * capped at MAX_DPR: fullscreen must not step off the perf cliff the
+   * cap exists for). Toggled by the corner button, this property, or the
+   * attribute; Escape exits; 'fullscreenchange' fires on every change.
+   */
+  get fullscreen(): boolean {
+    return this.hasAttribute('fullscreen');
+  }
+  set fullscreen(v: boolean) {
+    this.toggleAttribute('fullscreen', v === true);
+  }
+
+  /** The fullscreen side effects (scroll lock, resize, focus, event) — attribute-change driven. */
+  private applyFullscreen(on: boolean): void {
+    this.syncScrollLock();
+    if (this.connected) {
+      // Synchronous re-back: the fixed/inset styles apply on the next
+      // layout read, so resizing here avoids a one-frame stale-size flash
+      // (the ResizeObserver still confirms asynchronously).
+      this.resizeBackingStore();
+      this.focus({ preventScroll: true }); // keyboard nav (arrows, Esc) works immediately
+    }
+    this.dispatchEvent(new CustomEvent('fullscreenchange', { detail: { fullscreen: on } }));
+  }
+
+  /**
+   * Page scroll lock: held exactly while CONNECTED && fullscreen. The
+   * page behind a viewport-filling chart must not scroll (or scroll-chain
+   * from unconsumed wheel deltas). Entering fullscreen collapses the
+   * host's slot in the page AND hides the root's overflow — both of which
+   * reset/clamp the viewport scroll offset — so the pre-lock offset (the
+   * scroll listener's snapshot) is restored on unlock: the page is
+   * exactly where the user left it when fullscreen exits.
+   */
+  private syncScrollLock(): void {
+    const want = this.isConnected && this.hasAttribute('fullscreen');
+    if (want === this.fsLocked) return;
+    const root = document.documentElement;
+    if (want) {
+      this.fsPrevOverflow = root.style.overflow;
+      root.style.overflow = 'hidden';
+      this.fsLocked = true; // before any clamp-induced scroll event, so the snapshot stays pre-lock
+    } else {
+      root.style.overflow = this.fsPrevOverflow;
+      this.fsPrevOverflow = '';
+      this.fsLocked = false;
+      window.scrollTo(this.fsSeenScrollX, this.fsSeenScrollY);
+    }
+  }
+
+  /** Passive pre-lock scroll snapshot (see fsSeenScrollX) — frozen while locked. */
+  private onWinScroll = (): void => {
+    if (!this.fsLocked) {
+      this.fsSeenScrollX = window.scrollX;
+      this.fsSeenScrollY = window.scrollY;
+    }
+  };
+
+  private onDocKeyDown = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape' && this.fullscreen) {
+      e.preventDefault();
+      this.fullscreen = false;
+    }
+  };
 
   // -- Public API: data --------------------------------------------------------
 
@@ -1382,6 +1508,12 @@ export class TimelineViewElement extends HTMLElement {
 
   private syncChrome(): void {
     this.pillEl.hidden = this.following || this.hasAttribute('no-live-pill');
+    const fs = this.fullscreen;
+    this.fsEl.hidden = this.hasAttribute('no-fullscreen-button');
+    this.fsEl.textContent = fs ? '⤡' : '⤢';
+    this.fsEl.title = fs ? 'exit fullscreen (Esc)' : 'fullscreen';
+    this.fsEl.setAttribute('aria-pressed', fs ? 'true' : 'false');
+    this.fsEl.setAttribute('aria-label', fs ? 'exit fullscreen' : 'fullscreen');
     const empty = this.lanes.length === 0 && this.byId.size === 0;
     this.emptyEl.hidden = !empty;
     if (empty) {
