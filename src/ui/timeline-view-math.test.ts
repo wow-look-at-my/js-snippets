@@ -8,9 +8,12 @@
 // incl. coincident instants), lane layout (incl. per-lane track heights),
 // auto-fit compact-lane demotion (tallest-first order, hysteresis,
 // stability under viewport translation), label fitting, instant-width
-// thresholds (duration-based, translation-stable), hit testing, connector
-// routing, category hue hashing, coverage / range-request bookkeeping
-// (incl. the loadRange request-flood regression), and render-loop pacing.
+// thresholds (duration-based, translation-stable), the minimap strip's
+// window math (extent derivation, px mapping + crop, handle hit zones,
+// pan/resize/center drags with extent + span clamps), hit testing,
+// connector routing, category hue hashing, coverage / range-request
+// bookkeeping (incl. the loadRange request-flood regression), and
+// render-loop pacing.
 // The element itself (ui/timeline-view.ts) is canvas/DOM-bound and not
 // node-testable — see the Testing section in CLAUDE.md.
 
@@ -69,9 +72,25 @@ import {
   liveEdgeTarget,
   clampViewToNow,
   snapViewToDevicePixels,
+  snapTextOrigin,
   durationWidthPx,
+  edgeContinuation,
   MIN_BAR_PX,
   packVisibleTracks,
+  TrackAllocator,
+  clusterInstants,
+  clusterZoomView,
+  clusterMarkerTime,
+  CLUSTER_JOIN_PX,
+  CLUSTER_ZOOM_FILL_FRAC,
+  minimapExtent,
+  minimapWindowRect,
+  minimapHitZone,
+  minimapPan,
+  minimapResize,
+  minimapCenter,
+  MINIMAP_HANDLE_HIT_PX,
+  MINIMAP_MIN_WINDOW_PX,
   laneHeight,
   demotionOrder,
   computeAutoFit,
@@ -80,6 +99,7 @@ import {
   shouldRender,
   IDLE_FRAME_MS,
   IDLE_BATTERY_FRAME_MS,
+  dimColor,
   type WheelInput,
   type TimeView,
   type PackItem,
@@ -699,9 +719,24 @@ test('DEFAULT_STYLES: the required built-in treatments exist and alias', () => {
   assert.equal(DEFAULT_STYLES.failed.glyph, 'bang');
   assert.equal(DEFAULT_STYLES.failed.border?.emphasis, true);
   assert.ok((DEFAULT_STYLES.failed.border?.width ?? 0) >= 2);
-  assert.ok((DEFAULT_STYLES.dim.alphaScale ?? 1) < 1);
+  // dim/queued and hatch/waiting are DIMMED regions: the element runs
+  // every color painted inside them (fill, border, label text) through
+  // the uniform dimColor transform — no per-channel scale soup.
+  assert.equal(DEFAULT_STYLES.dim.dimmed, true);
+  assert.equal(DEFAULT_STYLES.hatch.dimmed, true);
   assert.equal(DEFAULT_STYLES.hatch.pattern, 'hatch');
   assert.equal(DEFAULT_STYLES.outline.pattern, 'outline');
+});
+
+test("DEFAULT_STYLES: 'cancelled' is hollow + dashed, distinct from BOTH failure and success", () => {
+  const c = DEFAULT_STYLES.cancelled;
+  assert.equal(c.pattern, 'outline', 'hollow body — never a solid success-look bar');
+  assert.ok((c.border?.dash?.length ?? 0) >= 2, 'dashed whole-span border');
+  assert.notEqual(c.border?.emphasis, true, 'category hue, never the failure emphasis color');
+  assert.equal(c.glyph ?? 'none', 'none', 'no failure bang glyph');
+  // Failure keeps its own unmistakable signature: solid-stroke emphasis
+  // border + bang — no dash overlap between the two treatments.
+  assert.equal(DEFAULT_STYLES.failed.border?.dash, undefined);
 });
 
 // -- Coverage ----------------------------------------------------------------------
@@ -1000,19 +1035,107 @@ test('followAfterGesture: device-pixel conversion — 2 device px is 1 CSS px at
   );
 });
 
-test('followAfterGesture: zooming while pinned stays pinned (span change is not a pan)', () => {
+test('followAfterGesture: a span change is not a pan — wasFollowing=true stays engaged', () => {
   const now = 1_000_000_000;
   const span = 900_000;
   const end = now + span * FOLLOW_LEAD_FRAC;
   const view: TimeView = { start: end - span, end };
   const zoomed = zoomView(view, end - span / 2, 1.05); // anchor mid-screen: end moves back a bit
   assert.ok(zoomed.end < view.end);
-  // The raw end lands well outside the 2-device-px zone — following must
-  // survive anyway (the explicit wasFollowing rule, not the zone).
+  // The raw end lands well outside the 2-device-px zone — a wasFollowing
+  // caller survives anyway (the explicit wasFollowing rule, not the
+  // zone). NOTE the element deliberately does NOT pass wasFollowing for
+  // ZOOM gestures anymore (the anchor must win during a zoom — item 9,
+  // next tests); this pins the function-level contract for the callers
+  // that still do (forward pans at the stop, lane scrolls).
   assert.ok(zoomed.end < now - FOLLOW_SNAP_DEVICE_PX * mppx(zoomed.end - zoomed.start));
-  assert.equal(followAfterGesture(true, view.end, zoomed, now, false, mppx(zoomed.end - zoomed.start)), true, 'zoom keeps follow');
+  assert.equal(followAfterGesture(true, view.end, zoomed, now, false, mppx(zoomed.end - zoomed.start)), true);
   // The same zoom while NOT following does not grab the pin.
   assert.equal(followAfterGesture(false, view.end, zoomed, now, false, mppx(zoomed.end - zoomed.start)), false);
+});
+
+// -- Item 9: the zoom anchor wins over the follow pin --------------------------------
+//
+// The element applies a zoom gesture as zoomView(view, anchor, f) and —
+// because a zoom never inherits the pin — routes it through
+// followAfterGesture(false, ...) + clampViewToNow. These tests pin that
+// composition: the timestamp under the cursor stays under the cursor,
+// and follow is re-earned exactly at the snap boundary.
+
+test('zoom while following: an anchored zoom-in parks with the timestamp under the cursor intact', () => {
+  const now = 1_000_000_000;
+  const span = 900_000;
+  const plotW = 1000;
+  // Steady-state pinned view: end = now + lead.
+  const end = now + span * FOLLOW_LEAD_FRAC;
+  const view: TimeView = { start: end - span, end };
+  // Cursor a third of the plot from the left.
+  const anchor = view.start + span / 3;
+  const zoomed = zoomView(view, anchor, 2);
+  // The anchor invariant across the zoom application itself.
+  assert.ok(Math.abs((anchor - zoomed.start) / (zoomed.end - zoomed.start) - 1 / 3) < 1e-9);
+  // A zoom is passed wasFollowing=false → the snap rule decides: the end
+  // left the zone, so the view parks…
+  const zSpan = zoomed.end - zoomed.start;
+  assert.equal(followAfterGesture(false, view.end, zoomed, now, false, mppx(zSpan, plotW)), false);
+  // …and the parked application (the disengaged branch clamps at now once
+  // the lead is consumed) does not move it: the anchor survives end-to-end.
+  assert.deepEqual(clampViewToNow(zoomed, now), zoomed);
+});
+
+test('zoom while following: follow is re-earned exactly at the snap boundary (both sides)', () => {
+  const now = 1_000_000_000;
+  const span = 900_000;
+  const plotW = 1000;
+  const view: TimeView = { start: now - span, end: now };
+  const frac = 1 / 3;
+  const anchor = view.start + span * frac;
+  // Solve the zoom factor that lands the right edge exactly k device px
+  // short of now — measured at the ZOOMED span's scale, because that is
+  // the msPerDevPx the element hands the rule: with W device px across
+  // the plot, end' = anchor + (1 - frac) * span' = now - k * span' / W
+  // → span' = (now - anchor) / (1 - frac + k / W).
+  const W = plotW; // dpr 1
+  const spanFor = (k: number) => (now - anchor) / (1 - frac + k / W);
+  for (const [k, engaged] of [
+    [FOLLOW_SNAP_DEVICE_PX, true],
+    [FOLLOW_SNAP_DEVICE_PX + 1, false],
+  ] as const) {
+    const zoomed = zoomView(view, anchor, span / spanFor(k));
+    assert.ok(Math.abs(zoomed.end - (now - (k * spanFor(k)) / W)) < 1e-6);
+    // The anchor held even for this hair's-width zoom…
+    assert.ok(Math.abs((anchor - zoomed.start) / (zoomed.end - zoomed.start) - frac) < 1e-9);
+    // …and the snap rule alone decides whether follow re-engages. (The
+    // zone is measured at the ZOOMED span's scale, like the element does.)
+    const zSpan = zoomed.end - zoomed.start;
+    assert.equal(
+      followAfterGesture(false, view.end, zoomed, now, false, mppx(zSpan, plotW)),
+      engaged,
+      `${k} device px short of now`,
+    );
+  }
+});
+
+test('zoom-out pressing into the end stop re-engages: the stop, not the anchor, wins at the wall', () => {
+  const now = 1_000_000_000;
+  const span = 900_000;
+  const plotW = 1000;
+  const end = now + span * FOLLOW_LEAD_FRAC;
+  const view: TimeView = { start: end - span, end };
+  const anchor = view.start + span / 3;
+  const zoomedOut = zoomView(view, anchor, 1 / 2);
+  // Preserving the anchor on a zoom-out at the live edge would show the
+  // future — the raw end overshoots now…
+  assert.ok(zoomedOut.end > now);
+  // …so the one-sided snap rule re-engages follow (the pin then holds the
+  // right edge at the stop: a zoom-out at the wall is right-anchored,
+  // exactly like a parked zoom-out clamping at now).
+  const zSpan = zoomedOut.end - zoomedOut.start;
+  assert.equal(followAfterGesture(false, view.end, zoomedOut, now, false, mppx(zSpan, plotW)), true);
+  // The parked-mode equivalent: the clamp right-anchors the same view.
+  const clamped = clampViewToNow(zoomedOut, now);
+  assert.equal(clamped.end, now);
+  assert.equal(clamped.end - clamped.start, zSpan);
 });
 
 test('clampViewToNow: the hard end stop — end never passes now, span preserved, no-op at/before now', () => {
@@ -1329,6 +1452,29 @@ test('snapViewToDevicePixels: span preserved; degenerate views returned unchange
   assert.deepEqual(snapViewToDevicePixels(bad, 800, 1), bad);
 });
 
+test('snapTextOrigin: lands on whole device pixels at any dpr, moving at most half a device px', () => {
+  assert.equal(snapTextOrigin(10.3, 1), 10);
+  assert.equal(snapTextOrigin(10.6, 1), 11);
+  assert.equal(snapTextOrigin(10.3, 2), 10.5); // 20.6 device px → 21
+  assert.equal(snapTextOrigin(11.5, 2), 11.5); // already on the grid
+  for (const dpr of [1, 2, 3]) {
+    for (const v of [0, 3.7, 11.5, 123.49, 999.99]) {
+      const snapped = snapTextOrigin(v, dpr);
+      const dev = snapped * dpr;
+      assert.ok(Math.abs(dev - Math.round(dev)) < 1e-9, `dpr ${dpr}: ${v} → integer device px`);
+      assert.ok(Math.abs(snapped - v) <= 0.5 / dpr + 1e-9, `dpr ${dpr}: ${v} moved ≤ half a device px`);
+      assert.equal(snapTextOrigin(snapped, dpr), snapped, `dpr ${dpr}: idempotent`);
+    }
+  }
+});
+
+test('snapTextOrigin: degenerate inputs pass through', () => {
+  assert.ok(Number.isNaN(snapTextOrigin(NaN, 2)));
+  assert.equal(snapTextOrigin(5.4, 0), 5.4);
+  assert.equal(snapTextOrigin(5.4, -1), 5.4);
+  assert.equal(snapTextOrigin(Infinity, 2), Infinity);
+});
+
 // -- Bar/pip stability -----------------------------------------------------------------
 
 test('durationWidthPx: translation-invariant — shape decisions cannot flicker while scrolling', () => {
@@ -1357,6 +1503,54 @@ test('durationWidthPx: zero-duration events are pips at any zoom; real widths cl
   assert.ok(MIN_BAR_PX >= 2 && MIN_BAR_PX < INSTANT_THRESHOLD_PX);
   const wide = durationWidthPx(0, 3_600, view, 1000); // 6px
   assert.equal(isInstantWidth(wide), false);
+});
+
+// -- Edge continuation (the clipped-span fade) --------------------------------------------
+
+test('edgeContinuation: clipped ends are flagged; fully visible spans are not', () => {
+  // 1000px plot over 600s → 600ms per px.
+  const view: TimeView = { start: 600_000, end: 1_200_000 };
+  const inside = edgeContinuation(700_000, 900_000, view, 1000, 12);
+  assert.deepEqual(inside, { left: false, right: false });
+  assert.deepEqual(edgeContinuation(100_000, 900_000, view, 1000, 12), { left: true, right: false });
+  assert.deepEqual(edgeContinuation(700_000, 1_500_000, view, 1000, 12), { left: false, right: true });
+  assert.deepEqual(edgeContinuation(100_000, 1_500_000, view, 1000, 12), { left: true, right: true });
+});
+
+test('edgeContinuation: an end coinciding with the window edge genuinely starts/ends there — no fade', () => {
+  const view: TimeView = { start: 600_000, end: 1_200_000 };
+  assert.deepEqual(edgeContinuation(view.start, 900_000, view, 1000, 12), { left: false, right: false });
+  assert.deepEqual(edgeContinuation(700_000, view.end, view, 1000, 12), { left: false, right: false });
+  // …including sub-half-pixel overhangs: the device-pixel view snap can
+  // shift an exact edge by up to a pixel, which must not read as
+  // continuation. (600ms/px here → half a px = 300ms.)
+  assert.deepEqual(edgeContinuation(view.start - 299, 900_000, view, 1000, 12), { left: false, right: false });
+  assert.deepEqual(edgeContinuation(700_000, view.end + 299, view, 1000, 12), { left: false, right: false });
+  // A real overhang past the slack fades.
+  assert.equal(edgeContinuation(view.start - 601, 900_000, view, 1000, 12).left, true);
+  assert.equal(edgeContinuation(700_000, view.end + 601, view, 1000, 12).right, true);
+});
+
+test('edgeContinuation: a stub not reaching through the fade zone stays a visible stub', () => {
+  const view: TimeView = { start: 600_000, end: 1_200_000 }; // 600ms per px
+  // Continues far left but only 5px poke in (< 12px zone): fading it
+  // would erase it entirely — no fade.
+  assert.deepEqual(edgeContinuation(0, view.start + 5 * 600, view, 1000, 12), { left: false, right: false });
+  assert.deepEqual(edgeContinuation(view.end - 5 * 600, 9_999_999, view, 1000, 12), { left: false, right: false });
+  // Reaching exactly through the zone qualifies.
+  assert.equal(edgeContinuation(0, view.start + 12 * 600, view, 1000, 12).left, true);
+  assert.equal(edgeContinuation(view.end - 12 * 600, 9_999_999, view, 1000, 12).right, true);
+});
+
+test('edgeContinuation: an ongoing bar at the live edge never fades (the caller passes endMs = now, inside the view)', () => {
+  const now = 1_150_000;
+  const view: TimeView = { start: 600_000, end: 1_200_000 }; // follow lead keeps now < view.end
+  assert.deepEqual(edgeContinuation(700_000, now, view, 1000, 12), { left: false, right: false });
+});
+
+test('edgeContinuation: degenerate view or plot width flags nothing', () => {
+  assert.deepEqual(edgeContinuation(0, 100, { start: 5, end: 5 }, 1000, 12), { left: false, right: false });
+  assert.deepEqual(edgeContinuation(0, 100, { start: 0, end: 1000 }, 0, 12), { left: false, right: false });
 });
 
 // -- Visible-window packing --------------------------------------------------------------
@@ -1415,6 +1609,450 @@ test('packVisibleTracks: assignment is stable while the window slides over an un
     assert.deepEqual(r.tracks, first.tracks, `slide +${dt} keeps identical assignments`);
     assert.equal(r.trackCount, first.trackCount);
   }
+});
+
+// -- TrackAllocator (sticky rows) --------------------------------------------------------
+
+const ti = (id: string, start: number, end: number | null): PackItem => ({ id, start, end });
+
+test('TrackAllocator: a fresh allocator reproduces the stateless first-fit packer exactly', () => {
+  const items = [ti('a', 0, 10), ti('b', 5, 15), ti('c', 12, 20), ti('d', 14, 25), ti('e', 40, 50)];
+  for (const view of [
+    { start: 0, end: 30 },
+    { start: 13, end: 45 },
+    { start: 100, end: 200 },
+  ]) {
+    assert.deepEqual(new TrackAllocator().assign(items, view), packVisibleTracks(items, view));
+  }
+});
+
+test('TrackAllocator: visible items keep their rows when membership churn would reflow the stateless packer', () => {
+  // a leaves the view; the stateless packer then reflows b to track 0 and
+  // c to 1 — flipping both rows under the viewer. Sticky keeps them put.
+  const items = [ti('a', 0, 10), ti('b', 2, 12), ti('c', 11, 20)];
+  const alloc = new TrackAllocator();
+  const v1 = alloc.assign(items, { start: 0, end: 15 });
+  assert.deepEqual(v1, { tracks: [0, 1, 0], trackCount: 2 }, 'first fill is plain first-fit');
+  const v2view = { start: 10.5, end: 25 };
+  const stateless = packVisibleTracks(items, v2view);
+  assert.deepEqual(stateless.tracks, [-1, 0, 1], 'the stateless packer reshuffles');
+  const v2 = alloc.assign(items, v2view);
+  assert.deepEqual(v2.tracks, [-1, 1, 0], 'sticky rows: b stays on 1, c stays on 0');
+});
+
+test('TrackAllocator: burst-then-shrink — height recovers without moving surviving rows', () => {
+  const items = [
+    ti('b1', 0, 10),
+    ti('b2', 0, 10),
+    ti('b3', 0, 10),
+    ti('b4', 0, 10),
+    ti('b5', 0, 10),
+    ti('n1', 30, 40),
+    ti('n2', 35, 45),
+  ];
+  const alloc = new TrackAllocator();
+  const wide = alloc.assign(items, { start: 0, end: 50 });
+  assert.deepEqual(wide.tracks, [0, 1, 2, 3, 4, 0, 1], 'newcomers fill the freed low tracks');
+  assert.equal(wide.trackCount, 5);
+  // The burst scrolls off: the lane shrinks to the two visible rows, and
+  // neither survivor moves.
+  const after = alloc.assign(items, { start: 25, end: 60 });
+  assert.deepEqual(after.tracks, [-1, -1, -1, -1, -1, 0, 1]);
+  assert.equal(after.trackCount, 2, 'height recovered from 5 tracks to 2');
+});
+
+test('TrackAllocator: a returning interval gets its old row back when still free', () => {
+  const items = [ti('a', 0, 10), ti('b', 0, 10), ti('c', 0, 10)];
+  const alloc = new TrackAllocator();
+  assert.deepEqual(alloc.assign(items, { start: 0, end: 20 }).tracks, [0, 1, 2]);
+  // Scroll away (nothing visible), then come back: every row is restored.
+  assert.deepEqual(alloc.assign(items, { start: 50, end: 60 }).tracks, [-1, -1, -1]);
+  assert.equal(alloc.assign(items, { start: 50, end: 60 }).trackCount, 1);
+  assert.deepEqual(alloc.assign(items, { start: 0, end: 20 }).tracks, [0, 1, 2]);
+});
+
+test('TrackAllocator: a returning interval whose old row is now taken falls to the lowest free one', () => {
+  const alloc = new TrackAllocator();
+  const a = ti('a', 0, 10);
+  const b = ti('b', 0, 60); // long — overlaps a
+  assert.deepEqual(alloc.assign([a], { start: 0, end: 20 }).tracks, [0]);
+  // a scrolls out; b becomes visible and (new, lowest-free) takes track 0.
+  assert.deepEqual(alloc.assign([a, b], { start: 50, end: 60 }).tracks, [-1, 0]);
+  // a returns: its remembered track 0 is held by the still-visible b →
+  // best-effort memory yields, a takes the lowest free track instead.
+  assert.deepEqual(alloc.assign([a, b], { start: 0, end: 60 }).tracks, [1, 0]);
+});
+
+test('TrackAllocator: a live arrival at now never displaces existing rows (SSE case)', () => {
+  const alloc = new TrackAllocator();
+  const a = ti('run-a', 0, null); // ongoing
+  const b = ti('run-b', 20, null); // ongoing
+  const view = { start: 0, end: 100 };
+  assert.deepEqual(alloc.assign([a, b], view).tracks, [0, 1]);
+  // A brand-new running interval appears at "now": it stacks on top —
+  // the rows already on screen do not move.
+  const c = ti('run-c', 60, null);
+  const r = alloc.assign([a, b, c], view);
+  assert.deepEqual(r.tracks, [0, 1, 2]);
+  assert.equal(r.trackCount, 3);
+});
+
+test('TrackAllocator: visible same-track items never overlap in time (invariant across sliding views)', () => {
+  // Deterministic pseudo-random-ish set: staggered starts and durations.
+  const items: PackItem[] = [];
+  for (let i = 0; i < 30; i++) {
+    const start = (i * 37) % 100;
+    items.push(ti(`i${String(i).padStart(2, '0')}`, start, start + 5 + ((i * 13) % 20)));
+  }
+  const foot = (it: PackItem): { s: number; e: number } => ({ s: it.start, e: Math.max(it.end ?? Infinity, it.start + 1) });
+  const alloc = new TrackAllocator();
+  for (let t = 0; t <= 80; t += 3.7) {
+    const view = { start: t, end: t + 40 };
+    const { tracks } = alloc.assign(items, view);
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        if (tracks[i] < 0 || tracks[i] !== tracks[j]) continue;
+        const a = foot(items[i]);
+        const b = foot(items[j]);
+        assert.ok(a.e <= b.s || b.e <= a.s, `view +${t}: ${items[i].id} and ${items[j].id} share track ${tracks[i]} but overlap`);
+      }
+    }
+  }
+});
+
+test('TrackAllocator: row memory is LRU-bounded — an evicted id re-packs as new', () => {
+  const items = [ti('p', 0, 10), ti('q', 0, 10), ti('r', 0, 10)];
+  const remembered = new TrackAllocator(1); // keeps only the most recent id (r)
+  remembered.assign(items, { start: 0, end: 20 });
+  assert.deepEqual(remembered.assign([ti('r', 0, 10)], { start: 0, end: 20 }).tracks, [2], 'r is remembered');
+  const evicted = new TrackAllocator(1);
+  evicted.assign(items, { start: 0, end: 20 });
+  assert.deepEqual(evicted.assign([ti('q', 0, 10)], { start: 0, end: 20 }).tracks, [0], 'q was evicted → packs as new');
+});
+
+test('TrackAllocator: cluster-shaped synthetic ids hold their row across frames (one slot per cluster)', () => {
+  // The element packs a ×N cluster as ONE item whose id derives from its
+  // first member — as long as that id is stable, the row is too.
+  const bar = ti('a-bar', 90, 200);
+  const cluster = ti('cluster:run-a', 150, 150); // instant footprint
+  const alloc = new TrackAllocator();
+  const v1 = alloc.assign([bar, cluster], { start: 80, end: 220 });
+  assert.deepEqual(v1.tracks, [0, 1], 'the cluster occupies exactly one slot');
+  for (let dt = 5; dt <= 60; dt += 5) {
+    const r = alloc.assign([bar, cluster], { start: 80 + dt, end: 220 + dt });
+    assert.deepEqual(r.tracks, v1.tracks, `slide +${dt}: neither row hops`);
+  }
+});
+
+test('TrackAllocator: deterministic — identical call sequences yield identical assignments', () => {
+  const items = [ti('a', 0, 30), ti('b', 10, 40), ti('c', 35, 60), ti('d', 50, null)];
+  const views = [
+    { start: 0, end: 45 },
+    { start: 32, end: 70 },
+    { start: 100, end: 140 },
+    { start: 0, end: 45 },
+  ];
+  const one = new TrackAllocator();
+  const two = new TrackAllocator();
+  for (const view of views) {
+    assert.deepEqual(one.assign(items, view), two.assign(items, view));
+  }
+});
+
+test('TrackAllocator: empty input and empty windows collapse to one track', () => {
+  const alloc = new TrackAllocator();
+  assert.deepEqual(alloc.assign([], { start: 0, end: 10 }), { tracks: [], trackCount: 1 });
+  const r = alloc.assign([ti('a', 100, 110)], { start: 0, end: 10 });
+  assert.deepEqual(r, { tracks: [-1], trackCount: 1 });
+});
+
+// -- Instant clustering --------------------------------------------------------------------
+
+// A zero-duration instant (the skipped-run shape: started == finished).
+const pip = (id: string, at: number): PackItem => ({ id, start: at, end: at });
+
+test('clusterInstants: empty and single-instant inputs yield no clusters', () => {
+  const view: TimeView = { start: 0, end: 600_000 };
+  assert.deepEqual(clusterInstants([], view, 1000), { clusters: [], memberOf: [] });
+  const one = clusterInstants([pip('a', 1_000)], view, 1000);
+  assert.equal(one.clusters.length, 0, 'a lone pip is not a cluster');
+  assert.deepEqual(one.memberOf, [-1]);
+});
+
+test('clusterInstants: coincident instants merge into ONE cluster (the lane-height bomb becomes one slot)', () => {
+  const items = Array.from({ length: 50 }, (_, i) => pip(`s${String(i).padStart(2, '0')}`, 5_000));
+  const r = clusterInstants(items, { start: 0, end: 600_000 }, 1000);
+  assert.equal(r.clusters.length, 1);
+  assert.equal(r.clusters[0].indices.length, 50);
+  assert.deepEqual(r.clusters[0].extent, { start: 5_000, end: 5_000 }, 'coincident members: a point extent');
+  assert.ok(r.memberOf.every((m) => m === 0));
+});
+
+test('clusterInstants: threshold boundary — a gap exactly at joinPx merges, just past it stays apart', () => {
+  // 100_000ms over 1000px → 100ms/px → joinMs = CLUSTER_JOIN_PX * 100.
+  const view: TimeView = { start: 0, end: 100_000 };
+  const joinMs = CLUSTER_JOIN_PX * 100;
+  const at = clusterInstants([pip('a', 10_000), pip('b', 10_000 + joinMs)], view, 1000);
+  assert.equal(at.clusters.length, 1, 'exactly at the threshold merges');
+  const past = clusterInstants([pip('a', 10_000), pip('b', 10_000 + joinMs + 1)], view, 1000);
+  assert.equal(past.clusters.length, 0, 'one ms past it stays apart');
+  assert.deepEqual(past.memberOf, [-1, -1]);
+});
+
+test('clusterInstants: transitive chain — pairwise-close pips merge even when the ends are far apart', () => {
+  // 10px apart each (join 12px): a↔d are 30px apart, still ONE cluster.
+  const view: TimeView = { start: 0, end: 100_000 }; // 100ms/px
+  const items = [pip('a', 10_000), pip('b', 11_000), pip('c', 12_000), pip('d', 13_000)];
+  const r = clusterInstants(items, view, 1000);
+  assert.equal(r.clusters.length, 1);
+  assert.deepEqual(r.clusters[0].indices, [0, 1, 2, 3]);
+  assert.deepEqual(r.clusters[0].extent, { start: 10_000, end: 13_000 });
+});
+
+test('clusterInstants: bars and ongoing intervals never cluster', () => {
+  const view: TimeView = { start: 0, end: 100_000 }; // 100ms/px → instants are < 300ms
+  const items: PackItem[] = [
+    pip('a', 10_000),
+    pip('b', 10_100),
+    { id: 'bar', start: 10_000, end: 10_000 + 300 }, // exactly the pip threshold → a bar
+    { id: 'live', start: 10_050, end: null }, // ongoing — will grow into a bar
+  ];
+  const r = clusterInstants(items, view, 1000);
+  assert.equal(r.clusters.length, 1);
+  assert.deepEqual(r.clusters[0].indices, [0, 1], 'only the two pips merged');
+  assert.equal(r.memberOf[2], -1);
+  assert.equal(r.memberOf[3], -1);
+});
+
+test('clusterInstants: deterministic under input re-ordering (memberOf aligned to input positions)', () => {
+  const view: TimeView = { start: 0, end: 100_000 };
+  const sorted = [pip('a', 10_000), pip('b', 10_500), pip('x', 50_000), pip('y', 50_200)];
+  const shuffled = [sorted[3], sorted[1], sorted[0], sorted[2]];
+  const a = clusterInstants(sorted, view, 1000);
+  const b = clusterInstants(shuffled, view, 1000);
+  assert.equal(a.clusters.length, 2);
+  assert.equal(b.clusters.length, 2);
+  const memberIds = (items: PackItem[], c: { indices: number[] }): string[] => c.indices.map((i) => items[i].id);
+  assert.deepEqual(memberIds(sorted, a.clusters[0]), ['a', 'b']);
+  assert.deepEqual(memberIds(shuffled, b.clusters[0]), ['a', 'b'], 'same members, in (start, id) order');
+  assert.deepEqual(a.clusters.map((c) => c.extent), b.clusters.map((c) => c.extent));
+  assert.equal(b.memberOf[2], 0, 'memberOf refers to INPUT positions');
+  assert.equal(b.memberOf[0], 1);
+});
+
+test('clusterInstants: pure pans never change membership or extents (translation-invariant)', () => {
+  const items = [pip('a', 10_000), pip('b', 10_800), pip('c', 40_000)];
+  const span = 100_000;
+  const first = clusterInstants(items, { start: 0, end: span }, 1000);
+  for (let dt = 0; dt <= 30_000; dt += 1_234.5) {
+    const r = clusterInstants(items, { start: dt, end: dt + span }, 1000);
+    assert.deepEqual(r, first, `pan +${dt} keeps identical clusters`);
+  }
+});
+
+test('clusterInstants: zooming in progressively splits clusters until each pip stands alone', () => {
+  // Gaps: a↔b 400ms, b↔c 3_600ms.
+  const items = [pip('a', 10_000), pip('b', 10_400), pip('c', 14_000)];
+  const wide = clusterInstants(items, { start: 0, end: 600_000 }, 1000); // 600ms/px → join 7_200ms
+  assert.equal(wide.clusters.length, 1, 'wide: everything is one blob');
+  assert.equal(wide.clusters[0].indices.length, 3);
+  const mid = clusterInstants(items, { start: 0, end: 60_000 }, 1000); // 60ms/px → join 720ms
+  assert.equal(mid.clusters.length, 1, 'mid: only the close pair remains merged');
+  assert.deepEqual(mid.clusters[0].indices, [0, 1]);
+  assert.equal(mid.memberOf[2], -1);
+  const close = clusterInstants(items, { start: 0, end: 10_000 }, 1000); // 10ms/px → join 120ms
+  assert.equal(close.clusters.length, 0, 'zoomed in: every pip stands at its true timestamp');
+});
+
+test('clusterZoomView: pads the member extent and floors at the minimum span; clicking it splits the cluster', () => {
+  const extent = { start: 10_000, end: 10_400 };
+  const v = clusterZoomView(extent);
+  assert.equal(v.end - v.start, MIN_SPAN_MS, 'a sub-minimum extent floors at MIN_SPAN_MS');
+  assert.equal((v.start + v.end) / 2, (extent.start + extent.end) / 2, 'centered on the extent');
+  // The zoom is deep enough that the members separate → no cluster left.
+  const items = [pip('a', 10_000), pip('b', 10_400)];
+  assert.equal(clusterInstants(items, clusterZoomView(extent), 1000).clusters.length, 0);
+  // A wide extent fills CLUSTER_ZOOM_FILL_FRAC of the window.
+  const big = { start: 0, end: 60_000 };
+  const bv = clusterZoomView(big);
+  assert.ok(Math.abs((bv.end - bv.start) * CLUSTER_ZOOM_FILL_FRAC - 60_000) < 1e-6);
+  // Fully coincident members floor at the minimum span (they can never split).
+  const point = clusterZoomView({ start: 5_000, end: 5_000 });
+  assert.equal(point.end - point.start, MIN_SPAN_MS);
+  assert.equal((point.start + point.end) / 2, 5_000);
+});
+
+test('clusterMarkerTime: midpoint while fully visible; slides at a clipped edge; null once nothing is visible', () => {
+  const view: TimeView = { start: 0, end: 1_000 };
+  // Fully visible: the midpoint, stable.
+  assert.equal(clusterMarkerTime({ start: 100, end: 200 }, view, 10), 150);
+  // Straddling the left edge: slid to the inset window edge, on-screen.
+  assert.equal(clusterMarkerTime({ start: -500, end: 200 }, view, 10), 10);
+  // Straddling the right edge: symmetric.
+  assert.equal(clusterMarkerTime({ start: 800, end: 1_500 }, view, 10), 990);
+  // Entirely outside: no marker.
+  assert.equal(clusterMarkerTime({ start: -500, end: -100 }, view, 10), null);
+  assert.equal(clusterMarkerTime({ start: 1_100, end: 1_200 }, view, 10), null);
+  // A point extent near the edge: margins cross → clamped into the extent.
+  assert.equal(clusterMarkerTime({ start: 50, end: 50 }, view, 100), 50);
+  // Continuity while panning: the marker never jumps, riding the extent's
+  // last visible sliver all the way out.
+  let prev = null as number | null;
+  for (let s = -400; s <= 200; s += 10) {
+    const t = clusterMarkerTime({ start: 100, end: 200 }, { start: s, end: s + 1_000 }, 10);
+    assert.ok(t !== null, `visible at pan ${s}`);
+    if (prev !== null) assert.ok(Math.abs(t - prev) <= 10 + 1e-9, `pan step moves the marker ≤ the pan step`);
+    prev = t;
+  }
+});
+
+// -- Minimap strip -----------------------------------------------------------------
+
+test('minimapExtent: spans the earliest known start through max(now, latest end); null with no data', () => {
+  // No start knowledge of any kind → no extent (the strip hides).
+  assert.equal(minimapExtent(null, null, 1_000_000), null);
+  // Plain data: earliest interval → now (now past the latest end).
+  assert.deepEqual(minimapExtent(500_000, 800_000, 1_000_000), { start: 500_000, end: 1_000_000 });
+  // A latest end past now (future-dated terminal) extends the end.
+  assert.deepEqual(minimapExtent(500_000, 1_200_000, 1_000_000), { start: 500_000, end: 1_200_000 });
+  // Coverage knowledge widens the start: loaded-but-empty history and the
+  // exhausted boundary are both part of the overview.
+  assert.deepEqual(minimapExtent(500_000, null, 1_000_000, null, 300_000), { start: 300_000, end: 1_000_000 });
+  assert.deepEqual(minimapExtent(500_000, null, 1_000_000, 100_000, 300_000), { start: 100_000, end: 1_000_000 });
+  // Coverage alone (no intervals) is still an extent.
+  assert.deepEqual(minimapExtent(null, null, 1_000_000, null, 700_000), { start: 700_000, end: 1_000_000 });
+});
+
+test('minimapExtent: a degenerate/tiny span is padded backward to the minimum', () => {
+  // A single instant at "now": pad backward so the strip has a real domain.
+  assert.deepEqual(minimapExtent(1_000_000, null, 1_000_000, null, null, 60_000), { start: 940_000, end: 1_000_000 });
+  // Just under the pad: widened to exactly the pad, end anchored.
+  assert.deepEqual(minimapExtent(999_000, null, 1_000_000, null, null, 60_000), { start: 940_000, end: 1_000_000 });
+  // At/above the pad: untouched.
+  assert.deepEqual(minimapExtent(940_000, null, 1_000_000, null, null, 60_000), { start: 940_000, end: 1_000_000 });
+});
+
+test('minimapWindowRect: maps the view into strip px and crops at the strip edges', () => {
+  const extent: TimeView = { start: 0, end: 10_000 };
+  // Interior window: exact linear mapping.
+  assert.deepEqual(minimapWindowRect({ start: 2_000, end: 6_000 }, extent, 1_000), { x0: 200, x1: 600 });
+  // A view hanging past the extent start: CROPPED at 0 (never slid to a
+  // lying position), the visible remainder honest.
+  assert.deepEqual(minimapWindowRect({ start: -2_000, end: 4_000 }, extent, 1_000), { x0: 0, x1: 400 });
+  // Symmetric at the live end.
+  assert.deepEqual(minimapWindowRect({ start: 8_000, end: 12_000 }, extent, 1_000), { x0: 800, x1: 1_000 });
+  // Degenerate extent/width: the whole strip.
+  assert.deepEqual(minimapWindowRect({ start: 0, end: 1 }, { start: 5, end: 5 }, 1_000), { x0: 0, x1: 1_000 });
+  assert.deepEqual(minimapWindowRect({ start: 0, end: 1 }, extent, 0), { x0: 0, x1: 0 });
+});
+
+test('minimapWindowRect: a tiny window keeps a minimum visual width; fully outside pins a sliver at the nearer edge', () => {
+  const extent: TimeView = { start: 0, end: 1_000_000 };
+  // A 10-min window on a week-long extent maps under a pixel — expanded
+  // around its center to MINIMAP_MIN_WINDOW_PX so it stays grabbable.
+  const r = minimapWindowRect({ start: 500_000, end: 500_100 }, extent, 1_000);
+  assert.ok(Math.abs(r.x1 - r.x0 - MINIMAP_MIN_WINDOW_PX) < 1e-9, 'expanded to the minimum');
+  assert.ok(Math.abs((r.x0 + r.x1) / 2 - 500.05) < 1e-6, 'centered where the window is');
+  // Entirely before the extent: a sliver pinned at the left edge.
+  assert.deepEqual(minimapWindowRect({ start: -900_000, end: -800_000 }, extent, 1_000), { x0: 0, x1: MINIMAP_MIN_WINDOW_PX });
+  // Entirely after: pinned right.
+  assert.deepEqual(minimapWindowRect({ start: 2_000_000, end: 2_100_000 }, extent, 1_000), {
+    x0: 1_000 - MINIMAP_MIN_WINDOW_PX,
+    x1: 1_000,
+  });
+});
+
+test('minimapHitZone: handles win over the middle, zones reach outside the rect, boundaries exact', () => {
+  const rect = { x0: 200, x1: 400 };
+  const hit = MINIMAP_HANDLE_HIT_PX;
+  // Outside reach: exactly hitPx away is still the handle; just past is not.
+  assert.equal(minimapHitZone(200 - hit, rect), 'left-handle');
+  assert.equal(minimapHitZone(200 - hit - 0.01, rect), 'before');
+  assert.equal(minimapHitZone(400 + hit, rect), 'right-handle');
+  assert.equal(minimapHitZone(400 + hit + 0.01, rect), 'after');
+  // Inside reach: hitPx into a WIDE window still grabs the handle…
+  assert.equal(minimapHitZone(200 + hit, rect), 'left-handle');
+  assert.equal(minimapHitZone(400 - hit, rect), 'right-handle');
+  // …and past it is the grabbable middle.
+  assert.equal(minimapHitZone(200 + hit + 0.01, rect), 'inside');
+  assert.equal(minimapHitZone(300, rect), 'inside');
+});
+
+test('minimapHitZone: a narrow window keeps a grabbable middle (inside reach shrinks with the window)', () => {
+  // 12px window: inside reach shrinks to width/4 = 3px, so the center
+  // stays 'inside' instead of the 8px handle zones swallowing it.
+  const rect = { x0: 100, x1: 112 };
+  assert.equal(minimapHitZone(106, rect), 'inside');
+  assert.equal(minimapHitZone(102, rect), 'left-handle');
+  assert.equal(minimapHitZone(110, rect), 'right-handle');
+  // The width/4 rule keeps the two handle zones disjoint on ANY
+  // nonzero-width window — even a 4px one keeps its 2px middle.
+  const tiny = { x0: 100, x1: 104 };
+  assert.equal(minimapHitZone(101, tiny), 'left-handle');
+  assert.equal(minimapHitZone(103, tiny), 'right-handle');
+  assert.equal(minimapHitZone(102, tiny), 'inside');
+  // Zero-width rect (not producible by minimapWindowRect, but total): the
+  // exact edge is the one overlap — the nearer-handle tie goes left.
+  assert.equal(minimapHitZone(100, { x0: 100, x1: 100 }), 'left-handle');
+});
+
+test('minimapPan: pixel deltas pan at the extent scale; clamps at both extent edges', () => {
+  const extent: TimeView = { start: 0, end: 10_000 };
+  const view: TimeView = { start: 2_000, end: 4_000 };
+  // +100px on a 1000px strip = +10% of the extent = +1000ms.
+  assert.deepEqual(minimapPan(view, 100, extent, 1_000), { start: 3_000, end: 5_000 });
+  assert.deepEqual(minimapPan(view, -100, extent, 1_000), { start: 1_000, end: 3_000 });
+  // Clamped at the extent start (span preserved)…
+  assert.deepEqual(minimapPan(view, -500, extent, 1_000), { start: 0, end: 2_000 });
+  // …and at the live end.
+  assert.deepEqual(minimapPan(view, 900, extent, 1_000), { start: 8_000, end: 10_000 });
+  // A window wider than the whole extent pins to the live end.
+  assert.deepEqual(minimapPan({ start: -20_000, end: 0 }, 50, extent, 1_000), { start: -10_000, end: 10_000 });
+  // Degenerate inputs: unchanged (fresh object, same values).
+  assert.deepEqual(minimapPan(view, 100, { start: 5, end: 5 }, 1_000), view);
+  assert.deepEqual(minimapPan(view, 100, extent, 0), view);
+});
+
+test('minimapResize: each handle drags its edge, clamped to the extent and the span limits', () => {
+  const extent: TimeView = { start: 0, end: 100_000 };
+  const view: TimeView = { start: 40_000, end: 60_000 };
+  // Left handle to x=200 on a 1000px strip → t = 20_000.
+  assert.deepEqual(minimapResize(view, 'left', 200, extent, 1_000), { start: 20_000, end: 60_000 });
+  // Right handle to x=800 → t = 80_000.
+  assert.deepEqual(minimapResize(view, 'right', 800, extent, 1_000), { start: 40_000, end: 80_000 });
+  // Pointer past the strip ends clamps to the extent edges.
+  assert.deepEqual(minimapResize(view, 'left', -50, extent, 1_000), { start: 0, end: 60_000 });
+  assert.deepEqual(minimapResize(view, 'right', 1_500, extent, 1_000), { start: 40_000, end: 100_000 });
+  // The span ceiling holds: a huge extent can't stretch a window past MAX_SPAN_MS.
+  const wide: TimeView = { start: 0, end: 30 * 86_400_000 };
+  const atEnd: TimeView = { start: wide.end - 1_000_000, end: wide.end };
+  assert.deepEqual(minimapResize(atEnd, 'left', 0, wide, 1_000), { start: wide.end - MAX_SPAN_MS, end: wide.end });
+  // Degenerate extent/width: unchanged.
+  assert.deepEqual(minimapResize(view, 'left', 200, { start: 5, end: 5 }, 1_000), view);
+});
+
+test('minimapResize: dragging a handle past (or into) the other CLAMPS at the min span — never flips', () => {
+  const extent: TimeView = { start: 0, end: 100_000 };
+  const view: TimeView = { start: 40_000, end: 60_000 };
+  // Left handle dragged way past the right edge: parks at end - MIN_SPAN_MS.
+  assert.deepEqual(minimapResize(view, 'left', 900, extent, 1_000), { start: 60_000 - MIN_SPAN_MS, end: 60_000 });
+  // Right handle dragged way past the left edge: parks at start + MIN_SPAN_MS.
+  assert.deepEqual(minimapResize(view, 'right', 100, extent, 1_000), { start: 40_000, end: 40_000 + MIN_SPAN_MS });
+  // The min-span floor wins over the extent clamp near the extent's ends.
+  const nearStart: TimeView = { start: 0, end: 1_000 };
+  const r = minimapResize(nearStart, 'right', 0, extent, 1_000);
+  assert.deepEqual(r, { start: 0, end: MIN_SPAN_MS });
+});
+
+test('minimapCenter: centers the window at the clicked time at constant span; extent-clamped', () => {
+  const extent: TimeView = { start: 0, end: 10_000 };
+  const view: TimeView = { start: 1_000, end: 3_000 };
+  assert.deepEqual(minimapCenter(view, 700, extent, 1_000), { start: 6_000, end: 8_000 });
+  // Near the edges the window slides inside instead of hanging out.
+  assert.deepEqual(minimapCenter(view, 0, extent, 1_000), { start: 0, end: 2_000 });
+  assert.deepEqual(minimapCenter(view, 1_000, extent, 1_000), { start: 8_000, end: 10_000 });
+  // Degenerate: unchanged.
+  assert.deepEqual(minimapCenter(view, 500, extent, 0), view);
 });
 
 // -- historyProbe (the request-flood regression) -----------------------------------------
@@ -1535,4 +2173,50 @@ test('shouldRender: gates a 60Hz rAF stream to the tier budget without aliasing'
   assert.ok(idle >= 280 && idle <= 320, `idle ≈ 30fps over 10s, got ${idle / 10}/s`);
   const battery = countAt(IDLE_BATTERY_FRAME_MS);
   assert.ok(battery >= 95 && battery <= 105, `battery ≈ 10fps over 10s, got ${battery / 10}/s`);
+});
+
+// -- dimColor (the uniform dim transform) ----------------------------------------------
+
+test('dimColor: hue preserved, saturation and value halved', () => {
+  // Pure red (h 0, s 1, v 1) → s .5, v .5 → the red-family rgb(128, 64, 64).
+  assert.equal(dimColor('#ff0000'), 'rgba(128, 64, 64, 1)');
+  // Pure green stays green-dominant at half strength.
+  assert.equal(dimColor('rgb(0, 255, 0)'), 'rgba(64, 128, 64, 1)');
+});
+
+test('dimColor: greys halve value without inventing hue or saturation', () => {
+  assert.equal(dimColor('#808080'), 'rgba(64, 64, 64, 1)');
+  assert.equal(dimColor('#ffffff'), 'rgba(128, 128, 128, 1)');
+  assert.equal(dimColor('#000000'), 'rgba(0, 0, 0, 1)');
+});
+
+test('dimColor: alpha passes through untouched', () => {
+  assert.equal(dimColor('rgba(255, 0, 0, 0.4)'), 'rgba(128, 64, 64, 0.4)');
+  assert.equal(dimColor('hsla(0, 100%, 50%, 0.25)'), 'rgba(128, 64, 64, 0.25)');
+  assert.equal(dimColor('#ff000080'), `rgba(128, 64, 64, ${128 / 255 * 1000 % 1 === 0 ? 128 / 255 : Math.round((128 / 255) * 1000) / 1000})`);
+});
+
+test('dimColor: hsl and oklch forms parse; unknown forms pass through', () => {
+  assert.equal(dimColor('hsl(120, 100%, 25%)'), 'rgba(32, 64, 32, 1)');
+  // oklch pure-red-ish input converts and stays red-dominant.
+  const red = dimColor('oklch(0.628 0.258 29.234)');
+  const m = red.match(/^rgba\((\d+), (\d+), (\d+), 1\)$/);
+  assert.ok(m, `expected rgba() output, got ${red}`);
+  assert.ok(Number(m[1]) > Number(m[2]) && Number(m[1]) > Number(m[3]), red);
+  // oklch with alpha keeps it.
+  assert.match(dimColor('oklch(0.62 0.11 210 / 0.9)'), /^rgba\(\d+, \d+, \d+, 0.9\)$/);
+  // Unsupported forms return unchanged (named colors, var() references).
+  assert.equal(dimColor('rebeccapurple'), 'rebeccapurple');
+  assert.equal(dimColor('var(--x)'), 'var(--x)');
+});
+
+test('dimColor: applying to categoryColor output keeps the category hue family', () => {
+  // The element feeds resolved category colors through dimColor for
+  // dimmed regions — both color modes must round-trip.
+  for (const mode of ['oklch', 'hsl'] as const) {
+    const base = categoryColor(210, { mode });
+    const dimmed = dimColor(base);
+    assert.notEqual(dimmed, base);
+    assert.match(dimmed, /^rgba\(/);
+  }
 });

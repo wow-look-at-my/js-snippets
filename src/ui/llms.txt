@@ -187,13 +187,19 @@ element. A shared horizontal time axis across the full width; stacked
 labeled lanes (left gutter, ellipsized labels, full text via tooltip;
 lane order = exactly the order supplied — never re-sorted internally),
 each a band of interval bars (left = start, right = end). A lane grows
-extra sub-tracks when intervals VISIBLE in the current window overlap
-(greedy first-fit packing over the visible set, deterministic under
-re-ordering and stable while the window slides over unchanged overlap); a
-historical parallelism burst stops padding its lane once it scrolls out
-of view, a lane with nothing visible collapses to one track, and height
-changes ease over ~150ms (snapped under prefers-reduced-motion;
-hit-testing tracks the animating layout). AUTO-FIT (default on; opt out
+extra sub-tracks when intervals VISIBLE in the current window overlap,
+and rows are VERTICALLY STICKY (a stateful per-lane TrackAllocator): an
+interval KEEPS its row while it stays on screen — panning and live
+updates never reshuffle the rows being watched — an interval scrolling
+out and back gets its old row back when still free (bounded LRU row
+memory; the memory survives setData, so a live resync leaves rows put),
+and new arrivals take the lowest conflict-free row, so lane height
+recovers from the bottom once a tall burst scrolls away (never by
+re-rowing what is still visible); a historical parallelism burst stops
+padding its lane once it scrolls out of view, a lane with nothing
+visible collapses to one track, and height changes ease over ~150ms
+(snapped under prefers-reduced-motion; hit-testing tracks the animating
+layout). AUTO-FIT (default on; opt out
 with the no-auto-fit attribute): when the natural stack — every lane at
 --timeline-track-height — would overflow the host's height, whole lanes
 are demoted to the compact track height (--timeline-track-height-compact,
@@ -216,14 +222,21 @@ the demotion set. Everything is data — lanes,
 intervals, optional connectors between intervals, vertical time markers;
 dynamic lane count (1-50+), smooth with thousands of in-window intervals
 (viewport culling, dirty-flag rAF drawing, DPR-aware backing store capped
-at 2, adaptive idle pacing — full rate while interacting + a ~500ms
+at 3, adaptive idle pacing — full rate while interacting + a ~500ms
 grace, ~30fps idle, ~10fps idle on battery via navigator.getBattery
-feature-detection, paused while the document is hidden). Rendering is
+feature-detection, paused while the document is hidden). Canvas text is
+kept crisp: the 2d context is OPAQUE (alpha: false — the chart paints
+its own background every frame, and an opaque canvas gets subpixel text
+antialiasing where an alpha one gets grayscale-only; keep --timeline-bg
+an opaque color), and every TEXT draw origin snaps to the device-pixel
+grid (labels step in whole pixels while lanes tween/scroll — deliberate;
+grid-aligned glyphs beat smeared ones). Rendering is
 stability-first: the viewport origin is snapped to whole DEVICE pixels
-once per frame and nothing else on the time axis is rounded, so
-follow-mode scrolling translates the whole scene in integer device-pixel
-steps and bars never jiggle relative to each other. Not a Gantt (many
-bars per row), not a flame chart (no nesting).
+once per frame and nothing else on the time axis is rounded (text
+origins are the one per-element exception — nothing tiles against a
+label), so follow-mode scrolling translates the whole scene in integer
+device-pixel steps and bars never jiggle relative to each other. Not a
+Gantt (many bars per row), not a flame chart (no nesting).
 
 Color encodes CATEGORY: interval.category (default lane.group, then
 laneId) hashes to a stable hue — same category = same color, forever —
@@ -231,10 +244,31 @@ with a small deterministic tone offset so near hues still separate.
 Rendering STYLE encodes state/phase via a named style map: interval.state
 and segment.kind look up a treatment {pattern solid|hatch|stipple|outline,
 alphaScale, saturationScale, lightnessScale, border {width, dash,
-emphasis}, glyph none|bang|dot}. Built-ins: '' solid; 'emphasis'/'failed'
+emphasis}, glyph none|bang|dot, dimmed}. Built-ins: '' solid; 'emphasis'/'failed'
 unmissable (2px emphasis border + corner bang glyph + stipple — hue
 untouched); 'dim'/'queued' translucent + desaturated; 'hatch'/'waiting'
-45-degree stripes; 'outline' hollow. Ongoing intervals (end == null)
+45-degree stripes; 'outline' hollow; 'cancelled' hollow + DASHED
+category-hue border — unmissably "stopped, not failed" at any zoom: never
+the emphasis color, never the bang, never a solid success body (a BAR's
+border dash falls back to solid below ~12px width, where dashes read as
+broken corners — the hollow body still separates a tiny cancelled bar
+from a solid one; this solid-below-legibility rule applies to any dashed
+border style on bars. Instant PIPS are exempt: a cancelled pip keeps its
+dashed diamond outline — the declared pattern is rescaled so 3-5 whole
+dash cycles close around the perimeter — so a cancelled instant carries
+the same dashed signature as a cancelled span). A style with `dimmed: true`
+(the dim/queued/hatch/waiting built-ins) renders as ONE uniform filter
+over the whole region: fill, hatching, border, and the label/badge text
+over it (bar labels, the cluster ×N badge, adapter-composed badge
+strings like queue ordinals) all get the same dimColor transform (50%
+saturation, 50% value — hue and alpha untouched), so the section reads
+quieter than a running span while text keeps the SAME relative
+text-vs-fill contrast (text never dims independently of — or more
+than — its section, which is what made grey-on-muted labels
+unreadable). The label's anchor point decides which section it belongs
+to: anchored inside a dimmed segment's visible slice, it takes that
+section's dimmed text color; otherwise the full-contrast foreground
+(--timeline-fg). Ongoing intervals (end == null)
 render to the live now edge with a subtly pulsing leading edge (static
 under prefers-reduced-motion; while the feed is STALE they freeze at the
 last vouched timestamp and restyle dim + hatched — see Feed staleness
@@ -242,14 +276,82 @@ below). Zero/near-zero-DURATION intervals (mapped
 width under ~3px at the current zoom) render as instant diamond pips at
 their start time — clearly distinct from bars, still category-colored,
 state-styled (a failed instant gets the thick emphasis border + stem),
-hoverable and clickable via a widened hit target, and packed like
-everything else so coincident instants stack instead of vanishing. The
+hoverable and clickable via a widened hit target. The
 bar-vs-pip decision comes from the DURATION mapped through the scale
 (durationWidthPx) — translation-invariant, so shapes never flicker while
 the timeline scrolls — and a real-duration bar is clamped to MIN_BAR_PX
-(2px), never demoted to a pip. Bar labels truncate with an ellipsis and are
-suppressed below fit width — they never spill into neighboring bars — and
-stick to the plot edge while a bar's start is scrolled off-screen.
+(2px), never demoted to a pip.
+
+Instant markers CLUSTER at scale: pips whose centers would visually
+overlap in the current window (within ~12px of a neighbor — a greedy
+transitive sweep, re-derived per layout pass) merge into ONE point-like
+×N marker — the SAME diamond pip as a single instant, with a ×N count
+badge beside it: the badge alone carries the group meaning (membership
+is exactly "would visually overlap", so a badged pip can only ever BE a
+cluster) — never a duration bar: an instantaneous event has no length,
+and neither does a pile of them. The cluster packs
+as ONE row slot spanning its member extent, so a burst of coincident
+instants can't blow up the lane height; membership depends only on time
+deltas and the scale, so panning never re-clusters (no jitter — the
+marker sits at the member extent's midpoint, sliding along the visible
+slice at a window edge instead of hiding off-screen), while ZOOMING IN
+progressively splits every cluster until each pip stands at its true
+timestamp. A cluster styles by its members' shared state where uniform
+(an all-'dim' cluster stays dim-flavored; mixed states fall back to the
+neutral default) and hits as {type: 'cluster', intervals, lane}:
+hovering shows a COMPONENT-BUILT summary tooltip (count, time extent,
+up to 8 member labels then '+K more', a zoom hint) — tooltipFor is
+never consulted for clusters — and clicking ZOOMS to the member extent
+(centered, ~60% fill, min-span floored) so the cluster splits, instead
+of dispatching intervalclick; fully coincident members zoom to the
+minimum span and stay one marker (they genuinely share a timestamp —
+the tooltip lists them). Ongoing intervals and real-duration bars never
+cluster. Single pips keep exact tooltipFor/intervalclick behavior.
+
+Spans CLIPPED by the viewport carry an
+edge-continuation cue: the clipped end darkens into a SHADOW over the
+last ~12px toward that edge — black at the edge itself, clearly darker
+than the background, easing to clear inward, plus a 1px near-black
+boundary line — so the span reads as sliding UNDER the window edge,
+which covers it and casts a shadow on it (never a fade to the
+background: that made the span look like it evaporates there). Applies
+left when the true start is scrolled off-screen, right when the true
+end — or an ongoing bar's extent in a parked view — exceeds the window,
+over every treatment (solid, hollow, hatched, terminal cuts). Spans
+whose edge coincides with the window edge are exempt (they genuinely
+start/end there), as are stubs too short to reach through the shadow
+zone (which would swallow them). Bar labels truncate with an ellipsis
+and are suppressed below fit width — they never spill into neighboring
+bars — and stick to the plot edge while a bar's start is scrolled
+off-screen (just past the continuation shadow when one is active).
+
+A MINIMAP strip (32px, its own canvas) runs along the bottom while data
+exists: the FULL loaded extent — earliest loaded interval widened by
+coverage knowledge (first covered time, the exhausted-history boundary)
+through max(now, latest end) — as per-lane collapsed density marks in
+category hues at low alpha (no text; sub-pixel runs stay ≥1px so piles
+read as density), a now tick (muted while stale), and the current
+viewport as a brighter window rect with grabbable LEFT/RIGHT handles.
+Dragging a handle adjusts that window edge live (clamped to the extent
+and the ~2s..~7d span limits; dragging one handle past the other CLAMPS
+at the minimum span, never flips); dragging the middle pans the window
+at constant width (1:1 under the pointer, clamped inside the extent);
+clicking the strip outside the window centers the window there and
+continues as a grab. Handle hit zones are generous (~8px, reaching
+outside the rect but shrinking inside so even a narrow window keeps a
+grabbable middle; the window rect itself never draws under ~6px).
+Minimap gestures go through the SAME view semantics as canvas gestures:
+a middle/right-handle drag is pan-like (backward disengages follow;
+docking at the live edge re-engages), the left handle is zoom-like (a
+pinned live edge stays pinned), and moving into uncovered past fires
+loadRange exactly like panning there. The strip repaints only when the
+main chart draws (same rAF loop, same idle pacing). It hides — ceding
+its band back to the plot — when there is no data, when the host is
+shorter than ~140px, or with the no-minimap attribute; the plot canvas,
+lane packing, auto-fit, tooltip clamps, and hit-testing all size against
+the remaining plot area automatically, and the corner buttons ride up
+above the strip. Fullscreen and the minimap compose (the strip stays at
+the bottom of the filled viewport).
 
 Importing the module auto-registers <timeline-view> (unless the tag is
 taken).
@@ -302,11 +404,24 @@ Element <timeline-view> — data API (properties/methods, never attributes):
                       staleness below).
   staleAfterMs      — staleness threshold (see Feed staleness below).
   styles            — StyleMap spread over the built-ins (see above).
+  legendEntries     — TimelineLegendEntry[] {glyph, text}: consumer rows
+                      appended under the built-in vocabulary in the "?"
+                      legend panel — how a consumer explains glyphs it
+                      composes into LABELS (queue-position badges like
+                      '⧗ group · 3rd', holder counts like '⏳N'). Copied
+                      on set; an open panel re-renders immediately.
   colorFor          — (interval, lane) => cssColor | null override.
   tooltipFor        — (hit: TimelineHit) => string | Node | null; null/
                       undefined hides. Default tooltip shows label,
                       category, state, start/end, duration, segment
                       durations. Node content is appended, never innerHTML.
+                      Long lines WRAP inside the box (unbroken tokens like
+                      run ids/error blobs included; newlines in string
+                      content are honored), and pathological content clips
+                      at a max height instead of outgrowing the host —
+                      nothing ever spills past the tooltip border. NEVER
+                      called for ×N cluster hits — their summary tooltip
+                      is component-built (see instant clustering above).
   loadRange         — (start, end) => Promise<{exhausted?: boolean} | void>.
                       Invoked (one request at a time, min-chunk widened;
                       a rejected load is retried on a fixed ~2s cadence
@@ -336,8 +451,16 @@ Interval shape: {id, laneId, start, end?, label?, category?, state?,
 segments?, data?}. start/end are ms since epoch or Date; end null/
 undefined = ongoing. segments: [{start, end?, kind}] phases WITHIN the
 bar, each styled via kind (e.g. a dim leading 'queued' phase, a hatched
-'waiting' span); end null = to the bar's end. data is opaque and echoed
-back in events/tooltips. Connector: {fromIntervalId, toIntervalId, kind?,
+'waiting' span); end null = to the bar's end. A segment whose kind
+resolves to the 'outline' pattern is a TERMINAL CUT (e.g. a kill tail:
+cancel requested → finished): it renders as a dark scrim over the dead
+tail — plus, once the tail is >= ~4px wide, a cut line in the segment's
+own hue (the cancelled border's color family) marking the kill point;
+hairline tails stay scrim-only, because a lone line flush against the
+span's end border reads as a stray artifact — and NEVER vanishes: it
+keeps a >= 3-device-px footprint (grown backward from its end) at any
+zoom, unlike decorative phases, which skip below half a pixel. data is
+opaque and echoed back in events/tooltips. Connector: {fromIntervalId, toIntervalId, kind?,
 label?} — a muted S-curve between two bars, endpoint-dotted, highlighted
 on hover; if one endpoint id is missing from the data a dashed stub +
 open circle marks it and the tooltip says which side isn't loaded.
@@ -352,8 +475,20 @@ Viewport / follow:
   followNow         — boolean (default true): right edge pinned to live
                       now. Any backward PAN (wheel, drag, arrow keys)
                       disengages immediately — even a tiny step, so
-                      trackpad panning escapes the pin; zooming while
-                      pinned stays pinned. User-driven views HARD-STOP at
+                      trackpad panning escapes the pin. ZOOMS never
+                      inherit the pin: the anchor is ALWAYS the gesture's
+                      focal point (cursor / pinch midpoint / keyboard
+                      center), even while following — during the gesture
+                      the timestamp under the cursor stays under the
+                      cursor, and the zoomed view re-earns follow by the
+                      same snap rule as any fresh gesture (zooming AT the
+                      live edge keeps following; an anchored zoom-in away
+                      from it parks, and follow re-docks magnetically on
+                      a later gesture). One deliberate asymmetry: a
+                      zoom-out pinned at the live edge can't show the
+                      future, so the end stop caps it right-anchored —
+                      the same clamp a parked zoom-out hits at the stop.
+                      User-driven views HARD-STOP at
                       now (every pan/zoom/pinch/keyboard/setViewport
                       clamps the right edge there), and a gesture parking
                       the right edge within 2 DEVICE pixels of that end
@@ -371,14 +506,49 @@ Viewport / follow:
   jumpToNow()       — re-engage follow, keeping the span: a fast ~250ms
                       glide from wherever the view is to the followed
                       position, never a teleport (reduced motion snaps).
+  fullscreen        — boolean property, reflected as the `fullscreen`
+                      attribute: viewport-fill mode. The host goes
+                      position:fixed inset:0 over the whole viewport
+                      (deliberately NOT the Fullscreen API — no permission
+                      prompt; the :host([fullscreen]) rules are !important
+                      so they beat page styles sizing the host), the page
+                      scroll locks while active (html overflow hidden,
+                      previous value restored — the page's scroll offset
+                      survives the round trip exactly), and everything
+                      re-derives through the normal resize path (the DPR
+                      cap stays at 3). Escape exits (handled only while
+                      fullscreen — never swallowed otherwise). A corner
+                      ⤢/⤡ toggle button sits at bottom-right, visible in
+                      BOTH follow and parked modes (the jump-to-live pill
+                      slides in to its left); hide the button with the
+                      no-fullscreen-button attribute (the property and
+                      attribute keep working programmatically).
   Events: 'viewportchange' {start, end, followNow} on user-driven changes,
-  'intervalclick' {interval, lane}, 'intervalhover' {interval|null,
-  lane|null}, 'connectorclick' {connector}, 'laneclick' {lane} (a click on
-  a gutter label — lets consumers make lanes navigable), 'fitchange'
-  {demoted: laneId[]} whenever auto-fit's demotion set changes,
-  'stalechange' {stale, lastFresh} on feed-staleness transitions.
+  'intervalclick' {interval, lane} (single intervals only — a ×N cluster
+  click zooms to its member extent instead), 'intervalhover'
+  {interval|null, lane|null}, 'connectorclick' {connector}, 'laneclick'
+  {lane} (a click on a gutter label — lets consumers make lanes
+  navigable), 'fitchange' {demoted: laneId[]} whenever auto-fit's
+  demotion set changes, 'stalechange' {stale, lastFresh} on
+  feed-staleness transitions, 'fullscreenchange' {fullscreen} on
+  viewport-fill transitions.
   A built-in jump-to-live pill appears while not following (hide it with
   the no-live-pill attribute).
+
+Legend (the "?" pill): a small button stacked above the fullscreen
+  toggle opens an in-place glyph dictionary — the component-owned
+  vocabulary (filled/hollow instant pips, the ×N cluster badge, the
+  failed stipple + bang, hatched wait/queued phases, dim de-emphasis,
+  the cancelled span's dashed hollow + terminal kill cut) followed by
+  any consumer `legendEntries`. Rows name a GLYPH and its meaning —
+  nothing meta — and cover only glyphs that are actually cryptic:
+  self-explanatory chrome (the minimap, edge treatments) stays out.
+  Pure DOM chrome in the shadow root: it works in fullscreen, costs the
+  canvas render path nothing (rows build only when the panel opens),
+  swatches are CSS-drawn in a neutral hue (they teach shape, not any
+  category color), Escape or any chart gesture closes it (inside
+  fullscreen, Escape closes the panel first, then the mode), and the
+  no-legend attribute hides the pill entirely.
 
 Feed staleness (a dead live feed is impossible to misread):
   Every setData/mergeData stamps the feed FRESH; markFresh(ts?) stamps
@@ -406,7 +576,10 @@ Feed staleness (a dead live feed is impossible to misread):
 Attributes (scalar toggles only): no-live-pill, no-auto-fit (disable
 compact-lane auto-fit — every lane keeps the full track height),
 history-end-text (boundary label, default 'history ends here'),
-empty-text (empty-state hint).
+empty-text (empty-state hint), fullscreen (reflected viewport-fill mode
+— see the fullscreen property), no-fullscreen-button (hide the corner
+fullscreen toggle), no-minimap (hide the bottom minimap strip),
+no-legend (hide the "?" legend pill).
 
 Interaction: plain wheel / two-finger scroll — deltaX ALWAYS pans time;
 plain deltaY scrolls the lane stack when it overflows the host and is
@@ -416,13 +589,27 @@ sideways); a diagonal gesture routes each axis to its own behavior and
 is consumed iff at least one axis routed (all deltaMode-normalized);
 ctrl/meta+wheel zooms anchored under the cursor (pixel-precise trackpad
 deltas apply 1:1; discrete wheel steps glide ~130ms; always consumed —
-never browser page-zoom); shift+wheel pans time; pointer drag pans both
-axes (pointer capture); two-pointer pinch zooms; keyboard when focused
+never browser page-zoom; the cursor anchor holds while follow-now is
+engaged too — see followNow); shift+wheel pans time; pointer drag pans
+both axes (pointer capture); two-pointer pinch zooms anchored at the
+pinch midpoint (also while following); keyboard when focused
 (tabindex 0): arrows pan (shift = faster), +/- zoom, End = jump to now,
-Home = jump to the earliest known data.
+Home = jump to the earliest known data. The wheel listener sits on the
+HOST, so those rules apply over the DOM chrome (live pill, fullscreen
+toggle, stale note) exactly as over the canvas — a horizontal delta is
+consumed wherever it lands — and the host + canvas carry
+overscroll-behavior: none, so pulling further at the left pan boundary
+(or any edge) never chains into the browser's history-back/forward
+navigation gesture, wheel or touch (chrome buttons keep
+touch-action: manipulation so taps stay instant; the canvas stays
+touch-action: none). Page-LEVEL containment (html/body) stays the
+embedding page's own business.
 
 CSS custom properties (dark Scratch Proto defaults; see THEME_DEFAULTS):
   --timeline-bg            — plot background          (#0d0f14)
+                             (must be OPAQUE — the canvas is opaque for
+                             subpixel text AA, so a translucent bg would
+                             composite on black, not on the host)
   --timeline-fg            — bar labels / primary     (#e8ecf4)
   --timeline-muted         — axis/lane labels         (#6b7280)
   --timeline-grid          — vertical time gridlines  (rgba(200,205,216,0.07))
@@ -447,7 +634,8 @@ CSS custom properties (dark Scratch Proto defaults; see THEME_DEFAULTS):
 Exports:
   class TimelineViewElement extends HTMLElement
   THEME_DEFAULTS — default theme values keyed like the CSS properties
-  Types: TimelineData, TimelineHit, LoadRangeFn, TooltipFn, ColorFn
+  Types: TimelineData, TimelineHit, LoadRangeFn, TooltipFn, ColorFn,
+    TimelineLegendEntry {glyph, text}
   Plus everything re-exported from ui/timeline-view-math.js.
 
 ### ui/timeline-view-math.js
@@ -496,7 +684,10 @@ Exports:
     snapViewToDevicePixels(view, plotWidthCss, dpr) →
     TimeView (origin snapped to whole device pixels, span preserved —
     the single global rounding that makes scrolling translate the scene
-    in integer device-pixel steps).
+    in integer device-pixel steps), snapTextOrigin(v, dpr) → number (a
+    CSS-px coordinate snapped to the nearest whole device pixel — for
+    TEXT draw origins only, where per-element rounding is crispness, not
+    jiggle; never round bar geometry per element).
   Staleness: STALE_AFTER_DEFAULT_MS (10_000), feedIsStale(now,
     lastFresh, staleAfterMs) → boolean (never stale before any data or
     with a non-finite/non-positive threshold; strictly-past-threshold
@@ -518,7 +709,18 @@ Exports:
     partial overlap counts, out-of-view items get track -1, trackCount
     >= 1 so an empty window collapses to one track; assignment is a pure
     function of the visible set, so sliding over unchanged overlap never
-    hops tracks), layoutLanes(trackCounts, metrics, trackHeights?) →
+    hops tracks — but membership churn reflows it: the element rows its
+    lanes through TrackAllocator instead), class
+    TrackAllocator(memoryCap? = TRACK_MEMORY_CAP (2048)) — the STICKY
+    stateful variant: assign(items, view) → {tracks, trackCount} with the
+    same contract, except a continuously-visible item KEEPS its track, a
+    returning item reclaims its remembered one when conflict-free
+    (LRU-bounded id → track memory), and new/displaced items take the
+    lowest track with no time overlap among this call's visible
+    placements — density recovers from the bottom as bursts scroll away,
+    visible same-track overlap stays impossible, a fresh allocator's
+    first call equals packVisibleTracks, deterministic per call sequence,
+    layoutLanes(trackCounts, metrics, trackHeights?) →
     {tops, heights, totalHeight} (per-lane trackHeights override the
     metrics' track height — compact lanes; fractional counts AND heights
     allowed — used for height tweens), trackTop(track, metrics,
@@ -541,7 +743,55 @@ Exports:
     below it an interval renders as an instant pip),
     durationWidthPx(startMs, endMs, view, plotWidth) (duration mapped
     through the scale — the translation-invariant width the bar-vs-pip
-    decision must use), MIN_BAR_PX (= 2px minimum rendered bar width).
+    decision must use), MIN_BAR_PX (= 2px minimum rendered bar width),
+    edgeContinuation(startMs, endMs, view, plotWidth, fadePx) → {left,
+    right} (which ends the view CLIPS — the span truly continues
+    off-screen past them; exact-edge ends are exempt with half-a-pixel
+    slack for the device-pixel view snap, and a side only counts when the
+    visible part reaches through fadePx; pass the live edge as endMs for
+    ongoing intervals — drives the element's edge shadow).
+  Instant clustering: clusterInstants(items, view, plotWidth, joinPx?,
+    instantPx?) → {clusters: InstantCluster[], memberOf: number[]} (the
+    scale-aware greedy transitive sweep behind the element's ×N markers:
+    terminal items whose duration maps under instantPx merge while their
+    starts sit within joinPx (CLUSTER_JOIN_PX = 12) of a neighbor at
+    this scale; clusters have >= 2 members, everything else gets
+    memberOf -1; membership depends only on time deltas + scale — pans
+    never re-cluster, zooming in splits; deterministic under input
+    re-ordering; InstantCluster = {indices, extent} with extent the
+    member start range), clusterZoomView(extent, minSpan?, fillFrac?) →
+    TimeView (the cluster-click zoom target: extent centered at
+    CLUSTER_ZOOM_FILL_FRAC (0.6) fill, floored at minSpan — deep enough
+    to split the cluster; coincident members floor at minSpan),
+    clusterMarkerTime(extent, view, marginMs) → number | null (marker
+    anchor: the extent midpoint, slid along the visible slice when a
+    window edge clips the extent — the sticky-label pattern — inset by
+    marginMs; null once nothing of the extent is visible).
+  Minimap strip: minimapExtent(earliestStart, latestEnd, now,
+    exhaustedBefore?, coveredStart?, minSpanMs?) → TimeView | null (the
+    strip's data extent: the earliest known start — interval, first
+    covered time, or exhausted boundary, whichever is oldest — through
+    max(now, latest end); null with no start knowledge; degenerate spans
+    pad backward to minSpanMs (60s)), minimapWindowRect(view, extent,
+    width, minPx?) → {x0, x1} (the viewport mapped into strip px, CROPPED
+    at the strip edges — never slid to a lying position — with
+    MINIMAP_MIN_WINDOW_PX (6) enforced around the center before cropping;
+    fully-outside views pin a sliver at the nearer edge),
+    minimapHitZone(x, rect, hitPx?) → 'left-handle' | 'right-handle' |
+    'inside' | 'before' | 'after' (handles win over the middle; zones
+    reach MINIMAP_HANDLE_HIT_PX (8) outside the rect but only
+    min(hitPx, width/4) inside it, so a narrow window keeps a grabbable
+    middle), minimapPan(view, dxPx, extent, width) → TimeView
+    (grab-the-middle: constant-span pan by a pixel delta at the extent's
+    scale, clamped inside the extent; wider-than-extent windows pin to
+    the live end), minimapResize(view, 'left'|'right', xPx, extent,
+    width, minSpan?, maxSpan?) → TimeView (drag one window edge to a
+    strip x, clamped to the extent and [MIN_SPAN_MS, MAX_SPAN_MS];
+    dragging past the other handle CLAMPS at the min span — never flips;
+    the min-span floor wins over the extent clamp),
+    minimapCenter(view, xPx, extent, width) → TimeView (click outside
+    the window: re-center at the clicked time, span preserved,
+    extent-clamped). Types: MinimapWindowRect, MinimapZone.
   Hit testing: expandHitRect(rect, minW) (widen instants' hit targets),
     hitTestRects(x, y, rects) (topmost = last; -1 on miss),
     distSqToSegment(px, py, ax, ay, bx, by), hitTestPolyline(px, py, pts,
@@ -550,8 +800,13 @@ Exports:
   Category color: hashString(s) (FNV-1a 32-bit), categoryHue(s) (stable
     0..359, golden-ratio spread), categoryJitter(s) (deterministic small
     {dl, dc} tone offsets), categoryColor(hue, {mode 'oklch'|'hsl',
-    lightness?, chroma?, alpha?}) → CSS color.
-  Styles: DEFAULT_STYLES (the built-in StyleMap described above).
+    lightness?, chroma?, alpha?}) → CSS color, dimColor(color) → the
+    uniform dim transform (HSV 50% saturation + 50% value, hue/alpha
+    untouched; parses #hex, rgb()/rgba(), hsl()/hsla(), oklch();
+    unsupported forms pass through unchanged — the element applies it
+    to every color inside a `dimmed` region, label text included).
+  Styles: DEFAULT_STYLES (the built-in StyleMap described above; the
+    dim/queued/hatch/waiting entries set `dimmed: true`).
   Coverage: mergeRanges(ranges), subtractRanges(span, covers),
     historyProbe(view, now, coveredEnd, prefetchFrac?) → TimeRange | null
     (the range loadRange may be asked about: viewport + backward
