@@ -166,11 +166,15 @@ always agree, and the demo never runs dry.
   root build/type-check/test skip it entirely (library `dist/` is
   byte-identical with or without `showcase/`). Do not add `*.test.ts` here.
 - **CI**: the `showcase` job in deploy.yml publishes `showcase/dist/` to
-  buildhost (project `timeline-showcase`) via the org composite action
+  buildhost via the org composite action
   `wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master`
   (OIDC — needs job-level `id-token: write`). Branch preview URL:
-  `https://sites.pazer.build/timeline-showcase/branch/<branch>/` with `/`
-  in branch names flattened to `-` (e.g. `claude/foo` → `claude-foo`).
+  `https://sites.pazer.build/js-snippets/branch/<branch>/` with `/` in
+  branch names flattened to `-` (e.g. `claude/foo` → `claude-foo`). The
+  buildhost project MUST stay `js-snippets` (repo-derived): OIDC
+  auto-provisioning only authorizes the repo's own project name, and the
+  sites router rejects slash-namespaced names — anything else 404s with
+  "project not found".
 - **Path gate**: the job publishes only when the branch's diff vs
   origin/master touches `src/ui/`, `showcase/`, or deploy.yml itself
   (master pushes always publish). The gate is in-job (a TypeScript-action

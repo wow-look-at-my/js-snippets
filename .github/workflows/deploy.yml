@@ -62,7 +62,11 @@ jobs:
 
   # Publish the timeline showcase — showcase/'s single self-contained HTML
   # demo of <timeline-view> on fake local data — to buildhost as a per-branch
-  # static site: https://sites.pazer.build/timeline-showcase/branch/<branch>/.
+  # static site: https://sites.pazer.build/js-snippets/branch/<branch>/.
+  # The project MUST be "js-snippets": buildhost's OIDC auto-provisioning
+  # authorizes a repo's identity only for the project named after the repo
+  # (or its slash-namespace), and the sites router takes single-segment
+  # project names only — any other name 404s ("project not found").
   # Publishes only when the BRANCH touches the chart or the showcase (always
   # on master); otherwise the steps no-op and the job still succeeds, so the
   # org's all-builds aggregation never trips over it.
@@ -126,6 +130,6 @@ jobs:
         uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master
         with:
           server: https://pazer.build
-          project: timeline-showcase
+          project: js-snippets # repo-derived: the only site project OIDC authorizes
           branch: ${{ steps.gate.outputs.branch }}
           source_dir: ./showcase/dist
