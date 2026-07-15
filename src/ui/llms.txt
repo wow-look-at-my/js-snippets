@@ -157,14 +157,21 @@ the demotion set. Everything is data — lanes,
 intervals, optional connectors between intervals, vertical time markers;
 dynamic lane count (1-50+), smooth with thousands of in-window intervals
 (viewport culling, dirty-flag rAF drawing, DPR-aware backing store capped
-at 2, adaptive idle pacing — full rate while interacting + a ~500ms
+at 3, adaptive idle pacing — full rate while interacting + a ~500ms
 grace, ~30fps idle, ~10fps idle on battery via navigator.getBattery
-feature-detection, paused while the document is hidden). Rendering is
+feature-detection, paused while the document is hidden). Canvas text is
+kept crisp: the 2d context is OPAQUE (alpha: false — the chart paints
+its own background every frame, and an opaque canvas gets subpixel text
+antialiasing where an alpha one gets grayscale-only; keep --timeline-bg
+an opaque color), and every TEXT draw origin snaps to the device-pixel
+grid (labels step in whole pixels while lanes tween/scroll — deliberate;
+grid-aligned glyphs beat smeared ones). Rendering is
 stability-first: the viewport origin is snapped to whole DEVICE pixels
-once per frame and nothing else on the time axis is rounded, so
-follow-mode scrolling translates the whole scene in integer device-pixel
-steps and bars never jiggle relative to each other. Not a Gantt (many
-bars per row), not a flame chart (no nesting).
+once per frame and nothing else on the time axis is rounded (text
+origins are the one per-element exception — nothing tiles against a
+label), so follow-mode scrolling translates the whole scene in integer
+device-pixel steps and bars never jiggle relative to each other. Not a
+Gantt (many bars per row), not a flame chart (no nesting).
 
 Color encodes CATEGORY: interval.category (default lane.group, then
 laneId) hashes to a stable hue — same category = same color, forever —
@@ -389,6 +396,9 @@ Home = jump to the earliest known data.
 
 CSS custom properties (dark Scratch Proto defaults; see THEME_DEFAULTS):
   --timeline-bg            — plot background          (#0d0f14)
+                             (must be OPAQUE — the canvas is opaque for
+                             subpixel text AA, so a translucent bg would
+                             composite on black, not on the host)
   --timeline-fg            — bar labels / primary     (#e8ecf4)
   --timeline-muted         — axis/lane labels         (#6b7280)
   --timeline-grid          — vertical time gridlines  (rgba(200,205,216,0.07))
@@ -462,7 +472,10 @@ Exports:
     snapViewToDevicePixels(view, plotWidthCss, dpr) →
     TimeView (origin snapped to whole device pixels, span preserved —
     the single global rounding that makes scrolling translate the scene
-    in integer device-pixel steps).
+    in integer device-pixel steps), snapTextOrigin(v, dpr) → number (a
+    CSS-px coordinate snapped to the nearest whole device pixel — for
+    TEXT draw origins only, where per-element rounding is crispness, not
+    jiggle; never round bar geometry per element).
   Staleness: STALE_AFTER_DEFAULT_MS (10_000), feedIsStale(now,
     lastFresh, staleAfterMs) → boolean (never stale before any data or
     with a non-finite/non-positive threshold; strictly-past-threshold

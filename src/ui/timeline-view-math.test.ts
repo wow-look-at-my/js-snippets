@@ -69,6 +69,7 @@ import {
   liveEdgeTarget,
   clampViewToNow,
   snapViewToDevicePixels,
+  snapTextOrigin,
   durationWidthPx,
   edgeContinuation,
   MIN_BAR_PX,
@@ -1339,6 +1340,29 @@ test('snapViewToDevicePixels: span preserved; degenerate views returned unchange
   assert.ok(Math.abs(rv.end - rv.start - 600_000) < 1e-6);
   const bad: TimeView = { start: 5, end: 5 };
   assert.deepEqual(snapViewToDevicePixels(bad, 800, 1), bad);
+});
+
+test('snapTextOrigin: lands on whole device pixels at any dpr, moving at most half a device px', () => {
+  assert.equal(snapTextOrigin(10.3, 1), 10);
+  assert.equal(snapTextOrigin(10.6, 1), 11);
+  assert.equal(snapTextOrigin(10.3, 2), 10.5); // 20.6 device px → 21
+  assert.equal(snapTextOrigin(11.5, 2), 11.5); // already on the grid
+  for (const dpr of [1, 2, 3]) {
+    for (const v of [0, 3.7, 11.5, 123.49, 999.99]) {
+      const snapped = snapTextOrigin(v, dpr);
+      const dev = snapped * dpr;
+      assert.ok(Math.abs(dev - Math.round(dev)) < 1e-9, `dpr ${dpr}: ${v} → integer device px`);
+      assert.ok(Math.abs(snapped - v) <= 0.5 / dpr + 1e-9, `dpr ${dpr}: ${v} moved ≤ half a device px`);
+      assert.equal(snapTextOrigin(snapped, dpr), snapped, `dpr ${dpr}: idempotent`);
+    }
+  }
+});
+
+test('snapTextOrigin: degenerate inputs pass through', () => {
+  assert.ok(Number.isNaN(snapTextOrigin(NaN, 2)));
+  assert.equal(snapTextOrigin(5.4, 0), 5.4);
+  assert.equal(snapTextOrigin(5.4, -1), 5.4);
+  assert.equal(snapTextOrigin(Infinity, 2), Infinity);
 });
 
 // -- Bar/pip stability -----------------------------------------------------------------

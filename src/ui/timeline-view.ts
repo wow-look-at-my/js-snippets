@@ -56,19 +56,22 @@
  *
  * Rendering is stability-first: the viewport origin is snapped to WHOLE
  * device pixels once per frame (bars keep exact relative offsets while
- * scrolling — no per-element rounding jiggle), bar-vs-pip shapes are
- * decided from data-space durations (never from rounded screen coords, so
- * shapes don't flicker during pans), and lane heights derive from the
- * parallelism visible in the CURRENT window (a historical burst stops
- * padding its lane once off-screen; height changes tween ~150ms, honoring
- * prefers-reduced-motion).
+ * scrolling — no per-element rounding jiggle; TEXT origins are the one
+ * per-element exception — they snap to the device grid for crisp glyph
+ * rasterization, stepping in whole pixels while things move), bar-vs-pip
+ * shapes are decided from data-space durations (never from rounded screen
+ * coords, so shapes don't flicker during pans), and lane heights derive
+ * from the parallelism visible in the CURRENT window (a historical burst
+ * stops padding its lane once off-screen; height changes tween ~150ms,
+ * honoring prefers-reduced-motion).
  *
  * Cheap by construction: draws only when dirty (one rAF at a time), a
  * continuous loop runs only while following/animating and the element is
  * visible, and idle animation is paced adaptively — full rate while
  * interacting (plus a short grace window), ~30fps idle, ~10fps idle on
  * battery (feature-detected via navigator.getBattery), paused while the
- * document is hidden; culled to the viewport; DPR-aware (capped at 2).
+ * document is hidden; culled to the viewport; DPR-aware (capped at 3), on
+ * an OPAQUE canvas (subpixel text AA; keep --timeline-bg opaque).
  * Theme via --timeline-* custom properties (see THEME_DEFAULTS); the DOM
  * chrome (tooltip, live pill, empty hint) is styled by timeline-view.css.
  * The pure math lives in ui/timeline-view-math.ts (node-tested) and is
@@ -93,6 +96,7 @@ import {
   STALE_AFTER_DEFAULT_MS,
   feedIsStale,
   snapViewToDevicePixels,
+  snapTextOrigin,
   MIN_SPAN_MS,
   MAX_SPAN_MS,
   timeTicks,
@@ -267,6 +271,10 @@ const BORDER_DASH_MIN_PX = 12;
 // clips: the clipped end dissolves toward the edge — the cue that it
 // continues off-screen (see edgeContinuation for the exemptions).
 const EDGE_FADE_PX = 12;
+// Backing-store cap: 3 keeps >2-DPR displays (150% 4K scaling, many
+// laptops/mobiles) sharp instead of compositor-upscaled soft, without the
+// fully-uncapped perf cliff on 4k+ screens.
+const MAX_DPR = 3;
 
 // -- The custom element ----------------------------------------------------------------
 
@@ -1361,7 +1369,7 @@ export class TimelineViewElement extends HTMLElement {
 
   private resizeBackingStore(): void {
     const raw = typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1;
-    const dpr = Math.min(2, raw);
+    const dpr = Math.min(MAX_DPR, raw);
     const bw = Math.max(1, Math.round(this.clientWidth * dpr));
     const bh = Math.max(1, Math.round(this.clientHeight * dpr));
     if (bw === this.canvas.width && bh === this.canvas.height && dpr === this.dpr) return;
@@ -1373,6 +1381,18 @@ export class TimelineViewElement extends HTMLElement {
     this.readTheme();
     this.clampLaneScroll();
     this.invalidate();
+  }
+
+  /**
+   * The 2d context — OPAQUE (alpha: false) on purpose: the chart paints
+   * its own background every frame, and an opaque canvas lets the engine
+   * use subpixel text antialiasing (alpha canvases get grayscale-only) — a
+   * real legibility win at 10-11px. Consequence: --timeline-bg must be an
+   * opaque color (a translucent bg would composite on black, not on the
+   * host).
+   */
+  private ctx2d(): CanvasRenderingContext2D | null {
+    return (this.ctx ??= this.canvas.getContext('2d', { alpha: false }));
   }
 
   private readTheme(): void {
@@ -1396,7 +1416,7 @@ export class TimelineViewElement extends HTMLElement {
     this.fontAxis = `${t.fontSize - 1}px ${t.font}`;
     this.fontBar = `${t.fontSize}px ${t.font}`;
     this.oklch = typeof CSS !== 'undefined' && !!CSS.supports && CSS.supports('color', 'oklch(0.6 0.1 120)');
-    const ctx = (this.ctx ??= this.canvas.getContext('2d'));
+    const ctx = this.ctx2d();
     if (ctx) {
       ctx.font = this.fontBar;
       const probe = 'abcdefghijklmnop0123456789';
@@ -1910,8 +1930,8 @@ export class TimelineViewElement extends HTMLElement {
 
   private draw(): void {
     const raw = typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1;
-    if (Math.min(2, raw) !== this.dpr) this.resizeBackingStore();
-    const ctx = (this.ctx ??= this.canvas.getContext('2d'));
+    if (Math.min(MAX_DPR, raw) !== this.dpr) this.resizeBackingStore();
+    const ctx = this.ctx2d();
     if (!ctx || this.cssW < 4 || this.cssH < 4) return;
     const t = this.theme;
     const dpr = this.dpr;
@@ -1952,6 +1972,18 @@ export class TimelineViewElement extends HTMLElement {
     ctx.stroke();
   }
 
+  /**
+   * Snap a TEXT draw origin (x or y) to the device-pixel grid. Applied
+   * per fillText call — text, unlike bar geometry, tolerates per-element
+   * rounding (see snapTextOrigin): a fractional origin — laneScroll
+   * accumulation, height tweens, odd track heights — smears every glyph
+   * stroke across two pixel rows; a snapped one rasterizes crisp, at the
+   * cost of labels stepping in whole device pixels while things move.
+   */
+  private textPx(v: number): number {
+    return snapTextOrigin(v, this.dpr);
+  }
+
   private drawAxisAndGrid(ctx: CanvasRenderingContext2D, now: number): void {
     const t = this.theme;
     const dpr = this.dpr;
@@ -1985,7 +2017,7 @@ export class TimelineViewElement extends HTMLElement {
       // Keep edge labels inside the canvas.
       const half = (label.length * this.charW * 0.92) / 2;
       const lx = Math.min(w - half - 2, Math.max(gx + half + 2, x));
-      ctx.fillText(label, lx, AXIS_H / 2 + 0.5);
+      ctx.fillText(label, this.textPx(lx), this.textPx(AXIS_H / 2 + 0.5));
     }
     // Context date in the gutter corner when the ticks themselves are
     // sub-day (a date-step axis already says the date on every tick).
@@ -1993,7 +2025,7 @@ export class TimelineViewElement extends HTMLElement {
       ctx.fillStyle = t.muted;
       ctx.textAlign = 'left';
       const dateLabel = formatTimeFull(rv.start, tz).split(' ').slice(0, 2).join(' ');
-      ctx.fillText(dateLabel, 4, AXIS_H / 2 + 0.5);
+      ctx.fillText(dateLabel, this.textPx(4), this.textPx(AXIS_H / 2 + 0.5));
     }
     void now;
   }
@@ -2039,7 +2071,7 @@ export class TimelineViewElement extends HTMLElement {
         if (label !== '') {
           ctx.font = full ? this.fontBar : `${fs}px ${t.font}`;
           ctx.fillStyle = full ? t.muted : withAlpha(t.muted, 0.7);
-          ctx.fillText(label, 8, top + lh / 2 + 0.5);
+          ctx.fillText(label, this.textPx(8), this.textPx(top + lh / 2 + 0.5));
         }
       }
     }
@@ -2081,7 +2113,7 @@ export class TimelineViewElement extends HTMLElement {
           ctx.font = this.fontAxis;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText('loading…', (x0 + x1) / 2, AXIS_H + 14);
+          ctx.fillText('loading…', this.textPx((x0 + x1) / 2), this.textPx(AXIS_H + 14));
         }
       }
     }
@@ -2106,7 +2138,7 @@ export class TimelineViewElement extends HTMLElement {
       ctx.font = this.fontAxis;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(this.getAttribute('history-end-text') ?? 'history ends here', x + 6, h - 12);
+      ctx.fillText(this.getAttribute('history-end-text') ?? 'history ends here', this.textPx(x + 6), this.textPx(h - 12));
     }
   }
 
@@ -2306,7 +2338,7 @@ export class TimelineViewElement extends HTMLElement {
       const label = fitText(n.label, x1 - labelX - pad - glyphPad, this.charW);
       if (label !== '') {
         ctx.fillStyle = style.labelColor;
-        ctx.fillText(label, labelX, y + bh / 2 + 0.5);
+        ctx.fillText(label, this.textPx(labelX), this.textPx(y + bh / 2 + 0.5));
       }
     }
 
@@ -2469,7 +2501,7 @@ export class TimelineViewElement extends HTMLElement {
       ctx.setLineDash(EMPTY_DASH);
       if (m.label) {
         ctx.fillStyle = color;
-        ctx.fillText(m.label, x + 5, AXIS_H + 9);
+        ctx.fillText(m.label, this.textPx(x + 5), this.textPx(AXIS_H + 9));
       }
     }
   }

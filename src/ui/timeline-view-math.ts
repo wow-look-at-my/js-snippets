@@ -362,6 +362,22 @@ export function snapViewToDevicePixels(view: TimeView, plotWidthCss: number, dpr
   return { start, end: start + span };
 }
 
+/**
+ * Snap a CSS-px coordinate to the nearest WHOLE device pixel — for TEXT
+ * draw origins only. Glyphs rasterize sharpest when their origin sits on
+ * the device-pixel grid (a fractional baseline smears every horizontal
+ * stroke across two pixel rows as gray), and text — unlike bar
+ * geometry — tolerates per-element rounding: nothing tiles against a
+ * label, so the at-most-half-device-px step during scrolls/tweens reads
+ * as stepping, never as neighbors jiggling. Geometry keeps the single
+ * global view-origin rounding (snapViewToDevicePixels); never round bars
+ * per element.
+ */
+export function snapTextOrigin(v: number, dpr: number): number {
+  if (!Number.isFinite(v) || !(dpr > 0)) return v;
+  return Math.round(v * dpr) / dpr;
+}
+
 // -- Time ticks --------------------------------------------------------------------
 
 /**
