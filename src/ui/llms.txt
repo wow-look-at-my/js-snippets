@@ -219,10 +219,11 @@ the timeline scrolls — and a real-duration bar is clamped to MIN_BAR_PX
 Instant markers CLUSTER at scale: pips whose centers would visually
 overlap in the current window (within ~12px of a neighbor — a greedy
 transitive sweep, re-derived per layout pass) merge into ONE point-like
-×N marker — a filled disc + halo ring with a ×N count badge, round on
-purpose so it can never be confused with the diamond pips (filled = one
-instant, hollow = cancelled) — never a duration bar: an instantaneous
-event has no length, and neither does a pile of them. The cluster packs
+×N marker — the SAME diamond pip as a single instant, with a ×N count
+badge beside it: the badge alone carries the group meaning (membership
+is exactly "would visually overlap", so a badged pip can only ever BE a
+cluster) — never a duration bar: an instantaneous event has no length,
+and neither does a pile of them. The cluster packs
 as ONE row slot spanning its member extent, so a burst of coincident
 instants can't blow up the lane height; membership depends only on time
 deltas and the scale, so panning never re-clusters (no jitter — the
@@ -466,7 +467,7 @@ Viewport / follow:
 
 Legend (the "?" pill): a small button stacked above the fullscreen
   toggle opens an in-place glyph dictionary — the component-owned
-  vocabulary (filled/hollow instant pips, the ×N cluster disc, the
+  vocabulary (filled/hollow instant pips, the ×N cluster badge, the
   failed stipple + bang, hatched wait/queued phases, dim de-emphasis,
   the cancelled span's dashed hollow + terminal kill cut, edge fades,
   the minimap window/handles) followed by any consumer `legendEntries`.

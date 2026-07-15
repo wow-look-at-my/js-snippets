@@ -375,7 +375,7 @@ export interface TimelineLegendEntry {
 const LEGEND_ROWS: readonly { swatch: string; text: string }[] = [
   { swatch: 'lg-instant', text: 'instant — a zero-duration event (filled pip)' },
   { swatch: 'lg-cancelled-pip', text: 'cancelled instant (hollow pip)' },
-  { swatch: 'lg-cluster', text: 'cluster of near-coincident instants — zoom in to split, click to zoom there' },
+  { swatch: 'lg-cluster', text: '×N — several instants clustered at this zoom; zoom in or click to split' },
   { swatch: 'lg-bar lg-failed', text: 'failed — stippled body, red border, corner bang' },
   { swatch: 'lg-bar lg-hatch', text: 'hatched phase — a declared wait (lock, group slot, sleep) or queued time' },
   { swatch: 'lg-bar lg-dim', text: 'dim — queued / de-emphasized (labels stay full-contrast)' },
@@ -2947,7 +2947,7 @@ export class TimelineViewElement extends HTMLElement {
     // never demoted to a pip by rounding.
     const trueW = durationWidthPx(n.start, n.end ?? now, rv, plotW);
     if (isInstantWidth(trueW)) {
-      this.drawInstant(ctx, n, style, r.x + r.w / 2, r.y + bh / 2, bh, hovered);
+      this.drawInstant(ctx, style, r.x + r.w / 2, r.y + bh / 2, bh, hovered);
       return;
     }
 
@@ -3146,7 +3146,6 @@ export class TimelineViewElement extends HTMLElement {
 
   private drawInstant(
     ctx: CanvasRenderingContext2D,
-    n: NInterval,
     style: ResolvedStyle,
     cx: number,
     cy: number,
@@ -3226,36 +3225,24 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   /**
-   * A ×N cluster marker: a filled disc + halo ring with a ×N count badge.
-   * ROUND on purpose — a point-like group marker that can never be
-   * confused with the diamond pips (filled diamond = one instant, hollow
-   * diamond = cancelled). Styled by the members' shared state where
-   * uniform (an all-skipped cluster stays skip-flavored) and neutrally
-   * when mixed; sits at the extent midpoint, sliding along the visible
-   * slice at a window edge (clusterMarkerTime). Like pips, clusters get
-   * no edge-continuation fade — a point marker has no clipped extent.
+   * A ×N cluster marker: the SAME diamond pip as a single instant — the
+   * ×N count badge alone carries "several instants live here at this
+   * zoom". There is no collision to disambiguate (markers merge exactly
+   * while they'd visually overlap, so a badged pip can only ever BE a
+   * cluster), and a shape switch just made the group look like a foreign
+   * glyph. Styled by the members' shared state exactly like singles
+   * (all-skipped = dim-filled diamond, all-cancelled = hollow dashed
+   * diamond, mixed = the neutral default); sits at the extent midpoint,
+   * sliding along the visible slice at a window edge (clusterMarkerTime).
+   * Like pips, clusters get no edge-continuation treatment — a point
+   * marker has no clipped extent.
    */
   private drawCluster(ctx: CanvasRenderingContext2D, c: NCluster): void {
     const p = this.clusterPos(c);
     if (!p) return;
     const t = this.theme;
     const style = this.resolved(c.catKey, c.state, null);
-    const rd = Math.max(1.6, p.r * 0.85);
-    ctx.beginPath();
-    ctx.arc(p.cx, p.cy, rd, 0, Math.PI * 2);
-    ctx.fillStyle = style.fill;
-    ctx.fill();
-    ctx.strokeStyle = style.border;
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    // The halo — the "more than one here" cue — only where the track is
-    // tall enough to contain it (compact slivers keep the bare disc).
-    if (p.th >= (rd + 2) * 2) {
-      ctx.beginPath();
-      ctx.arc(p.cx, p.cy, rd + 2, 0, Math.PI * 2);
-      ctx.strokeStyle = withAlpha(style.border, 0.5);
-      ctx.stroke();
-    }
+    this.drawInstant(ctx, style, p.cx, p.cy, p.th, this.hoverClusterId === c.members[0].id);
     // ×N badge — same fit rule as bar labels (suppressed on slivers).
     if (p.th >= t.fontSize + 3) {
       ctx.font = this.fontBar;
@@ -3263,13 +3250,6 @@ export class TimelineViewElement extends HTMLElement {
       ctx.textBaseline = 'middle';
       ctx.fillStyle = style.labelColor;
       ctx.fillText(`×${c.members.length}`, this.textPx(p.cx + p.r + 4), this.textPx(p.cy + 0.5));
-    }
-    if (this.hoverClusterId === c.members[0].id) {
-      ctx.beginPath();
-      ctx.arc(p.cx, p.cy, rd + 3.5, 0, Math.PI * 2);
-      ctx.strokeStyle = withAlpha('#ffffff', 0.75);
-      ctx.lineWidth = 1.25;
-      ctx.stroke();
     }
   }
 
