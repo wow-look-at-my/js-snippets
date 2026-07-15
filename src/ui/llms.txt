@@ -194,7 +194,12 @@ the emphasis color, never the bang, never a solid success body (a border
 dash falls back to solid below ~12px bar width, where dashes read as
 broken corners — the hollow body still separates a tiny cancelled bar
 from a solid one; this solid-below-legibility rule applies to any dashed
-border style). Ongoing intervals (end == null)
+border style). State treatments dim the SPAN BODY only: label text (bar
+labels and the cluster ×N badge — including adapter-composed badge
+strings like queue ordinals) always renders in the full-contrast
+foreground (--timeline-fg), never a muted tone — a dim/queued/waiting
+span is distinguished by its body or glyph, never by unreadable grey
+text. Ongoing intervals (end == null)
 render to the live now edge with a subtly pulsing leading edge (static
 under prefers-reduced-motion; while the feed is STALE they freeze at the
 last vouched timestamp and restyle dim + hatched — see Feed staleness

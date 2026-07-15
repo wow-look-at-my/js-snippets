@@ -303,6 +303,13 @@ interface ResolvedStyle {
   dash: number[] | null;
   pattern: 'solid' | 'hatch' | 'stipple' | 'outline';
   glyph: 'none' | 'bang' | 'dot';
+  /**
+   * Label text color — ALWAYS the full-contrast foreground. State-based
+   * dimming (alphaScale, desaturation) applies to the SPAN BODY only: a
+   * queued/waiting/dim bar mutes its fill, never its text (grey-on-muted
+   * labels were unreadable). A state that needs its label distinguished
+   * uses the body treatment or a glyph, not reduced text contrast.
+   */
   labelColor: string;
 }
 
@@ -1819,7 +1826,7 @@ export class TimelineViewElement extends HTMLElement {
       dash: st.border?.dash ?? null,
       pattern: st.pattern ?? 'solid',
       glyph: st.glyph ?? 'none',
-      labelColor: (st.alphaScale ?? 1) < 0.7 ? t.muted : t.fg,
+      labelColor: t.fg, // body dims, text never does (see ResolvedStyle.labelColor)
     };
     this.colorCache.set(cacheKey, out);
     return out;
