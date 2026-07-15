@@ -48,7 +48,12 @@
  * ⤢ toggle (always visible; `no-fullscreen-button` hides it) flips the
  * reflected `fullscreen` attribute: viewport-fill via position:fixed —
  * deliberately NOT the Fullscreen API — with the page scroll locked while
- * active, Escape to exit, and a 'fullscreenchange' event.
+ * active, Escape to exit, and a 'fullscreenchange' event. A minimap strip
+ * along the bottom (own canvas; hidden with no data, on short hosts, or
+ * via `no-minimap`) shows the full loaded extent as per-lane density
+ * marks with the viewport as a draggable window: edge handles resize it,
+ * grabbing the middle pans it, clicking outside centers it — all through
+ * the same follow/park/loadRange semantics as canvas gestures.
  *
  * FEED STALENESS: every setData/mergeData (or an explicit markFresh())
  * stamps the feed fresh; when `staleAfterMs` (default 10s) passes without
@@ -127,6 +132,12 @@ import {
   clusterInstants,
   clusterMarkerTime,
   clusterZoomView,
+  minimapExtent,
+  minimapWindowRect,
+  minimapHitZone,
+  minimapPan,
+  minimapResize,
+  minimapCenter,
   MIN_BAR_PX,
   expandHitRect,
   hitTestPolyline,
@@ -320,6 +331,13 @@ const EDGE_FADE_PX = 12;
 // laptops/mobiles) sharp instead of compositor-upscaled soft, without the
 // fully-uncapped perf cliff on 4k+ screens.
 const MAX_DPR = 3;
+// The minimap strip's height (CSS px) — the plot canvas cedes this band
+// at the bottom while the strip is visible. One source of truth: the
+// element sets the strip canvas' CSS height from it too.
+const MINIMAP_H = 32;
+// Hosts shorter than this hide the strip: below ~140px the band would eat
+// a third of an already-cramped plot.
+const MINIMAP_MIN_HOST_PX = 140;
 
 // -- The custom element ----------------------------------------------------------------
 
@@ -332,7 +350,8 @@ const MAX_DPR = 3;
  * compact-lane auto-fit), `history-end-text` (boundary label), `empty-text`
  * (empty-state hint), `fullscreen` (reflected viewport-fill mode — see the
  * `fullscreen` property), `no-fullscreen-button` (hide the corner toggle;
- * the property/attribute still work programmatically).
+ * the property/attribute still work programmatically), `no-minimap` (hide
+ * the bottom overview strip).
  *
  * Auto-fit (default ON): each layout pass compares the natural lane stack
  * (every lane at --timeline-track-height) against the host's plot height;
@@ -348,7 +367,7 @@ const MAX_DPR = 3;
  */
 export class TimelineViewElement extends HTMLElement {
   static get observedAttributes(): string[] {
-    return ['no-live-pill', 'no-auto-fit', 'history-end-text', 'empty-text', 'fullscreen', 'no-fullscreen-button'];
+    return ['no-live-pill', 'no-auto-fit', 'history-end-text', 'empty-text', 'fullscreen', 'no-fullscreen-button', 'no-minimap'];
   }
 
   private canvas: HTMLCanvasElement;
@@ -358,6 +377,13 @@ export class TimelineViewElement extends HTMLElement {
   private fsEl: HTMLButtonElement;
   private emptyEl: HTMLDivElement;
   private staleEl: HTMLDivElement;
+
+  // -- Minimap strip --
+  private mmCanvas: HTMLCanvasElement;
+  private mmCtx: CanvasRenderingContext2D | null = null;
+  private mmVisible = false;
+  private mmDrag: { mode: 'left' | 'right' | 'middle'; lastX: number } | null = null;
+  private hadData = false; // data-emptiness edge → re-evaluate strip visibility
 
   // -- Fullscreen (viewport-fill) --
   // While the host carries the `fullscreen` attribute it is position:fixed
@@ -494,6 +520,10 @@ export class TimelineViewElement extends HTMLElement {
       shadow.append(style);
     }
     this.canvas = document.createElement('canvas');
+    this.mmCanvas = document.createElement('canvas');
+    this.mmCanvas.className = 'minimap';
+    this.mmCanvas.style.height = `${MINIMAP_H}px`; // sized here so MINIMAP_H stays the one source of truth
+    this.mmCanvas.hidden = true;
     this.tooltipEl = document.createElement('div');
     this.tooltipEl.className = 'tooltip';
     this.pillEl = document.createElement('button');
@@ -518,7 +548,7 @@ export class TimelineViewElement extends HTMLElement {
     this.staleEl.hidden = true;
     // fsEl precedes pillEl so `.fs-pill[hidden] ~ .live-pill` can reclaim
     // the corner when the toggle is opted out.
-    shadow.append(this.canvas, this.tooltipEl, this.fsEl, this.pillEl, this.emptyEl, this.staleEl);
+    shadow.append(this.canvas, this.mmCanvas, this.tooltipEl, this.fsEl, this.pillEl, this.emptyEl, this.staleEl);
 
     const now = this.nowMs();
     this.view = { start: now - DEFAULT_SPAN_MS, end: now };
@@ -575,6 +605,11 @@ export class TimelineViewElement extends HTMLElement {
     this.canvas.addEventListener('pointerup', this.onPointerUp);
     this.canvas.addEventListener('pointercancel', this.onPointerUp);
     this.canvas.addEventListener('pointerleave', this.onPointerLeave);
+    this.mmCanvas.addEventListener('pointerdown', this.onMMPointerDown);
+    this.mmCanvas.addEventListener('pointermove', this.onMMPointerMove);
+    this.mmCanvas.addEventListener('pointerup', this.onMMPointerUp);
+    this.mmCanvas.addEventListener('pointercancel', this.onMMPointerUp);
+    this.mmCanvas.addEventListener('pointerleave', this.onMMPointerLeave);
     this.addEventListener('keydown', this.onKeyDown);
 
     this.syncScrollLock(); // an already-fullscreen element locks on (re)connect
@@ -607,6 +642,11 @@ export class TimelineViewElement extends HTMLElement {
     this.canvas.removeEventListener('pointerup', this.onPointerUp);
     this.canvas.removeEventListener('pointercancel', this.onPointerUp);
     this.canvas.removeEventListener('pointerleave', this.onPointerLeave);
+    this.mmCanvas.removeEventListener('pointerdown', this.onMMPointerDown);
+    this.mmCanvas.removeEventListener('pointermove', this.onMMPointerMove);
+    this.mmCanvas.removeEventListener('pointerup', this.onMMPointerUp);
+    this.mmCanvas.removeEventListener('pointercancel', this.onMMPointerUp);
+    this.mmCanvas.removeEventListener('pointerleave', this.onMMPointerLeave);
     this.removeEventListener('keydown', this.onKeyDown);
     if (this.raf !== 0) {
       cancelAnimationFrame(this.raf);
@@ -616,6 +656,7 @@ export class TimelineViewElement extends HTMLElement {
 
   attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null): void {
     if (name === 'fullscreen' && oldValue !== newValue) this.applyFullscreen(newValue !== null);
+    if (name === 'no-minimap' && oldValue !== newValue) this.resizeBackingStore(); // strip visibility re-evaluates there
     this.syncChrome();
     this.invalidate();
   }
@@ -1004,6 +1045,13 @@ export class TimelineViewElement extends HTMLElement {
     this.updateVisibleLayout();
     this.autoGutter();
     this.clampLaneScroll();
+    // The minimap shows iff data exists; only the emptiness EDGE re-runs
+    // the (layout-forcing) resize — steady-state merges never touch it.
+    const hasData = this.byId.size > 0;
+    if (hasData !== this.hadData) {
+      this.hadData = hasData;
+      this.resizeBackingStore();
+    }
     this.syncChrome();
     this.invalidate();
   }
@@ -1266,7 +1314,14 @@ export class TimelineViewElement extends HTMLElement {
 
   /** Current pacing tier: any live gesture/tween = full rate; else idle (AC/battery). */
   private renderTier(): RenderTier {
-    if (this.pointers.size > 0 || this.glidePx !== 0 || this.layoutAnim !== null || this.leadAnim !== null || this.edgeAnim !== null)
+    if (
+      this.pointers.size > 0 ||
+      this.mmDrag !== null ||
+      this.glidePx !== 0 ||
+      this.layoutAnim !== null ||
+      this.leadAnim !== null ||
+      this.edgeAnim !== null
+    )
       return 'interactive';
     if (this.perfNow() - this.lastInputTs < INTERACT_GRACE_MS) return 'interactive';
     return this.batteryDischarging ? 'idle-battery' : 'idle';
@@ -1633,11 +1688,34 @@ export class TimelineViewElement extends HTMLElement {
   private resizeBackingStore(): void {
     const raw = typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1;
     const dpr = Math.min(MAX_DPR, raw);
+    const hostH = this.clientHeight;
+    // Minimap visibility is decided here — the one place that already
+    // owns geometry: data must exist, the host must not be opted out or
+    // too short. While visible, the PLOT canvas cedes the strip's band
+    // (cssW/cssH describe the plot canvas only, so every downstream
+    // computation — lane packing, auto-fit, tooltip clamps, hit tests —
+    // stays consistent without knowing the strip exists), and the corner
+    // buttons ride up above the band.
+    const wantMM = !this.hasAttribute('no-minimap') && this.byId.size > 0 && hostH >= MINIMAP_MIN_HOST_PX;
+    if (wantMM !== this.mmVisible) {
+      this.mmVisible = wantMM;
+      this.mmCanvas.hidden = !wantMM;
+      this.canvas.style.height = wantMM ? `calc(100% - ${MINIMAP_H}px)` : '';
+      const lift = wantMM ? `${MINIMAP_H + 10}px` : '';
+      this.pillEl.style.bottom = lift;
+      this.fsEl.style.bottom = lift;
+    }
     const bw = Math.max(1, Math.round(this.clientWidth * dpr));
-    const bh = Math.max(1, Math.round(this.clientHeight * dpr));
-    if (bw === this.canvas.width && bh === this.canvas.height && dpr === this.dpr) return;
+    const bh = Math.max(1, Math.round(Math.max(1, hostH - (wantMM ? MINIMAP_H : 0)) * dpr));
+    const mmBh = Math.max(1, Math.round(MINIMAP_H * dpr));
+    const mmStale = wantMM && (this.mmCanvas.width !== bw || this.mmCanvas.height !== mmBh);
+    if (bw === this.canvas.width && bh === this.canvas.height && dpr === this.dpr && !mmStale) return;
     this.canvas.width = bw;
     this.canvas.height = bh;
+    if (wantMM) {
+      this.mmCanvas.width = bw;
+      this.mmCanvas.height = mmBh;
+    }
     this.dpr = dpr;
     this.cssW = bw / dpr;
     this.cssH = bh / dpr;
@@ -1656,6 +1734,11 @@ export class TimelineViewElement extends HTMLElement {
    */
   private ctx2d(): CanvasRenderingContext2D | null {
     return (this.ctx ??= this.canvas.getContext('2d', { alpha: false }));
+  }
+
+  /** The minimap strip's 2d context — OPAQUE for the same reasons as ctx2d. */
+  private mmCtx2d(): CanvasRenderingContext2D | null {
+    return (this.mmCtx ??= this.mmCanvas.getContext('2d', { alpha: false }));
   }
 
   private readTheme(): void {
@@ -2066,6 +2149,102 @@ export class TimelineViewElement extends HTMLElement {
     e.preventDefault();
   };
 
+  // -- Minimap strip ---------------------------------------------------------------
+
+  /**
+   * The strip's data extent: earliest loaded interval start — widened by
+   * coverage knowledge (the first covered time, the exhausted-history
+   * boundary) — through max(live edge, latest interval end). Null while
+   * nothing is loaded (the strip is hidden then anyway). O(n) over the
+   * loaded intervals; called per drawn frame and per strip pointer event,
+   * both of which already do O(n) work.
+   */
+  private mmExtent(): TimeView | null {
+    let earliest = Infinity;
+    let latest = -Infinity;
+    for (const per of this.perLane) {
+      if (per.length > 0 && per[0].start < earliest) earliest = per[0].start;
+      for (const n of per) {
+        if (n.end !== null && n.end > latest) latest = n.end;
+      }
+    }
+    const cov = this.coverage.coveredRanges();
+    return minimapExtent(
+      Number.isFinite(earliest) ? earliest : null,
+      Number.isFinite(latest) ? latest : null,
+      this.liveEdge(),
+      this.coverage.exhaustedBefore,
+      cov.length > 0 ? cov[0].start : null,
+    );
+  }
+
+  private mmLocalX(e: PointerEvent): { x: number; w: number } {
+    const b = this.mmCanvas.getBoundingClientRect();
+    return { x: e.clientX - b.left, w: Math.max(1, b.width) };
+  }
+
+  private onMMPointerDown = (e: PointerEvent): void => {
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    const ext = this.mmExtent();
+    if (!ext) return;
+    this.noteInput();
+    this.mmCanvas.setPointerCapture(e.pointerId);
+    const { x, w } = this.mmLocalX(e);
+    const zone = minimapHitZone(x, minimapWindowRect(this.view, ext, w));
+    if (zone === 'before' || zone === 'after') {
+      // Click outside the window: center it there (a jump, so follow only
+      // re-engages inside the now snap zone), then drag as a grab.
+      this.applyUserView(minimapCenter(this.view, x, ext, w), { jump: true });
+      this.mmDrag = { mode: 'middle', lastX: x };
+    } else if (zone === 'inside') {
+      this.mmDrag = { mode: 'middle', lastX: x };
+    } else {
+      this.mmDrag = { mode: zone === 'left-handle' ? 'left' : 'right', lastX: x };
+    }
+    this.mmCanvas.style.cursor = this.mmDrag.mode === 'middle' ? 'grabbing' : 'ew-resize';
+    this.focus({ preventScroll: true });
+  };
+
+  private onMMPointerMove = (e: PointerEvent): void => {
+    const { x, w } = this.mmLocalX(e);
+    const ext = this.mmExtent();
+    const d = this.mmDrag;
+    if (!d) {
+      if (ext) {
+        const zone = minimapHitZone(x, minimapWindowRect(this.view, ext, w));
+        this.mmCanvas.style.cursor =
+          zone === 'left-handle' || zone === 'right-handle' ? 'ew-resize' : zone === 'inside' ? 'grab' : 'pointer';
+      }
+      return;
+    }
+    if (!ext) return;
+    this.noteInput();
+    if (d.mode === 'middle') {
+      // Grab-the-middle: constant-width pan, 1:1 under the pointer. The
+      // SAME code path as a canvas pan ({pan: true}), so a backward drag
+      // disengages follow and docking at the live edge re-engages it.
+      const dx = x - d.lastX;
+      d.lastX = x;
+      if (dx !== 0) this.applyUserView(minimapPan(this.view, dx, ext, w), { pan: true });
+    } else {
+      // Handles: the left edge is zoom-like (a pinned live edge stays
+      // pinned — dragging it only changes the span); the right edge is
+      // pan-like, so pulling the window's end backward disengages follow
+      // instead of fighting the per-frame pin.
+      this.applyUserView(minimapResize(this.view, d.mode, x, ext, w), { pan: d.mode === 'right' });
+    }
+  };
+
+  private onMMPointerUp = (e: PointerEvent): void => {
+    if (this.mmDrag !== null && this.mmCanvas.hasPointerCapture(e.pointerId)) this.mmCanvas.releasePointerCapture(e.pointerId);
+    this.mmDrag = null;
+    this.mmCanvas.style.cursor = '';
+  };
+
+  private onMMPointerLeave = (): void => {
+    if (this.mmDrag === null) this.mmCanvas.style.cursor = '';
+  };
+
   // -- Hover / tooltip -----------------------------------------------------------
 
   private updateHover(x: number, y: number, e: MouseEvent): void {
@@ -2315,6 +2494,83 @@ export class TimelineViewElement extends HTMLElement {
     ctx.moveTo(0, yAxis);
     ctx.lineTo(w, yAxis);
     ctx.stroke();
+
+    this.drawMinimap();
+  }
+
+  /**
+   * The minimap strip: the FULL loaded extent (mmExtent) as per-lane
+   * collapsed density marks in category hues at low alpha (no text), the
+   * live edge as a now tick, and the current viewport as a brighter
+   * window rect with grabbable edge handles. Rendered only from draw() —
+   * the strip repaints exactly when the main chart does (same rAF loop,
+   * same dirty flag, same idle pacing), never on its own schedule.
+   */
+  private drawMinimap(): void {
+    if (!this.mmVisible) return;
+    const ctx = this.mmCtx2d();
+    if (!ctx || this.cssW < 4) return;
+    const t = this.theme;
+    const dpr = this.dpr;
+    const w = this.cssW;
+    const h = MINIMAP_H;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = t.bg;
+    ctx.fillRect(0, 0, w, h);
+    // A faint band tint + top hairline set the strip off from the plot.
+    ctx.fillStyle = 'rgba(128, 138, 158, 0.05)';
+    ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = t.hairline;
+    ctx.lineWidth = 1 / dpr;
+    ctx.beginPath();
+    const yTop = snap(0, dpr);
+    ctx.moveTo(0, yTop);
+    ctx.lineTo(w, yTop);
+    ctx.stroke();
+    const ext = this.mmExtent();
+    if (!ext) return;
+    const now = this.liveEdge();
+    // Per-lane collapsed density marks. Sub-pixel runs stay ≥ 1px so the
+    // low-alpha marks accumulate into a density read where they pile up.
+    const laneN = this.perLane.length;
+    const padY = 3;
+    const rowH = laneN > 0 ? (h - padY * 2) / laneN : 0;
+    const markH = Math.max(1, Math.min(rowH * 0.75, 6));
+    const dim = new Map<string, string>();
+    for (let li = 0; li < laneN; li++) {
+      const per = this.perLane[li];
+      const y = padY + li * rowH + (rowH - markH) / 2;
+      for (const n of per) {
+        const x0 = timeToX(n.start, ext, w);
+        if (x0 > w) break; // sorted by start
+        const x1 = timeToX(n.end ?? now, ext, w);
+        if (x1 < 0) continue;
+        let fill = dim.get(n.catKey);
+        if (fill === undefined) {
+          fill = withAlpha(this.resolved(n.catKey, '', null).fill, 0.55);
+          dim.set(n.catKey, fill);
+        }
+        ctx.fillStyle = fill;
+        ctx.fillRect(x0, y, Math.max(x1 - x0, 1), markH);
+      }
+    }
+    // The live edge, frozen + muted while the feed is stale (the main
+    // now line's language).
+    const nx = timeToX(now, ext, w);
+    if (nx >= 0 && nx <= w) {
+      ctx.fillStyle = this.feedStale ? t.muted : withAlpha(t.now, 0.8);
+      ctx.fillRect(nx - 0.5, 0, 1, h);
+    }
+    // The visible window: brighter rect + edge handle bars.
+    const rect = minimapWindowRect(this.view, ext, w);
+    ctx.fillStyle = withAlpha(t.fg, 0.1);
+    ctx.fillRect(rect.x0, 0, rect.x1 - rect.x0, h);
+    ctx.strokeStyle = withAlpha(t.fg, 0.35);
+    ctx.lineWidth = 1;
+    ctx.strokeRect(rect.x0, 0.5, rect.x1 - rect.x0, h - 1);
+    ctx.fillStyle = withAlpha(t.fg, 0.75);
+    ctx.fillRect(rect.x0 - 1.5, 1, 3, h - 2);
+    ctx.fillRect(rect.x1 - 1.5, 1, 3, h - 2);
   }
 
   /**

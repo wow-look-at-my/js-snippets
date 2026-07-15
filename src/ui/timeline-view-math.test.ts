@@ -8,9 +8,12 @@
 // incl. coincident instants), lane layout (incl. per-lane track heights),
 // auto-fit compact-lane demotion (tallest-first order, hysteresis,
 // stability under viewport translation), label fitting, instant-width
-// thresholds (duration-based, translation-stable), hit testing, connector
-// routing, category hue hashing, coverage / range-request bookkeeping
-// (incl. the loadRange request-flood regression), and render-loop pacing.
+// thresholds (duration-based, translation-stable), the minimap strip's
+// window math (extent derivation, px mapping + crop, handle hit zones,
+// pan/resize/center drags with extent + span clamps), hit testing,
+// connector routing, category hue hashing, coverage / range-request
+// bookkeeping (incl. the loadRange request-flood regression), and
+// render-loop pacing.
 // The element itself (ui/timeline-view.ts) is canvas/DOM-bound and not
 // node-testable — see the Testing section in CLAUDE.md.
 
@@ -80,6 +83,14 @@ import {
   clusterMarkerTime,
   CLUSTER_JOIN_PX,
   CLUSTER_ZOOM_FILL_FRAC,
+  minimapExtent,
+  minimapWindowRect,
+  minimapHitZone,
+  minimapPan,
+  minimapResize,
+  minimapCenter,
+  MINIMAP_HANDLE_HIT_PX,
+  MINIMAP_MIN_WINDOW_PX,
   laneHeight,
   demotionOrder,
   computeAutoFit,
@@ -1800,6 +1811,155 @@ test('clusterMarkerTime: midpoint while fully visible; slides at a clipped edge;
     if (prev !== null) assert.ok(Math.abs(t - prev) <= 10 + 1e-9, `pan step moves the marker ≤ the pan step`);
     prev = t;
   }
+});
+
+// -- Minimap strip -----------------------------------------------------------------
+
+test('minimapExtent: spans the earliest known start through max(now, latest end); null with no data', () => {
+  // No start knowledge of any kind → no extent (the strip hides).
+  assert.equal(minimapExtent(null, null, 1_000_000), null);
+  // Plain data: earliest interval → now (now past the latest end).
+  assert.deepEqual(minimapExtent(500_000, 800_000, 1_000_000), { start: 500_000, end: 1_000_000 });
+  // A latest end past now (future-dated terminal) extends the end.
+  assert.deepEqual(minimapExtent(500_000, 1_200_000, 1_000_000), { start: 500_000, end: 1_200_000 });
+  // Coverage knowledge widens the start: loaded-but-empty history and the
+  // exhausted boundary are both part of the overview.
+  assert.deepEqual(minimapExtent(500_000, null, 1_000_000, null, 300_000), { start: 300_000, end: 1_000_000 });
+  assert.deepEqual(minimapExtent(500_000, null, 1_000_000, 100_000, 300_000), { start: 100_000, end: 1_000_000 });
+  // Coverage alone (no intervals) is still an extent.
+  assert.deepEqual(minimapExtent(null, null, 1_000_000, null, 700_000), { start: 700_000, end: 1_000_000 });
+});
+
+test('minimapExtent: a degenerate/tiny span is padded backward to the minimum', () => {
+  // A single instant at "now": pad backward so the strip has a real domain.
+  assert.deepEqual(minimapExtent(1_000_000, null, 1_000_000, null, null, 60_000), { start: 940_000, end: 1_000_000 });
+  // Just under the pad: widened to exactly the pad, end anchored.
+  assert.deepEqual(minimapExtent(999_000, null, 1_000_000, null, null, 60_000), { start: 940_000, end: 1_000_000 });
+  // At/above the pad: untouched.
+  assert.deepEqual(minimapExtent(940_000, null, 1_000_000, null, null, 60_000), { start: 940_000, end: 1_000_000 });
+});
+
+test('minimapWindowRect: maps the view into strip px and crops at the strip edges', () => {
+  const extent: TimeView = { start: 0, end: 10_000 };
+  // Interior window: exact linear mapping.
+  assert.deepEqual(minimapWindowRect({ start: 2_000, end: 6_000 }, extent, 1_000), { x0: 200, x1: 600 });
+  // A view hanging past the extent start: CROPPED at 0 (never slid to a
+  // lying position), the visible remainder honest.
+  assert.deepEqual(minimapWindowRect({ start: -2_000, end: 4_000 }, extent, 1_000), { x0: 0, x1: 400 });
+  // Symmetric at the live end.
+  assert.deepEqual(minimapWindowRect({ start: 8_000, end: 12_000 }, extent, 1_000), { x0: 800, x1: 1_000 });
+  // Degenerate extent/width: the whole strip.
+  assert.deepEqual(minimapWindowRect({ start: 0, end: 1 }, { start: 5, end: 5 }, 1_000), { x0: 0, x1: 1_000 });
+  assert.deepEqual(minimapWindowRect({ start: 0, end: 1 }, extent, 0), { x0: 0, x1: 0 });
+});
+
+test('minimapWindowRect: a tiny window keeps a minimum visual width; fully outside pins a sliver at the nearer edge', () => {
+  const extent: TimeView = { start: 0, end: 1_000_000 };
+  // A 10-min window on a week-long extent maps under a pixel — expanded
+  // around its center to MINIMAP_MIN_WINDOW_PX so it stays grabbable.
+  const r = minimapWindowRect({ start: 500_000, end: 500_100 }, extent, 1_000);
+  assert.ok(Math.abs(r.x1 - r.x0 - MINIMAP_MIN_WINDOW_PX) < 1e-9, 'expanded to the minimum');
+  assert.ok(Math.abs((r.x0 + r.x1) / 2 - 500.05) < 1e-6, 'centered where the window is');
+  // Entirely before the extent: a sliver pinned at the left edge.
+  assert.deepEqual(minimapWindowRect({ start: -900_000, end: -800_000 }, extent, 1_000), { x0: 0, x1: MINIMAP_MIN_WINDOW_PX });
+  // Entirely after: pinned right.
+  assert.deepEqual(minimapWindowRect({ start: 2_000_000, end: 2_100_000 }, extent, 1_000), {
+    x0: 1_000 - MINIMAP_MIN_WINDOW_PX,
+    x1: 1_000,
+  });
+});
+
+test('minimapHitZone: handles win over the middle, zones reach outside the rect, boundaries exact', () => {
+  const rect = { x0: 200, x1: 400 };
+  const hit = MINIMAP_HANDLE_HIT_PX;
+  // Outside reach: exactly hitPx away is still the handle; just past is not.
+  assert.equal(minimapHitZone(200 - hit, rect), 'left-handle');
+  assert.equal(minimapHitZone(200 - hit - 0.01, rect), 'before');
+  assert.equal(minimapHitZone(400 + hit, rect), 'right-handle');
+  assert.equal(minimapHitZone(400 + hit + 0.01, rect), 'after');
+  // Inside reach: hitPx into a WIDE window still grabs the handle…
+  assert.equal(minimapHitZone(200 + hit, rect), 'left-handle');
+  assert.equal(minimapHitZone(400 - hit, rect), 'right-handle');
+  // …and past it is the grabbable middle.
+  assert.equal(minimapHitZone(200 + hit + 0.01, rect), 'inside');
+  assert.equal(minimapHitZone(300, rect), 'inside');
+});
+
+test('minimapHitZone: a narrow window keeps a grabbable middle (inside reach shrinks with the window)', () => {
+  // 12px window: inside reach shrinks to width/4 = 3px, so the center
+  // stays 'inside' instead of the 8px handle zones swallowing it.
+  const rect = { x0: 100, x1: 112 };
+  assert.equal(minimapHitZone(106, rect), 'inside');
+  assert.equal(minimapHitZone(102, rect), 'left-handle');
+  assert.equal(minimapHitZone(110, rect), 'right-handle');
+  // The width/4 rule keeps the two handle zones disjoint on ANY
+  // nonzero-width window — even a 4px one keeps its 2px middle.
+  const tiny = { x0: 100, x1: 104 };
+  assert.equal(minimapHitZone(101, tiny), 'left-handle');
+  assert.equal(minimapHitZone(103, tiny), 'right-handle');
+  assert.equal(minimapHitZone(102, tiny), 'inside');
+  // Zero-width rect (not producible by minimapWindowRect, but total): the
+  // exact edge is the one overlap — the nearer-handle tie goes left.
+  assert.equal(minimapHitZone(100, { x0: 100, x1: 100 }), 'left-handle');
+});
+
+test('minimapPan: pixel deltas pan at the extent scale; clamps at both extent edges', () => {
+  const extent: TimeView = { start: 0, end: 10_000 };
+  const view: TimeView = { start: 2_000, end: 4_000 };
+  // +100px on a 1000px strip = +10% of the extent = +1000ms.
+  assert.deepEqual(minimapPan(view, 100, extent, 1_000), { start: 3_000, end: 5_000 });
+  assert.deepEqual(minimapPan(view, -100, extent, 1_000), { start: 1_000, end: 3_000 });
+  // Clamped at the extent start (span preserved)…
+  assert.deepEqual(minimapPan(view, -500, extent, 1_000), { start: 0, end: 2_000 });
+  // …and at the live end.
+  assert.deepEqual(minimapPan(view, 900, extent, 1_000), { start: 8_000, end: 10_000 });
+  // A window wider than the whole extent pins to the live end.
+  assert.deepEqual(minimapPan({ start: -20_000, end: 0 }, 50, extent, 1_000), { start: -10_000, end: 10_000 });
+  // Degenerate inputs: unchanged (fresh object, same values).
+  assert.deepEqual(minimapPan(view, 100, { start: 5, end: 5 }, 1_000), view);
+  assert.deepEqual(minimapPan(view, 100, extent, 0), view);
+});
+
+test('minimapResize: each handle drags its edge, clamped to the extent and the span limits', () => {
+  const extent: TimeView = { start: 0, end: 100_000 };
+  const view: TimeView = { start: 40_000, end: 60_000 };
+  // Left handle to x=200 on a 1000px strip → t = 20_000.
+  assert.deepEqual(minimapResize(view, 'left', 200, extent, 1_000), { start: 20_000, end: 60_000 });
+  // Right handle to x=800 → t = 80_000.
+  assert.deepEqual(minimapResize(view, 'right', 800, extent, 1_000), { start: 40_000, end: 80_000 });
+  // Pointer past the strip ends clamps to the extent edges.
+  assert.deepEqual(minimapResize(view, 'left', -50, extent, 1_000), { start: 0, end: 60_000 });
+  assert.deepEqual(minimapResize(view, 'right', 1_500, extent, 1_000), { start: 40_000, end: 100_000 });
+  // The span ceiling holds: a huge extent can't stretch a window past MAX_SPAN_MS.
+  const wide: TimeView = { start: 0, end: 30 * 86_400_000 };
+  const atEnd: TimeView = { start: wide.end - 1_000_000, end: wide.end };
+  assert.deepEqual(minimapResize(atEnd, 'left', 0, wide, 1_000), { start: wide.end - MAX_SPAN_MS, end: wide.end });
+  // Degenerate extent/width: unchanged.
+  assert.deepEqual(minimapResize(view, 'left', 200, { start: 5, end: 5 }, 1_000), view);
+});
+
+test('minimapResize: dragging a handle past (or into) the other CLAMPS at the min span — never flips', () => {
+  const extent: TimeView = { start: 0, end: 100_000 };
+  const view: TimeView = { start: 40_000, end: 60_000 };
+  // Left handle dragged way past the right edge: parks at end - MIN_SPAN_MS.
+  assert.deepEqual(minimapResize(view, 'left', 900, extent, 1_000), { start: 60_000 - MIN_SPAN_MS, end: 60_000 });
+  // Right handle dragged way past the left edge: parks at start + MIN_SPAN_MS.
+  assert.deepEqual(minimapResize(view, 'right', 100, extent, 1_000), { start: 40_000, end: 40_000 + MIN_SPAN_MS });
+  // The min-span floor wins over the extent clamp near the extent's ends.
+  const nearStart: TimeView = { start: 0, end: 1_000 };
+  const r = minimapResize(nearStart, 'right', 0, extent, 1_000);
+  assert.deepEqual(r, { start: 0, end: MIN_SPAN_MS });
+});
+
+test('minimapCenter: centers the window at the clicked time at constant span; extent-clamped', () => {
+  const extent: TimeView = { start: 0, end: 10_000 };
+  const view: TimeView = { start: 1_000, end: 3_000 };
+  assert.deepEqual(minimapCenter(view, 700, extent, 1_000), { start: 6_000, end: 8_000 });
+  // Near the edges the window slides inside instead of hanging out.
+  assert.deepEqual(minimapCenter(view, 0, extent, 1_000), { start: 0, end: 2_000 });
+  assert.deepEqual(minimapCenter(view, 1_000, extent, 1_000), { start: 8_000, end: 10_000 });
+  // Degenerate: unchanged.
+  assert.deepEqual(minimapCenter(view, 500, extent, 0), view);
 });
 
 // -- historyProbe (the request-flood regression) -----------------------------------------

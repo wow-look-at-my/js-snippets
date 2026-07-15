@@ -246,6 +246,34 @@ never spill into neighboring bars — and stick to the plot edge while a
 bar's start is scrolled off-screen (just past the continuation fade when
 one is active).
 
+A MINIMAP strip (32px, its own canvas) runs along the bottom while data
+exists: the FULL loaded extent — earliest loaded interval widened by
+coverage knowledge (first covered time, the exhausted-history boundary)
+through max(now, latest end) — as per-lane collapsed density marks in
+category hues at low alpha (no text; sub-pixel runs stay ≥1px so piles
+read as density), a now tick (muted while stale), and the current
+viewport as a brighter window rect with grabbable LEFT/RIGHT handles.
+Dragging a handle adjusts that window edge live (clamped to the extent
+and the ~2s..~7d span limits; dragging one handle past the other CLAMPS
+at the minimum span, never flips); dragging the middle pans the window
+at constant width (1:1 under the pointer, clamped inside the extent);
+clicking the strip outside the window centers the window there and
+continues as a grab. Handle hit zones are generous (~8px, reaching
+outside the rect but shrinking inside so even a narrow window keeps a
+grabbable middle; the window rect itself never draws under ~6px).
+Minimap gestures go through the SAME view semantics as canvas gestures:
+a middle/right-handle drag is pan-like (backward disengages follow;
+docking at the live edge re-engages), the left handle is zoom-like (a
+pinned live edge stays pinned), and moving into uncovered past fires
+loadRange exactly like panning there. The strip repaints only when the
+main chart draws (same rAF loop, same idle pacing). It hides — ceding
+its band back to the plot — when there is no data, when the host is
+shorter than ~140px, or with the no-minimap attribute; the plot canvas,
+lane packing, auto-fit, tooltip clamps, and hit-testing all size against
+the remaining plot area automatically, and the corner buttons ride up
+above the strip. Fullscreen and the minimap compose (the strip stays at
+the bottom of the filled viewport).
+
 Importing the module auto-registers <timeline-view> (unless the tag is
 taken).
 
@@ -435,7 +463,7 @@ compact-lane auto-fit — every lane keeps the full track height),
 history-end-text (boundary label, default 'history ends here'),
 empty-text (empty-state hint), fullscreen (reflected viewport-fill mode
 — see the fullscreen property), no-fullscreen-button (hide the corner
-fullscreen toggle).
+fullscreen toggle), no-minimap (hide the bottom minimap strip).
 
 Interaction: plain wheel / two-finger scroll — deltaX ALWAYS pans time;
 plain deltaY scrolls the lane stack when it overflows the host and is
@@ -620,6 +648,31 @@ Exports:
     anchor: the extent midpoint, slid along the visible slice when a
     window edge clips the extent — the sticky-label pattern — inset by
     marginMs; null once nothing of the extent is visible).
+  Minimap strip: minimapExtent(earliestStart, latestEnd, now,
+    exhaustedBefore?, coveredStart?, minSpanMs?) → TimeView | null (the
+    strip's data extent: the earliest known start — interval, first
+    covered time, or exhausted boundary, whichever is oldest — through
+    max(now, latest end); null with no start knowledge; degenerate spans
+    pad backward to minSpanMs (60s)), minimapWindowRect(view, extent,
+    width, minPx?) → {x0, x1} (the viewport mapped into strip px, CROPPED
+    at the strip edges — never slid to a lying position — with
+    MINIMAP_MIN_WINDOW_PX (6) enforced around the center before cropping;
+    fully-outside views pin a sliver at the nearer edge),
+    minimapHitZone(x, rect, hitPx?) → 'left-handle' | 'right-handle' |
+    'inside' | 'before' | 'after' (handles win over the middle; zones
+    reach MINIMAP_HANDLE_HIT_PX (8) outside the rect but only
+    min(hitPx, width/4) inside it, so a narrow window keeps a grabbable
+    middle), minimapPan(view, dxPx, extent, width) → TimeView
+    (grab-the-middle: constant-span pan by a pixel delta at the extent's
+    scale, clamped inside the extent; wider-than-extent windows pin to
+    the live end), minimapResize(view, 'left'|'right', xPx, extent,
+    width, minSpan?, maxSpan?) → TimeView (drag one window edge to a
+    strip x, clamped to the extent and [MIN_SPAN_MS, MAX_SPAN_MS];
+    dragging past the other handle CLAMPS at the min span — never flips;
+    the min-span floor wins over the extent clamp),
+    minimapCenter(view, xPx, extent, width) → TimeView (click outside
+    the window: re-center at the clicked time, span preserved,
+    extent-clamped). Types: MinimapWindowRect, MinimapZone.
   Hit testing: expandHitRect(rect, minW) (widen instants' hit targets),
     hitTestRects(x, y, rects) (topmost = last; -1 on miss),
     distSqToSegment(px, py, ax, ay, bx, by), hitTestPolyline(px, py, pts,

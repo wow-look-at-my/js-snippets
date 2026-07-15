@@ -65,6 +65,18 @@ canvas {
   overscroll-behavior: none; /* belt to the :host rule (no-op unless a UA treats the canvas as chainable) */
 }
 
+/* The minimap strip: a slim overview band along the bottom. Position only —
+ * its height (and the plot canvas ceding the band) is set inline by the
+ * element so MINIMAP_H has one source of truth. bottom/left/right come
+ * from the base canvas rule's inset. */
+canvas.minimap {
+  top: auto;
+}
+
+canvas.minimap[hidden] {
+  display: none;
+}
+
 /* -- Tooltip ---------------------------------------------------------------- */
 
 .tooltip {

@@ -11,9 +11,11 @@
 // reshuffling while you watch), lane layout, auto-fit lane demotion (compact
 // track heights, tallest lanes first, hysteretic), label-fit and instant-interval
 // (zero/near-zero DURATION) helpers, scale-aware clustering of instant
-// markers (clusters split as you zoom in), stable category → hue hashing,
-// data-coverage / range-request bookkeeping for async history loading,
-// render-loop pacing tiers, and hit-testing. No DOM or browser APIs —
+// markers (clusters split as you zoom in), the minimap strip's window
+// math (extent derivation, px mapping, handle hit zones, drag/resize/
+// center semantics with extent + span clamps), stable category → hue
+// hashing, data-coverage / range-request bookkeeping for async history
+// loading, render-loop pacing tiers, and hit-testing. No DOM or browser APIs —
 // everything here runs (and is tested) under node; ui/timeline-view.ts is
 // the canvas-bound half that consumes it.
 
@@ -1060,6 +1062,154 @@ export function clusterMarkerTime(extent: TimeRange, view: TimeView, marginMs: n
     hi = Math.min(extent.end, view.end);
   }
   return Math.min(Math.max(mid, lo), hi);
+}
+
+// -- Minimap strip ------------------------------------------------------------------
+
+/** Half-width (CSS px) of a minimap handle's hit zone — generously past the drawn bar. */
+export const MINIMAP_HANDLE_HIT_PX = 8;
+/** Minimum drawn width (CSS px) of the minimap's window rect — a 10-min window on a week-long extent stays visible and grabbable. */
+export const MINIMAP_MIN_WINDOW_PX = 6;
+
+/** The minimap window rect's horizontal extent, in strip px. */
+export interface MinimapWindowRect {
+  x0: number;
+  x1: number;
+}
+
+/** What a strip x coordinate lands on (see minimapHitZone). */
+export type MinimapZone = 'left-handle' | 'right-handle' | 'inside' | 'before' | 'after';
+
+/**
+ * The strip's data extent, from what the element knows: the earliest
+ * loaded interval start — widened by coverage knowledge where it helps
+ * (the first covered time and the exhausted-history boundary both count:
+ * loaded-but-empty history and the known start of time are part of the
+ * overview) — through max(now, the latest interval end). Null when no
+ * start is known at all (nothing loaded — the strip hides). A
+ * degenerate/tiny extent is padded backward to `minSpanMs` so the strip
+ * never divides by zero and a single instant still reads as a region.
+ */
+export function minimapExtent(
+  earliestStart: number | null,
+  latestEnd: number | null,
+  now: number,
+  exhaustedBefore: number | null = null,
+  coveredStart: number | null = null,
+  minSpanMs = 60_000,
+): TimeView | null {
+  let start = Infinity;
+  if (earliestStart != null) start = Math.min(start, earliestStart);
+  if (coveredStart != null) start = Math.min(start, coveredStart);
+  if (exhaustedBefore != null) start = Math.min(start, exhaustedBefore);
+  if (!Number.isFinite(start)) return null;
+  const end = latestEnd != null && latestEnd > now ? latestEnd : now;
+  if (end - start < minSpanMs) start = end - minSpanMs;
+  return { start, end };
+}
+
+/**
+ * Map the viewport into strip px: the window rect, CROPPED to the strip
+ * (a view hanging past the extent shows truncated at the strip edge —
+ * never slid to a lying position), with a minimum visual width applied
+ * around the center BEFORE cropping (a tiny window on a huge extent
+ * stays visible); a view entirely outside the extent pins a minimum
+ * sliver at the nearer strip edge. Degenerate extent/width yields the
+ * full strip.
+ */
+export function minimapWindowRect(
+  view: TimeView,
+  extent: TimeView,
+  width: number,
+  minPx = MINIMAP_MIN_WINDOW_PX,
+): MinimapWindowRect {
+  if (!(extent.end - extent.start > 0) || !(width > 0)) return { x0: 0, x1: Math.max(0, width) };
+  let x0 = timeToX(view.start, extent, width);
+  let x1 = timeToX(view.end, extent, width);
+  if (x1 - x0 < minPx) {
+    const c = (x0 + x1) / 2;
+    x0 = c - minPx / 2;
+    x1 = c + minPx / 2;
+  }
+  if (x1 <= 0) return { x0: 0, x1: Math.min(minPx, width) };
+  if (x0 >= width) return { x0: Math.max(0, width - minPx), x1: width };
+  return { x0: Math.max(0, x0), x1: Math.min(width, x1) };
+}
+
+/**
+ * Hit-test a strip x against the window rect. Handles win over the
+ * middle and their zones reach `hitPx` OUTSIDE the rect (generous grab
+ * targets) but only min(hitPx, windowWidth/4) INSIDE it — a narrow
+ * window keeps a grabbable middle instead of the handle zones swallowing
+ * it. When both handle zones cover x (tiny window), the nearer handle
+ * wins (ties go left). Outside everything: 'before'/'after' — the
+ * click-to-center zones.
+ */
+export function minimapHitZone(x: number, rect: MinimapWindowRect, hitPx = MINIMAP_HANDLE_HIT_PX): MinimapZone {
+  const inReach = Math.min(hitPx, (rect.x1 - rect.x0) / 4);
+  const leftHit = x >= rect.x0 - hitPx && x <= rect.x0 + inReach;
+  const rightHit = x >= rect.x1 - inReach && x <= rect.x1 + hitPx;
+  if (leftHit && rightHit) return x - rect.x0 <= rect.x1 - x ? 'left-handle' : 'right-handle';
+  if (leftHit) return 'left-handle';
+  if (rightHit) return 'right-handle';
+  if (x > rect.x0 && x < rect.x1) return 'inside';
+  return x < rect.x0 ? 'before' : 'after';
+}
+
+/** Slide a window fully inside the extent (span preserved; wider-than-extent pins to the live end). */
+function clampWindowToExtent(next: TimeView, extent: TimeView): TimeView {
+  const span = next.end - next.start;
+  if (span >= extent.end - extent.start) return { start: extent.end - span, end: extent.end };
+  if (next.start < extent.start) return { start: extent.start, end: extent.start + span };
+  if (next.end > extent.end) return { start: extent.end - span, end: extent.end };
+  return next;
+}
+
+/**
+ * Grab-the-middle: pan the window by a pointer delta in strip px, span
+ * preserved, clamped inside the extent at both ends (a window wider than
+ * the whole extent pins to the extent's live end). Pixel-delta based so
+ * a drag stays 1:1 under the pointer even while the extent's live end
+ * advances mid-drag.
+ */
+export function minimapPan(view: TimeView, dxPx: number, extent: TimeView, width: number): TimeView {
+  if (!(extent.end - extent.start > 0) || !(width > 0)) return { start: view.start, end: view.end };
+  return clampWindowToExtent(panView(view, (dxPx * (extent.end - extent.start)) / width), extent);
+}
+
+/**
+ * Drag one window edge to the strip x. The dragged edge is clamped to
+ * the extent and to [minSpan, maxSpan] against the fixed opposite edge —
+ * dragging a handle past (or into) the other CLAMPS at the minimum span,
+ * it never flips which edge is which mid-drag. The min-span floor wins
+ * over the extent clamp (the window must stay a valid view even inside
+ * a tiny extent).
+ */
+export function minimapResize(
+  view: TimeView,
+  edge: 'left' | 'right',
+  xPx: number,
+  extent: TimeView,
+  width: number,
+  minSpan = MIN_SPAN_MS,
+  maxSpan = MAX_SPAN_MS,
+): TimeView {
+  if (!(extent.end - extent.start > 0) || !(width > 0)) return { start: view.start, end: view.end };
+  const t = xToTime(Math.min(Math.max(xPx, 0), width), extent, width);
+  if (edge === 'left') {
+    const start = Math.min(Math.max(t, extent.start, view.end - maxSpan), view.end - minSpan);
+    return { start, end: view.end };
+  }
+  const end = Math.max(Math.min(t, extent.end, view.start + maxSpan), view.start + minSpan);
+  return { start: view.start, end };
+}
+
+/** Click outside the window: re-center it at the clicked time, span preserved, extent-clamped like a pan. */
+export function minimapCenter(view: TimeView, xPx: number, extent: TimeView, width: number): TimeView {
+  if (!(extent.end - extent.start > 0) || !(width > 0)) return { start: view.start, end: view.end };
+  const span = view.end - view.start;
+  const t = xToTime(Math.min(Math.max(xPx, 0), width), extent, width);
+  return clampWindowToExtent({ start: t - span / 2, end: t + span / 2 }, extent);
 }
 
 // -- Hit testing --------------------------------------------------------------------
