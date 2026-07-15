@@ -185,7 +185,7 @@ with a small deterministic tone offset so near hues still separate.
 Rendering STYLE encodes state/phase via a named style map: interval.state
 and segment.kind look up a treatment {pattern solid|hatch|stipple|outline,
 alphaScale, saturationScale, lightnessScale, border {width, dash,
-emphasis}, glyph none|bang|dot}. Built-ins: '' solid; 'emphasis'/'failed'
+emphasis}, glyph none|bang|dot, dimmed}. Built-ins: '' solid; 'emphasis'/'failed'
 unmissable (2px emphasis border + corner bang glyph + stipple — hue
 untouched); 'dim'/'queued' translucent + desaturated; 'hatch'/'waiting'
 45-degree stripes; 'outline' hollow; 'cancelled' hollow + DASHED
@@ -197,12 +197,19 @@ from a solid one; this solid-below-legibility rule applies to any dashed
 border style on bars. Instant PIPS are exempt: a cancelled pip keeps its
 dashed diamond outline — the declared pattern is rescaled so 3-5 whole
 dash cycles close around the perimeter — so a cancelled instant carries
-the same dashed signature as a cancelled span). State treatments dim the SPAN BODY only: label text (bar
-labels and the cluster ×N badge — including adapter-composed badge
-strings like queue ordinals) always renders in the full-contrast
-foreground (--timeline-fg), never a muted tone — a dim/queued/waiting
-span is distinguished by its body or glyph, never by unreadable grey
-text. Ongoing intervals (end == null)
+the same dashed signature as a cancelled span). A style with `dimmed: true`
+(the dim/queued/hatch/waiting built-ins) renders as ONE uniform filter
+over the whole region: fill, hatching, border, and the label/badge text
+over it (bar labels, the cluster ×N badge, adapter-composed badge
+strings like queue ordinals) all get the same dimColor transform (50%
+saturation, 50% value — hue and alpha untouched), so the section reads
+quieter than a running span while text keeps the SAME relative
+text-vs-fill contrast (text never dims independently of — or more
+than — its section, which is what made grey-on-muted labels
+unreadable). The label's anchor point decides which section it belongs
+to: anchored inside a dimmed segment's visible slice, it takes that
+section's dimmed text color; otherwise the full-contrast foreground
+(--timeline-fg). Ongoing intervals (end == null)
 render to the live now edge with a subtly pulsing leading edge (static
 under prefers-reduced-motion; while the feed is STALE they freeze at the
 last vouched timestamp and restyle dim + hatched — see Feed staleness
@@ -734,8 +741,13 @@ Exports:
   Category color: hashString(s) (FNV-1a 32-bit), categoryHue(s) (stable
     0..359, golden-ratio spread), categoryJitter(s) (deterministic small
     {dl, dc} tone offsets), categoryColor(hue, {mode 'oklch'|'hsl',
-    lightness?, chroma?, alpha?}) → CSS color.
-  Styles: DEFAULT_STYLES (the built-in StyleMap described above).
+    lightness?, chroma?, alpha?}) → CSS color, dimColor(color) → the
+    uniform dim transform (HSV 50% saturation + 50% value, hue/alpha
+    untouched; parses #hex, rgb()/rgba(), hsl()/hsla(), oklch();
+    unsupported forms pass through unchanged — the element applies it
+    to every color inside a `dimmed` region, label text included).
+  Styles: DEFAULT_STYLES (the built-in StyleMap described above; the
+    dim/queued/hatch/waiting entries set `dimmed: true`).
   Coverage: mergeRanges(ranges), subtractRanges(span, covers),
     historyProbe(view, now, coveredEnd, prefetchFrac?) → TimeRange | null
     (the range loadRange may be asked about: viewport + backward

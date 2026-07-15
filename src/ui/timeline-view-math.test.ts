@@ -99,6 +99,7 @@ import {
   shouldRender,
   IDLE_FRAME_MS,
   IDLE_BATTERY_FRAME_MS,
+  dimColor,
   type WheelInput,
   type TimeView,
   type PackItem,
@@ -718,7 +719,11 @@ test('DEFAULT_STYLES: the required built-in treatments exist and alias', () => {
   assert.equal(DEFAULT_STYLES.failed.glyph, 'bang');
   assert.equal(DEFAULT_STYLES.failed.border?.emphasis, true);
   assert.ok((DEFAULT_STYLES.failed.border?.width ?? 0) >= 2);
-  assert.ok((DEFAULT_STYLES.dim.alphaScale ?? 1) < 1);
+  // dim/queued and hatch/waiting are DIMMED regions: the element runs
+  // every color painted inside them (fill, border, label text) through
+  // the uniform dimColor transform — no per-channel scale soup.
+  assert.equal(DEFAULT_STYLES.dim.dimmed, true);
+  assert.equal(DEFAULT_STYLES.hatch.dimmed, true);
   assert.equal(DEFAULT_STYLES.hatch.pattern, 'hatch');
   assert.equal(DEFAULT_STYLES.outline.pattern, 'outline');
 });
@@ -2168,4 +2173,50 @@ test('shouldRender: gates a 60Hz rAF stream to the tier budget without aliasing'
   assert.ok(idle >= 280 && idle <= 320, `idle ≈ 30fps over 10s, got ${idle / 10}/s`);
   const battery = countAt(IDLE_BATTERY_FRAME_MS);
   assert.ok(battery >= 95 && battery <= 105, `battery ≈ 10fps over 10s, got ${battery / 10}/s`);
+});
+
+// -- dimColor (the uniform dim transform) ----------------------------------------------
+
+test('dimColor: hue preserved, saturation and value halved', () => {
+  // Pure red (h 0, s 1, v 1) → s .5, v .5 → the red-family rgb(128, 64, 64).
+  assert.equal(dimColor('#ff0000'), 'rgba(128, 64, 64, 1)');
+  // Pure green stays green-dominant at half strength.
+  assert.equal(dimColor('rgb(0, 255, 0)'), 'rgba(64, 128, 64, 1)');
+});
+
+test('dimColor: greys halve value without inventing hue or saturation', () => {
+  assert.equal(dimColor('#808080'), 'rgba(64, 64, 64, 1)');
+  assert.equal(dimColor('#ffffff'), 'rgba(128, 128, 128, 1)');
+  assert.equal(dimColor('#000000'), 'rgba(0, 0, 0, 1)');
+});
+
+test('dimColor: alpha passes through untouched', () => {
+  assert.equal(dimColor('rgba(255, 0, 0, 0.4)'), 'rgba(128, 64, 64, 0.4)');
+  assert.equal(dimColor('hsla(0, 100%, 50%, 0.25)'), 'rgba(128, 64, 64, 0.25)');
+  assert.equal(dimColor('#ff000080'), `rgba(128, 64, 64, ${128 / 255 * 1000 % 1 === 0 ? 128 / 255 : Math.round((128 / 255) * 1000) / 1000})`);
+});
+
+test('dimColor: hsl and oklch forms parse; unknown forms pass through', () => {
+  assert.equal(dimColor('hsl(120, 100%, 25%)'), 'rgba(32, 64, 32, 1)');
+  // oklch pure-red-ish input converts and stays red-dominant.
+  const red = dimColor('oklch(0.628 0.258 29.234)');
+  const m = red.match(/^rgba\((\d+), (\d+), (\d+), 1\)$/);
+  assert.ok(m, `expected rgba() output, got ${red}`);
+  assert.ok(Number(m[1]) > Number(m[2]) && Number(m[1]) > Number(m[3]), red);
+  // oklch with alpha keeps it.
+  assert.match(dimColor('oklch(0.62 0.11 210 / 0.9)'), /^rgba\(\d+, \d+, \d+, 0.9\)$/);
+  // Unsupported forms return unchanged (named colors, var() references).
+  assert.equal(dimColor('rebeccapurple'), 'rebeccapurple');
+  assert.equal(dimColor('var(--x)'), 'var(--x)');
+});
+
+test('dimColor: applying to categoryColor output keeps the category hue family', () => {
+  // The element feeds resolved category colors through dimColor for
+  // dimmed regions — both color modes must round-trip.
+  for (const mode of ['oklch', 'hsl'] as const) {
+    const base = categoryColor(210, { mode });
+    const dimmed = dimColor(base);
+    assert.notEqual(dimmed, base);
+    assert.match(dimmed, /^rgba\(/);
+  }
 });

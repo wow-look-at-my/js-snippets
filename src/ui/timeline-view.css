@@ -403,9 +403,10 @@ canvas.minimap[hidden] {
   );
 }
 
-/* …dim = the translucent de-emphasis (body only — row text stays crisp)… */
+/* …dim = the uniform 50%-saturation/50%-value de-emphasis (one filter
+   over the whole region, label text included)… */
 .lg-dim {
-  opacity: 0.4;
+  filter: saturate(0.5) brightness(0.5);
 }
 
 /* …cancelled span: hollow + dashed; the scrimmed kill tail starts at a

@@ -145,6 +145,7 @@ import {
   categoryHue,
   categoryJitter,
   categoryColor,
+  dimColor,
   DEFAULT_STYLES,
   CoverageTracker,
   historyProbe,
@@ -303,12 +304,15 @@ interface ResolvedStyle {
   dash: number[] | null;
   pattern: 'solid' | 'hatch' | 'stipple' | 'outline';
   glyph: 'none' | 'bang' | 'dot';
+  /** The style's `dimmed` flag — drives the label-over-dim-segment rule. */
+  dimmed: boolean;
   /**
-   * Label text color — ALWAYS the full-contrast foreground. State-based
-   * dimming (alphaScale, desaturation) applies to the SPAN BODY only: a
-   * queued/waiting/dim bar mutes its fill, never its text (grey-on-muted
-   * labels were unreadable). A state that needs its label distinguished
-   * uses the body treatment or a glyph, not reduced text contrast.
+   * Label text color. Normally the full-contrast foreground; for a
+   * DIMMED style it is dimColor(fg) — the same uniform 50%-sat/50%-value
+   * transform the fill and border get, as if one filter lay over the
+   * whole region. Text dims WITH its section (never independently, and
+   * never MORE than the fill — grey-on-muted labels were unreadable),
+   * so relative text-vs-fill contrast matches the undimmed sections.
    */
   labelColor: string;
 }
@@ -1965,14 +1969,20 @@ export class TimelineViewElement extends HTMLElement {
       border = categoryColor(hue, { mode, lightness: clamp(l + 0.14, 0, 0.96), chroma: c, alpha: clamp(alpha + 0.1, 0, 1) });
     }
     const emphasisBorder = st.border?.emphasis === true;
+    const dimmed = st.dimmed === true;
+    const finalBorder = emphasisBorder ? t.emphasis : border;
     const out: ResolvedStyle = {
-      fill,
-      border: emphasisBorder ? t.emphasis : border,
+      // A dimmed region is "one filter over the whole section": fill,
+      // border, and label text all through the same dimColor transform
+      // (see ResolvedStyle.labelColor).
+      fill: dimmed ? dimColor(fill) : fill,
+      border: dimmed ? dimColor(finalBorder) : finalBorder,
       borderWidth: st.border?.width ?? 1,
       dash: st.border?.dash ?? null,
       pattern: st.pattern ?? 'solid',
       glyph: st.glyph ?? 'none',
-      labelColor: t.fg, // body dims, text never does (see ResolvedStyle.labelColor)
+      dimmed,
+      labelColor: dimmed ? dimColor(t.fg) : t.fg,
     };
     this.colorCache.set(cacheKey, out);
     return out;
@@ -2993,6 +3003,12 @@ export class TimelineViewElement extends HTMLElement {
       ctx.fill(path);
     }
 
+    // Where the label anchors — needed BEFORE the segs loop: a label
+    // whose anchor sits over a DIMMED section dims with that section.
+    const labelPad = 5;
+    const labelX = Math.max(x0, this.gutterW + (fade.left ? EDGE_FADE_PX : 0)) + labelPad;
+    let labelStyle = style;
+
     // Phase segments, clipped to the bar.
     if (n.segs) {
       ctx.save();
@@ -3001,6 +3017,10 @@ export class TimelineViewElement extends HTMLElement {
         let sx0 = Math.max(x0, this.gutterW + timeToX(s.start, rv, plotW));
         const sx1 = Math.min(x1, this.gutterW + timeToX(s.end ?? (n.end ?? now), rv, plotW));
         const ss = this.resolved(n.catKey, s.kind, null);
+        // Label-over-dim rule: the label's ANCHOR point decides — inside
+        // a dimmed segment's visible slice, the label takes that
+        // section's dimmed text color (one filter over the region).
+        if (ss.dimmed && labelX >= sx0 && labelX < sx1) labelStyle = ss;
         if (ss.pattern === 'outline') {
           // A terminal cut (e.g. a kill tail: cancel requested → finished).
           // Unlike decorative phases it must NEVER vanish: it keeps a
@@ -3107,12 +3127,10 @@ export class TimelineViewElement extends HTMLElement {
     // off-screen — just past the continuation shadow when one is active,
     // so the sticky label never sits inside the darkened zone.
     if (bh >= t.fontSize + 3) {
-      const pad = 5;
       const glyphPad = style.glyph === 'bang' ? 8 : 0;
-      const labelX = Math.max(x0, this.gutterW + (fade.left ? EDGE_FADE_PX : 0)) + pad;
-      const label = fitText(n.label, x1 - labelX - pad - glyphPad, this.charW);
+      const label = fitText(n.label, x1 - labelX - labelPad - glyphPad, this.charW);
       if (label !== '') {
-        ctx.fillStyle = style.labelColor;
+        ctx.fillStyle = labelStyle.labelColor;
         ctx.fillText(label, this.textPx(labelX), this.textPx(y + bh / 2 + 0.5));
       }
     }
