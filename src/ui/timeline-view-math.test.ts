@@ -74,6 +74,7 @@ import {
   edgeContinuation,
   MIN_BAR_PX,
   packVisibleTracks,
+  TrackAllocator,
   laneHeight,
   demotionOrder,
   computeAutoFit,
@@ -1499,6 +1500,161 @@ test('packVisibleTracks: assignment is stable while the window slides over an un
     assert.deepEqual(r.tracks, first.tracks, `slide +${dt} keeps identical assignments`);
     assert.equal(r.trackCount, first.trackCount);
   }
+});
+
+// -- TrackAllocator (sticky rows) --------------------------------------------------------
+
+const ti = (id: string, start: number, end: number | null): PackItem => ({ id, start, end });
+
+test('TrackAllocator: a fresh allocator reproduces the stateless first-fit packer exactly', () => {
+  const items = [ti('a', 0, 10), ti('b', 5, 15), ti('c', 12, 20), ti('d', 14, 25), ti('e', 40, 50)];
+  for (const view of [
+    { start: 0, end: 30 },
+    { start: 13, end: 45 },
+    { start: 100, end: 200 },
+  ]) {
+    assert.deepEqual(new TrackAllocator().assign(items, view), packVisibleTracks(items, view));
+  }
+});
+
+test('TrackAllocator: visible items keep their rows when membership churn would reflow the stateless packer', () => {
+  // a leaves the view; the stateless packer then reflows b to track 0 and
+  // c to 1 — flipping both rows under the viewer. Sticky keeps them put.
+  const items = [ti('a', 0, 10), ti('b', 2, 12), ti('c', 11, 20)];
+  const alloc = new TrackAllocator();
+  const v1 = alloc.assign(items, { start: 0, end: 15 });
+  assert.deepEqual(v1, { tracks: [0, 1, 0], trackCount: 2 }, 'first fill is plain first-fit');
+  const v2view = { start: 10.5, end: 25 };
+  const stateless = packVisibleTracks(items, v2view);
+  assert.deepEqual(stateless.tracks, [-1, 0, 1], 'the stateless packer reshuffles');
+  const v2 = alloc.assign(items, v2view);
+  assert.deepEqual(v2.tracks, [-1, 1, 0], 'sticky rows: b stays on 1, c stays on 0');
+});
+
+test('TrackAllocator: burst-then-shrink — height recovers without moving surviving rows', () => {
+  const items = [
+    ti('b1', 0, 10),
+    ti('b2', 0, 10),
+    ti('b3', 0, 10),
+    ti('b4', 0, 10),
+    ti('b5', 0, 10),
+    ti('n1', 30, 40),
+    ti('n2', 35, 45),
+  ];
+  const alloc = new TrackAllocator();
+  const wide = alloc.assign(items, { start: 0, end: 50 });
+  assert.deepEqual(wide.tracks, [0, 1, 2, 3, 4, 0, 1], 'newcomers fill the freed low tracks');
+  assert.equal(wide.trackCount, 5);
+  // The burst scrolls off: the lane shrinks to the two visible rows, and
+  // neither survivor moves.
+  const after = alloc.assign(items, { start: 25, end: 60 });
+  assert.deepEqual(after.tracks, [-1, -1, -1, -1, -1, 0, 1]);
+  assert.equal(after.trackCount, 2, 'height recovered from 5 tracks to 2');
+});
+
+test('TrackAllocator: a returning interval gets its old row back when still free', () => {
+  const items = [ti('a', 0, 10), ti('b', 0, 10), ti('c', 0, 10)];
+  const alloc = new TrackAllocator();
+  assert.deepEqual(alloc.assign(items, { start: 0, end: 20 }).tracks, [0, 1, 2]);
+  // Scroll away (nothing visible), then come back: every row is restored.
+  assert.deepEqual(alloc.assign(items, { start: 50, end: 60 }).tracks, [-1, -1, -1]);
+  assert.equal(alloc.assign(items, { start: 50, end: 60 }).trackCount, 1);
+  assert.deepEqual(alloc.assign(items, { start: 0, end: 20 }).tracks, [0, 1, 2]);
+});
+
+test('TrackAllocator: a returning interval whose old row is now taken falls to the lowest free one', () => {
+  const alloc = new TrackAllocator();
+  const a = ti('a', 0, 10);
+  const b = ti('b', 0, 60); // long — overlaps a
+  assert.deepEqual(alloc.assign([a], { start: 0, end: 20 }).tracks, [0]);
+  // a scrolls out; b becomes visible and (new, lowest-free) takes track 0.
+  assert.deepEqual(alloc.assign([a, b], { start: 50, end: 60 }).tracks, [-1, 0]);
+  // a returns: its remembered track 0 is held by the still-visible b →
+  // best-effort memory yields, a takes the lowest free track instead.
+  assert.deepEqual(alloc.assign([a, b], { start: 0, end: 60 }).tracks, [1, 0]);
+});
+
+test('TrackAllocator: a live arrival at now never displaces existing rows (SSE case)', () => {
+  const alloc = new TrackAllocator();
+  const a = ti('run-a', 0, null); // ongoing
+  const b = ti('run-b', 20, null); // ongoing
+  const view = { start: 0, end: 100 };
+  assert.deepEqual(alloc.assign([a, b], view).tracks, [0, 1]);
+  // A brand-new running interval appears at "now": it stacks on top —
+  // the rows already on screen do not move.
+  const c = ti('run-c', 60, null);
+  const r = alloc.assign([a, b, c], view);
+  assert.deepEqual(r.tracks, [0, 1, 2]);
+  assert.equal(r.trackCount, 3);
+});
+
+test('TrackAllocator: visible same-track items never overlap in time (invariant across sliding views)', () => {
+  // Deterministic pseudo-random-ish set: staggered starts and durations.
+  const items: PackItem[] = [];
+  for (let i = 0; i < 30; i++) {
+    const start = (i * 37) % 100;
+    items.push(ti(`i${String(i).padStart(2, '0')}`, start, start + 5 + ((i * 13) % 20)));
+  }
+  const foot = (it: PackItem): { s: number; e: number } => ({ s: it.start, e: Math.max(it.end ?? Infinity, it.start + 1) });
+  const alloc = new TrackAllocator();
+  for (let t = 0; t <= 80; t += 3.7) {
+    const view = { start: t, end: t + 40 };
+    const { tracks } = alloc.assign(items, view);
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        if (tracks[i] < 0 || tracks[i] !== tracks[j]) continue;
+        const a = foot(items[i]);
+        const b = foot(items[j]);
+        assert.ok(a.e <= b.s || b.e <= a.s, `view +${t}: ${items[i].id} and ${items[j].id} share track ${tracks[i]} but overlap`);
+      }
+    }
+  }
+});
+
+test('TrackAllocator: row memory is LRU-bounded — an evicted id re-packs as new', () => {
+  const items = [ti('p', 0, 10), ti('q', 0, 10), ti('r', 0, 10)];
+  const remembered = new TrackAllocator(1); // keeps only the most recent id (r)
+  remembered.assign(items, { start: 0, end: 20 });
+  assert.deepEqual(remembered.assign([ti('r', 0, 10)], { start: 0, end: 20 }).tracks, [2], 'r is remembered');
+  const evicted = new TrackAllocator(1);
+  evicted.assign(items, { start: 0, end: 20 });
+  assert.deepEqual(evicted.assign([ti('q', 0, 10)], { start: 0, end: 20 }).tracks, [0], 'q was evicted → packs as new');
+});
+
+test('TrackAllocator: cluster-shaped synthetic ids hold their row across frames (one slot per cluster)', () => {
+  // The element packs a ×N cluster as ONE item whose id derives from its
+  // first member — as long as that id is stable, the row is too.
+  const bar = ti('a-bar', 90, 200);
+  const cluster = ti('cluster:run-a', 150, 150); // instant footprint
+  const alloc = new TrackAllocator();
+  const v1 = alloc.assign([bar, cluster], { start: 80, end: 220 });
+  assert.deepEqual(v1.tracks, [0, 1], 'the cluster occupies exactly one slot');
+  for (let dt = 5; dt <= 60; dt += 5) {
+    const r = alloc.assign([bar, cluster], { start: 80 + dt, end: 220 + dt });
+    assert.deepEqual(r.tracks, v1.tracks, `slide +${dt}: neither row hops`);
+  }
+});
+
+test('TrackAllocator: deterministic — identical call sequences yield identical assignments', () => {
+  const items = [ti('a', 0, 30), ti('b', 10, 40), ti('c', 35, 60), ti('d', 50, null)];
+  const views = [
+    { start: 0, end: 45 },
+    { start: 32, end: 70 },
+    { start: 100, end: 140 },
+    { start: 0, end: 45 },
+  ];
+  const one = new TrackAllocator();
+  const two = new TrackAllocator();
+  for (const view of views) {
+    assert.deepEqual(one.assign(items, view), two.assign(items, view));
+  }
+});
+
+test('TrackAllocator: empty input and empty windows collapse to one track', () => {
+  const alloc = new TrackAllocator();
+  assert.deepEqual(alloc.assign([], { start: 0, end: 10 }), { tracks: [], trackCount: 1 });
+  const r = alloc.assign([ti('a', 100, 110)], { start: 0, end: 10 });
+  assert.deepEqual(r, { tracks: [-1], trackCount: 1 });
 });
 
 // -- historyProbe (the request-flood regression) -----------------------------------------

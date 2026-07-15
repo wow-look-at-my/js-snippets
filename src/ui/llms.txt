@@ -128,13 +128,19 @@ element. A shared horizontal time axis across the full width; stacked
 labeled lanes (left gutter, ellipsized labels, full text via tooltip;
 lane order = exactly the order supplied — never re-sorted internally),
 each a band of interval bars (left = start, right = end). A lane grows
-extra sub-tracks when intervals VISIBLE in the current window overlap
-(greedy first-fit packing over the visible set, deterministic under
-re-ordering and stable while the window slides over unchanged overlap); a
-historical parallelism burst stops padding its lane once it scrolls out
-of view, a lane with nothing visible collapses to one track, and height
-changes ease over ~150ms (snapped under prefers-reduced-motion;
-hit-testing tracks the animating layout). AUTO-FIT (default on; opt out
+extra sub-tracks when intervals VISIBLE in the current window overlap,
+and rows are VERTICALLY STICKY (a stateful per-lane TrackAllocator): an
+interval KEEPS its row while it stays on screen — panning and live
+updates never reshuffle the rows being watched — an interval scrolling
+out and back gets its old row back when still free (bounded LRU row
+memory; the memory survives setData, so a live resync leaves rows put),
+and new arrivals take the lowest conflict-free row, so lane height
+recovers from the bottom once a tall burst scrolls away (never by
+re-rowing what is still visible); a historical parallelism burst stops
+padding its lane once it scrolls out of view, a lane with nothing
+visible collapses to one track, and height changes ease over ~150ms
+(snapped under prefers-reduced-motion; hit-testing tracks the animating
+layout). AUTO-FIT (default on; opt out
 with the no-auto-fit attribute): when the natural stack — every lane at
 --timeline-track-height — would overflow the host's height, whole lanes
 are demoted to the compact track height (--timeline-track-height-compact,
@@ -497,7 +503,18 @@ Exports:
     partial overlap counts, out-of-view items get track -1, trackCount
     >= 1 so an empty window collapses to one track; assignment is a pure
     function of the visible set, so sliding over unchanged overlap never
-    hops tracks), layoutLanes(trackCounts, metrics, trackHeights?) →
+    hops tracks — but membership churn reflows it: the element rows its
+    lanes through TrackAllocator instead), class
+    TrackAllocator(memoryCap? = TRACK_MEMORY_CAP (2048)) — the STICKY
+    stateful variant: assign(items, view) → {tracks, trackCount} with the
+    same contract, except a continuously-visible item KEEPS its track, a
+    returning item reclaims its remembered one when conflict-free
+    (LRU-bounded id → track memory), and new/displaced items take the
+    lowest track with no time overlap among this call's visible
+    placements — density recovers from the bottom as bursts scroll away,
+    visible same-track overlap stays impossible, a fresh allocator's
+    first call equals packVisibleTracks, deterministic per call sequence,
+    layoutLanes(trackCounts, metrics, trackHeights?) →
     {tops, heights, totalHeight} (per-lane trackHeights override the
     metrics' track height — compact lanes; fractional counts AND heights
     allowed — used for height tweens), trackTop(track, metrics,

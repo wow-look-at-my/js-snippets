@@ -60,7 +60,11 @@
  * per-element exception — they snap to the device grid for crisp glyph
  * rasterization, stepping in whole pixels while things move), bar-vs-pip
  * shapes are decided from data-space durations (never from rounded screen
- * coords, so shapes don't flicker during pans), and lane heights derive
+ * coords, so shapes don't flicker during pans), rows are VERTICALLY
+ * STICKY (a stateful per-lane TrackAllocator: a visible interval keeps
+ * its sub-track while on screen — panning and live updates never
+ * reshuffle the rows being watched — a returning interval remembers its
+ * old row, new arrivals fill from the bottom), and lane heights derive
  * from the parallelism visible in the CURRENT window (a historical burst
  * stops padding its lane once off-screen; height changes tween ~150ms,
  * honoring prefers-reduced-motion).
@@ -104,7 +108,7 @@ import {
   formatTimeTick,
   formatTimeFull,
   formatDuration,
-  packVisibleTracks,
+  TrackAllocator,
   layoutLanes,
   trackTop,
   computeAutoFit,
@@ -376,6 +380,11 @@ export class TimelineViewElement extends HTMLElement {
   private packedEpoch = -1;
   private packedStart = NaN;
   private packedEnd = NaN;
+  // Sticky row state, one allocator per lane ID (not index — lane
+  // insertions must never hand one lane's row memory to another). The
+  // state deliberately survives setData: a full resync must not reshuffle
+  // the rows on screen.
+  private allocators = new Map<string, TrackAllocator>();
   private targetCounts: number[] = []; // visible track count per lane
   private displayCounts: number[] = []; // animated (float) counts driving layout
   private targetHeights: number[] = []; // per-lane track height target (normal or compact)
@@ -821,6 +830,12 @@ export class TimelineViewElement extends HTMLElement {
     for (const per of this.perLane) {
       per.sort((a, b) => a.start - b.start || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     }
+    // Row memory follows its lane's lifetime: allocators for lanes that
+    // no longer exist are dropped; surviving lanes keep theirs (so a full
+    // setData resync leaves on-screen rows exactly where they were).
+    for (const key of [...this.allocators.keys()]) {
+      if (!this.laneIdxById.has(key)) this.allocators.delete(key);
+    }
     this.packEpoch++;
     this.updateVisibleLayout();
     this.autoGutter();
@@ -832,17 +847,19 @@ export class TimelineViewElement extends HTMLElement {
   /**
    * Track assignment + lane heights from the intervals intersecting the
    * CURRENT viewport (partial overlap counts; a lane with nothing visible
-   * collapses to one track). Deterministic given the visible data — a
-   * merely-translating viewport over unchanged overlap recomputes to the
-   * identical result, so nothing jitters frame to frame. Auto-fit then
-   * demotes lanes to the compact track height until the stack fits the
-   * host (computeAutoFit — tallest lanes first, hysteretic promotion, a
-   * pure function of the visible counts + host height, so it shares the
-   * same stability guarantee). Count AND height CHANGES ease over
-   * LAYOUT_TWEEN_MS (snapped under prefers-reduced-motion). this.layout
-   * always reflects the CURRENT (possibly animating) heights, and
-   * hit-testing shares it (rectFor reads displayHeights), so hovers stay
-   * aligned mid-tween.
+   * collapses to one track). Rows are STICKY (TrackAllocator, one per
+   * lane): a visible interval keeps its track while it stays on screen —
+   * visible-membership churn during pans/live updates never reflows the
+   * rows being watched — a returning interval remembers its old track,
+   * and new arrivals take the lowest conflict-free one, so lane height
+   * recovers from the bottom once a tall burst scrolls away. Auto-fit
+   * then demotes lanes to the compact track height until the stack fits
+   * the host (computeAutoFit — tallest lanes first, hysteretic promotion,
+   * a pure function of the visible counts + host height). Count AND
+   * height CHANGES ease over LAYOUT_TWEEN_MS (snapped under
+   * prefers-reduced-motion). this.layout always reflects the CURRENT
+   * (possibly animating) heights, and hit-testing shares it (rectFor
+   * reads displayHeights), so hovers stay aligned mid-tween.
    */
   private updateVisibleLayout(): void {
     const rv = this.renderView();
@@ -858,7 +875,7 @@ export class TimelineViewElement extends HTMLElement {
       changed = structure;
       for (let i = 0; i < this.perLane.length; i++) {
         const per = this.perLane[i];
-        const { tracks, trackCount } = packVisibleTracks(per, rv);
+        const { tracks, trackCount } = this.allocatorFor(this.lanes[i].id).assign(per, rv);
         for (let j = 0; j < per.length; j++) {
           if (tracks[j] >= 0) per[j].track = tracks[j];
         }
@@ -924,6 +941,16 @@ export class TimelineViewElement extends HTMLElement {
       if (this.displayHeights.length !== this.targetHeights.length) this.displayHeights = this.targetHeights.slice();
     }
     this.layout = layoutLanes(this.displayCounts, m, this.displayHeights);
+  }
+
+  /** The lane's sticky row allocator (created on first use; pruned with its lane in rebuild). */
+  private allocatorFor(laneId: string): TrackAllocator {
+    let alloc = this.allocators.get(laneId);
+    if (!alloc) {
+      alloc = new TrackAllocator();
+      this.allocators.set(laneId, alloc);
+    }
+    return alloc;
   }
 
   private metrics(): { trackHeight: number; trackGap: number; lanePad: number } {

@@ -7,7 +7,8 @@
 // origin (whole-pixel scrolling), a nice TIME tick ladder
 // (1/2/5/10/15/30 across ms → s → min → h → days, with per-step label
 // granularity), greedy first-fit sub-track packing (whole-set and
-// visible-window variants), lane layout, auto-fit lane demotion (compact
+// visible-window variants) plus the STICKY TrackAllocator (rows that stop
+// reshuffling while you watch), lane layout, auto-fit lane demotion (compact
 // track heights, tallest lanes first, hysteretic), label-fit and instant-interval
 // (zero/near-zero DURATION) helpers, stable category → hue hashing,
 // data-coverage / range-request bookkeeping for async history loading,
@@ -561,7 +562,10 @@ function packEnd(it: PackItem): number {
  * while the window slides over unchanged overlap, nothing hops tracks.
  * Items outside the view get track -1 (callers keep or cull them);
  * trackCount is >= 1, so a lane with nothing visible collapses to one
- * track.
+ * track. STATELESS — when the visible membership changes, everything
+ * reflows into freed tracks; the element rows its lanes through the
+ * sticky TrackAllocator below instead, which shares this contract but
+ * keeps visible rows pinned across membership churn.
  */
 export function packVisibleTracks(items: readonly PackItem[], view: TimeView): { tracks: number[]; trackCount: number } {
   const order: number[] = [];
@@ -584,6 +588,128 @@ export function packVisibleTracks(items: readonly PackItem[], view: TimeView): {
     tracks[i] = t;
   }
   return { tracks, trackCount: Math.max(1, trackEnds.length) };
+}
+
+/**
+ * Bound on remembered id → track assignments per TrackAllocator (LRU
+ * eviction beyond it): generous enough to cover every id a lane plausibly
+ * cycles through between revisits, small enough that an unbounded live
+ * feed can never grow the memory forever. An evicted id simply re-packs
+ * as new on return.
+ */
+export const TRACK_MEMORY_CAP = 2048;
+
+/**
+ * STICKY sub-track allocation for one lane — the STATEFUL counterpart of
+ * packVisibleTracks, built so rows stop shifting under the viewer as the
+ * visible membership churns (panning, live updates):
+ *
+ * - An item assigned in the PREVIOUS call and still visible KEEPS its
+ *   track unconditionally (re-verified against the other keepers, so
+ *   even an item whose times were live-edited can never create a
+ *   same-track overlap).
+ * - An item RETURNING after scrolling out gets its remembered track back
+ *   when no visible occupant conflicts — best-effort row memory, bounded
+ *   by an LRU cap (`memoryCap`, default TRACK_MEMORY_CAP).
+ * - Everything else — brand-new arrivals, the rare displaced returner —
+ *   takes the LOWEST track with no time overlap among the items placed
+ *   this call. Density recovers from the bottom: once a tall burst
+ *   scrolls off-screen its high tracks fall out of use and the lane
+ *   shrinks to what is still visible, WITHOUT re-rowing anything the
+ *   viewer is looking at (a lone survivor parked on a high track holds
+ *   its row — and the lane's height — until it leaves the window).
+ *
+ * Same contract as packVisibleTracks otherwise: tracks[i] aligned to the
+ * input (-1 = outside the view; callers keep the previous assignment),
+ * trackCount = highest in-use visible track + 1 (>= 1 — an empty window
+ * collapses to one track), footprints via PACK_MIN_MS instants and
+ * ongoing-blocks-forever, visible same-track items can never overlap in
+ * time, and results are deterministic given the same call sequence. A
+ * FRESH allocator's first call reproduces packVisibleTracks exactly (no
+ * memory yet — pure lowest-free in (start, id) order).
+ */
+export class TrackAllocator {
+  /** id → last assigned track. Map insertion order doubles as LRU recency. */
+  private memory = new Map<string, number>();
+  /** ids assigned (visible) by the previous call — their tracks are kept. */
+  private live = new Set<string>();
+  private cap: number;
+
+  constructor(memoryCap = TRACK_MEMORY_CAP) {
+    this.cap = Math.max(1, Math.floor(memoryCap));
+  }
+
+  /** Assign tracks for the items visible in `view` (see the class doc). */
+  assign(items: readonly PackItem[], view: TimeView): { tracks: number[]; trackCount: number } {
+    const tracks = new Array<number>(items.length).fill(-1);
+    const vis: number[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (it.start <= view.end && packEnd(it) >= view.start) vis.push(i);
+    }
+    vis.sort((a, b) => {
+      const ia = items[a];
+      const ib = items[b];
+      return ia.start - ib.start || (ia.id < ib.id ? -1 : ia.id > ib.id ? 1 : 0);
+    });
+    // Per-track footprints placed THIS call — the only conflict authority
+    // (memory is a preference, never proof of fit).
+    const placed: { start: number; end: number }[][] = [];
+    const canPlace = (t: number, s: number, e: number): boolean => {
+      const list = placed[t];
+      if (!list) return true;
+      for (const f of list) if (s < f.end && f.start < e) return false;
+      return true;
+    };
+    const place = (i: number, t: number): void => {
+      tracks[i] = t;
+      (placed[t] ??= []).push({ start: items[i].start, end: packEnd(items[i]) });
+    };
+    const lowestFree = (s: number, e: number): number => {
+      let t = 0;
+      while (!canPlace(t, s, e)) t++;
+      return t;
+    };
+    // Pass 1 — keepers: continuously-visible items hold their rows.
+    const returning: number[] = [];
+    const fresh: number[] = [];
+    for (const i of vis) {
+      const it = items[i];
+      const kept = this.live.has(it.id) ? this.memory.get(it.id) : undefined;
+      if (kept !== undefined && canPlace(kept, it.start, packEnd(it))) place(i, kept);
+      else if (this.memory.has(it.id)) returning.push(i);
+      else fresh.push(i);
+    }
+    // Pass 2 — returning items reclaim their old row when still free.
+    for (const i of returning) {
+      const it = items[i];
+      const end = packEnd(it);
+      const remembered = this.memory.get(it.id) as number;
+      place(i, canPlace(remembered, it.start, end) ? remembered : lowestFree(it.start, end));
+    }
+    // Pass 3 — new items fill from the bottom (density recovery).
+    for (const i of fresh) {
+      const it = items[i];
+      place(i, lowestFree(it.start, packEnd(it)));
+    }
+    // Remember every visible assignment (refreshing LRU recency), then
+    // prune the oldest beyond the cap.
+    this.live = new Set<string>();
+    let maxTrack = -1;
+    for (const i of vis) {
+      const id = items[i].id;
+      this.live.add(id);
+      this.memory.delete(id);
+      this.memory.set(id, tracks[i]);
+      if (tracks[i] > maxTrack) maxTrack = tracks[i];
+    }
+    while (this.memory.size > this.cap) {
+      const oldest = this.memory.keys().next().value;
+      if (oldest === undefined) break;
+      this.memory.delete(oldest);
+    }
+    return { tracks, trackCount: Math.max(1, maxTrack + 1) };
+  }
 }
 
 // -- Lane layout --------------------------------------------------------------------
