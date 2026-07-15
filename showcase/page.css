@@ -1,0 +1,77 @@
+/* Showcase page chrome — the component brings its own styles (shadow DOM). */
+* {
+	box-sizing: border-box;
+}
+html,
+body {
+	margin: 0;
+	height: 100%;
+}
+body {
+	display: flex;
+	flex-direction: column;
+	background: #0a0c10;
+	color: #e8ecf4;
+	font-family: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+	padding: 12px 16px 16px;
+	gap: 8px;
+}
+header h1 {
+	margin: 0;
+	font-size: 16px;
+	font-weight: 600;
+}
+header .sub,
+main .sub {
+	color: #6b7280;
+	font-weight: 400;
+	font-size: 12px;
+}
+header .hint {
+	margin: 4px 0 0;
+	color: #6b7280;
+	font-size: 11px;
+}
+main {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-height: 0;
+}
+main h2 {
+	margin: 8px 0 0;
+	font-size: 12px;
+	font-weight: 600;
+	color: #9aa3b2;
+}
+main code {
+	font-size: 11px;
+	color: #9aa3b2;
+}
+#main {
+	flex: 1;
+	min-height: 320px;
+	border: 1px solid rgba(200, 205, 216, 0.12);
+	border-radius: 6px;
+}
+/* The compact strip: a hard height cap so auto-fit has to demote lanes,
+   plus a light retheme via the --timeline-* custom properties. */
+#mini {
+	height: 150px;
+	flex: none;
+	border: 1px solid rgba(20, 25, 35, 0.2);
+	border-radius: 6px;
+}
+#mini.light {
+	--timeline-bg: #f4f6fa;
+	--timeline-fg: #1a2030;
+	--timeline-muted: #5a6372;
+	--timeline-grid: rgba(20, 25, 35, 0.08);
+	--timeline-hairline: rgba(20, 25, 35, 0.12);
+	--timeline-row-tint: rgba(20, 25, 35, 0.025);
+	--timeline-now: #009e55;
+	--timeline-emphasis: #d4383e;
+	--timeline-cat-lightness: 0.55;
+	--timeline-cat-chroma: 0.12;
+}

@@ -59,3 +59,77 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+  # Publish the timeline showcase — showcase/'s single self-contained HTML
+  # demo of <timeline-view> on fake local data — to buildhost as a per-branch
+  # static site: https://sites.pazer.build/js-snippets/branch/<branch>/.
+  # The project MUST be "js-snippets": buildhost's OIDC auto-provisioning
+  # authorizes a repo's identity only for the project named after the repo
+  # (or its slash-namespace), and the sites router takes single-segment
+  # project names only — any other name 404s ("project not found").
+  # Publishes only when the BRANCH touches the chart or the showcase (always
+  # on master); otherwise the steps no-op and the job still succeeds, so the
+  # org's all-builds aggregation never trips over it.
+  showcase:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # buildhost OIDC auth
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the gate diffs against the merge-base with origin/master
+
+      - name: Gate on chart/showcase paths
+        id: gate
+        uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            // The preview reflects BRANCH state, so the gate is branch-level:
+            // publish when the branch's diff vs origin/master touches the
+            // chart or the showcase (any later push to such a branch
+            // refreshes its preview). Master itself always publishes.
+            const watched = /^(src\/ui\/|showcase\/|\.github\/workflows\/deploy\.yml$)/;
+            // buildhost serves sites under a single path segment — flatten
+            // anything outside [A-Za-z0-9._-] out of the branch name.
+            const branch = (github.ref_name || 'preview').replace(/[^A-Za-z0-9._-]/g, '-');
+            core.setOutput('branch', branch);
+            if (github.ref_name === 'master') {
+              core.setOutput('publish', 'true');
+              core.info('push to master — always publish');
+              return;
+            }
+            const mb = (await exec.getExecOutput('git', ['merge-base', 'origin/master', 'HEAD'])).stdout.trim();
+            const diff = (await exec.getExecOutput('git', ['diff', '--name-only', `${mb}..HEAD`])).stdout;
+            const files = diff.split('\n').filter(Boolean);
+            const hit = files.filter((f) => watched.test(f));
+            core.setOutput('publish', String(hit.length > 0));
+            core.info(hit.length > 0
+              ? `chart/showcase paths touched:\n  ${hit.join('\n  ')}`
+              : `no chart/showcase paths among ${files.length} changed file(s) — skipping publish`);
+
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.publish == 'true'
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        if: steps.gate.outputs.publish == 'true'
+        run: corepack enable
+
+      - run: pnpm install
+        if: steps.gate.outputs.publish == 'true'
+
+      # ts0's single-HTML target: type-checks, bundles the branch's own
+      # src/ui/timeline-view.ts (CSS inlined), emits showcase/dist/index.html.
+      - run: pnpm build:showcase
+        if: steps.gate.outputs.publish == 'true'
+
+      - name: Publish preview to buildhost
+        if: steps.gate.outputs.publish == 'true'
+        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master
+        with:
+          server: https://pazer.build
+          project: js-snippets # repo-derived: the only site project OIDC authorizes
+          branch: ${{ steps.gate.outputs.branch }}
+          source_dir: ./showcase/dist
