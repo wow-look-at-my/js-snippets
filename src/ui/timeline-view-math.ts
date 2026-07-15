@@ -242,8 +242,16 @@ export const FOLLOW_SNAP_DEVICE_PX = 2;
  * as many small wheel events, and an unconditional magnetic rule re-pinned
  * the view after every event smaller than the snap zone — making it
  * impossible to leave "now" by scrolling. While ALREADY following, any
- * other gesture stays pinned — zooming at the live edge keeps following
- * even though an anchored zoom nudges the raw end backward. While NOT
+ * other NON-ZOOM gesture stays pinned (a forward pan at the stop stays
+ * live). ZOOM gestures never inherit the pin: the element passes
+ * `wasFollowing: false` for them, because during a zoom the
+ * cursor-anchored view must beat the now pin (the pin kept only the
+ * zoomed SPAN and re-derived the position from `now`, anchoring
+ * wheel/pinch zoom at the now marker instead of the cursor) — so a zoom
+ * re-earns follow through the same snap rule as any fresh gesture: an
+ * anchored zoom-in that pulls the right edge out of the snap zone parks
+ * with the anchor intact, while one that stays at the live edge (or a
+ * zoom-out pressing into the end stop) keeps following. While NOT
  * following, a gesture re-engages only when the right edge lands within
  * FOLLOW_SNAP_DEVICE_PX DEVICE pixels of the `now` end stop — pass the
  * view's ms-per-DEVICE-pixel scale (span / (plotWidthCss * dpr)). The

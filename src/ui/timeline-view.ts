@@ -1468,10 +1468,20 @@ export class TimelineViewElement extends HTMLElement {
    * count as "at the stop"); the view actually applied hard-stops at now
    * (clampViewToNow), so every input path — wheel, drag, pinch, keyboard,
    * setViewport — parks exactly at the end stop, which is what makes the
-   * tiny re-engage zone reliably hittable. Interactive gestures keep the
-   * pin while following (zooming at the live edge stays live); a
-   * programmatic setViewport (`jump`) is exempt from that — it lands
-   * where it says, engaging follow only inside the snap zone.
+   * tiny re-engage zone reliably hittable. Non-zoom interactive gestures
+   * keep the pin while following (a forward pan at the stop stays live);
+   * ZOOMS (`zoom`) and programmatic setViewport (`jump`) are exempt.
+   * Zooms because the ANCHOR must win during the gesture: while pinned,
+   * the pin used to rebuild the view from `now` keeping only the zoomed
+   * SPAN, so wheel/pinch zoom anchored at the now marker instead of the
+   * cursor — a zoom instead re-earns follow like a fresh gesture (it
+   * keeps following only when its right edge stays inside the snap zone,
+   * so zooming AT the live edge stays live; anywhere else it parks with
+   * the timestamp under the cursor still under the cursor, and follow
+   * may re-dock magnetically on a later gesture). One asymmetry is
+   * deliberate: a zoom-OUT at the live edge still can't show the future —
+   * the end stop caps it right-anchored, exactly like a parked zoom-out
+   * at the stop.
    *
    * The FOLLOW LEAD is eased, never assigned: engaging keeps the view
    * exactly where the gesture parked it and the per-tick pin glides end
@@ -1481,12 +1491,12 @@ export class TimelineViewElement extends HTMLElement {
    * end to now in the same frame — the two single-frame ~2%-of-plot-width
    * teleports this replaced. Reduced motion snaps both.
    */
-  private applyUserView(next: TimeView, opts?: { pan?: boolean; jump?: boolean }): void {
+  private applyUserView(next: TimeView, opts?: { pan?: boolean; jump?: boolean; zoom?: boolean }): void {
     const span = next.end - next.start;
     const now = this.liveEdge(); // stale mode: gestures clamp/dock at the FROZEN edge
     const wasFollowing = this.following;
     const msPerDevPx = span / (this.plotWidth() * this.dpr);
-    const stayPinned = wasFollowing && opts?.jump !== true;
+    const stayPinned = wasFollowing && opts?.jump !== true && opts?.zoom !== true;
     this.following = followAfterGesture(stayPinned, this.view.end, next, now, opts?.pan === true, msPerDevPx);
     if (this.following) {
       // ENGAGE (or a jump landing in the snap zone) seeds the lead ease
@@ -1974,7 +1984,7 @@ export class TimelineViewElement extends HTMLElement {
       if (e.deltaMode === 0) {
         // Pixel-precise trackpad pinch: apply 1:1, no smoothing, no lag.
         const anchor = xToTime(p.x - this.gutterW, this.view, this.plotWidth());
-        this.applyUserView(zoomView(this.view, anchor, zoomFactorForWheel(route.zoomPx)));
+        this.applyUserView(zoomView(this.view, anchor, zoomFactorForWheel(route.zoomPx)), { zoom: true });
         this.glidePx = 0;
       } else {
         // Discrete wheel steps: glide over ~130ms so they feel smooth.
@@ -2003,7 +2013,7 @@ export class TimelineViewElement extends HTMLElement {
     if (Math.abs(this.glidePx - apply) < 0.5) apply = this.glidePx;
     this.glidePx -= apply;
     const anchor = xToTime(this.glideX - this.gutterW, this.view, this.plotWidth());
-    this.applyUserView(zoomView(this.view, anchor, zoomFactorForWheel(apply)));
+    this.applyUserView(zoomView(this.view, anchor, zoomFactorForWheel(apply)), { zoom: true });
   }
 
   private onPointerDown = (e: PointerEvent): void => {
@@ -2040,7 +2050,7 @@ export class TimelineViewElement extends HTMLElement {
         const anchor = xToTime(midX - this.gutterW, next, this.plotWidth());
         next = zoomView(next, anchor, distNow / distPrev);
       }
-      this.applyUserView(next, { pan: !zoomed });
+      this.applyUserView(next, { pan: !zoomed, zoom: zoomed });
       return;
     }
     const dx = p.x - prev.x;
@@ -2124,11 +2134,11 @@ export class TimelineViewElement extends HTMLElement {
         break;
       case '+':
       case '=':
-        this.applyUserView(zoomView(this.view, center, 1.5));
+        this.applyUserView(zoomView(this.view, center, 1.5), { zoom: true });
         break;
       case '-':
       case '_':
-        this.applyUserView(zoomView(this.view, center, 1 / 1.5));
+        this.applyUserView(zoomView(this.view, center, 1 / 1.5), { zoom: true });
         break;
       case 'End':
         this.jumpToNow();

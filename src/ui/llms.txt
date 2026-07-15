@@ -387,8 +387,20 @@ Viewport / follow:
   followNow         — boolean (default true): right edge pinned to live
                       now. Any backward PAN (wheel, drag, arrow keys)
                       disengages immediately — even a tiny step, so
-                      trackpad panning escapes the pin; zooming while
-                      pinned stays pinned. User-driven views HARD-STOP at
+                      trackpad panning escapes the pin. ZOOMS never
+                      inherit the pin: the anchor is ALWAYS the gesture's
+                      focal point (cursor / pinch midpoint / keyboard
+                      center), even while following — during the gesture
+                      the timestamp under the cursor stays under the
+                      cursor, and the zoomed view re-earns follow by the
+                      same snap rule as any fresh gesture (zooming AT the
+                      live edge keeps following; an anchored zoom-in away
+                      from it parks, and follow re-docks magnetically on
+                      a later gesture). One deliberate asymmetry: a
+                      zoom-out pinned at the live edge can't show the
+                      future, so the end stop caps it right-anchored —
+                      the same clamp a parked zoom-out hits at the stop.
+                      User-driven views HARD-STOP at
                       now (every pan/zoom/pinch/keyboard/setViewport
                       clamps the right edge there), and a gesture parking
                       the right edge within 2 DEVICE pixels of that end
@@ -473,8 +485,10 @@ sideways); a diagonal gesture routes each axis to its own behavior and
 is consumed iff at least one axis routed (all deltaMode-normalized);
 ctrl/meta+wheel zooms anchored under the cursor (pixel-precise trackpad
 deltas apply 1:1; discrete wheel steps glide ~130ms; always consumed —
-never browser page-zoom); shift+wheel pans time; pointer drag pans both
-axes (pointer capture); two-pointer pinch zooms; keyboard when focused
+never browser page-zoom; the cursor anchor holds while follow-now is
+engaged too — see followNow); shift+wheel pans time; pointer drag pans
+both axes (pointer capture); two-pointer pinch zooms anchored at the
+pinch midpoint (also while following); keyboard when focused
 (tabindex 0): arrows pan (shift = faster), +/- zoom, End = jump to now,
 Home = jump to the earliest known data. The wheel listener sits on the
 HOST, so those rules apply over the DOM chrome (live pill, fullscreen

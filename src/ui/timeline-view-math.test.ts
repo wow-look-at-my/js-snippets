@@ -1030,19 +1030,107 @@ test('followAfterGesture: device-pixel conversion — 2 device px is 1 CSS px at
   );
 });
 
-test('followAfterGesture: zooming while pinned stays pinned (span change is not a pan)', () => {
+test('followAfterGesture: a span change is not a pan — wasFollowing=true stays engaged', () => {
   const now = 1_000_000_000;
   const span = 900_000;
   const end = now + span * FOLLOW_LEAD_FRAC;
   const view: TimeView = { start: end - span, end };
   const zoomed = zoomView(view, end - span / 2, 1.05); // anchor mid-screen: end moves back a bit
   assert.ok(zoomed.end < view.end);
-  // The raw end lands well outside the 2-device-px zone — following must
-  // survive anyway (the explicit wasFollowing rule, not the zone).
+  // The raw end lands well outside the 2-device-px zone — a wasFollowing
+  // caller survives anyway (the explicit wasFollowing rule, not the
+  // zone). NOTE the element deliberately does NOT pass wasFollowing for
+  // ZOOM gestures anymore (the anchor must win during a zoom — item 9,
+  // next tests); this pins the function-level contract for the callers
+  // that still do (forward pans at the stop, lane scrolls).
   assert.ok(zoomed.end < now - FOLLOW_SNAP_DEVICE_PX * mppx(zoomed.end - zoomed.start));
-  assert.equal(followAfterGesture(true, view.end, zoomed, now, false, mppx(zoomed.end - zoomed.start)), true, 'zoom keeps follow');
+  assert.equal(followAfterGesture(true, view.end, zoomed, now, false, mppx(zoomed.end - zoomed.start)), true);
   // The same zoom while NOT following does not grab the pin.
   assert.equal(followAfterGesture(false, view.end, zoomed, now, false, mppx(zoomed.end - zoomed.start)), false);
+});
+
+// -- Item 9: the zoom anchor wins over the follow pin --------------------------------
+//
+// The element applies a zoom gesture as zoomView(view, anchor, f) and —
+// because a zoom never inherits the pin — routes it through
+// followAfterGesture(false, ...) + clampViewToNow. These tests pin that
+// composition: the timestamp under the cursor stays under the cursor,
+// and follow is re-earned exactly at the snap boundary.
+
+test('zoom while following: an anchored zoom-in parks with the timestamp under the cursor intact', () => {
+  const now = 1_000_000_000;
+  const span = 900_000;
+  const plotW = 1000;
+  // Steady-state pinned view: end = now + lead.
+  const end = now + span * FOLLOW_LEAD_FRAC;
+  const view: TimeView = { start: end - span, end };
+  // Cursor a third of the plot from the left.
+  const anchor = view.start + span / 3;
+  const zoomed = zoomView(view, anchor, 2);
+  // The anchor invariant across the zoom application itself.
+  assert.ok(Math.abs((anchor - zoomed.start) / (zoomed.end - zoomed.start) - 1 / 3) < 1e-9);
+  // A zoom is passed wasFollowing=false → the snap rule decides: the end
+  // left the zone, so the view parks…
+  const zSpan = zoomed.end - zoomed.start;
+  assert.equal(followAfterGesture(false, view.end, zoomed, now, false, mppx(zSpan, plotW)), false);
+  // …and the parked application (the disengaged branch clamps at now once
+  // the lead is consumed) does not move it: the anchor survives end-to-end.
+  assert.deepEqual(clampViewToNow(zoomed, now), zoomed);
+});
+
+test('zoom while following: follow is re-earned exactly at the snap boundary (both sides)', () => {
+  const now = 1_000_000_000;
+  const span = 900_000;
+  const plotW = 1000;
+  const view: TimeView = { start: now - span, end: now };
+  const frac = 1 / 3;
+  const anchor = view.start + span * frac;
+  // Solve the zoom factor that lands the right edge exactly k device px
+  // short of now — measured at the ZOOMED span's scale, because that is
+  // the msPerDevPx the element hands the rule: with W device px across
+  // the plot, end' = anchor + (1 - frac) * span' = now - k * span' / W
+  // → span' = (now - anchor) / (1 - frac + k / W).
+  const W = plotW; // dpr 1
+  const spanFor = (k: number) => (now - anchor) / (1 - frac + k / W);
+  for (const [k, engaged] of [
+    [FOLLOW_SNAP_DEVICE_PX, true],
+    [FOLLOW_SNAP_DEVICE_PX + 1, false],
+  ] as const) {
+    const zoomed = zoomView(view, anchor, span / spanFor(k));
+    assert.ok(Math.abs(zoomed.end - (now - (k * spanFor(k)) / W)) < 1e-6);
+    // The anchor held even for this hair's-width zoom…
+    assert.ok(Math.abs((anchor - zoomed.start) / (zoomed.end - zoomed.start) - frac) < 1e-9);
+    // …and the snap rule alone decides whether follow re-engages. (The
+    // zone is measured at the ZOOMED span's scale, like the element does.)
+    const zSpan = zoomed.end - zoomed.start;
+    assert.equal(
+      followAfterGesture(false, view.end, zoomed, now, false, mppx(zSpan, plotW)),
+      engaged,
+      `${k} device px short of now`,
+    );
+  }
+});
+
+test('zoom-out pressing into the end stop re-engages: the stop, not the anchor, wins at the wall', () => {
+  const now = 1_000_000_000;
+  const span = 900_000;
+  const plotW = 1000;
+  const end = now + span * FOLLOW_LEAD_FRAC;
+  const view: TimeView = { start: end - span, end };
+  const anchor = view.start + span / 3;
+  const zoomedOut = zoomView(view, anchor, 1 / 2);
+  // Preserving the anchor on a zoom-out at the live edge would show the
+  // future — the raw end overshoots now…
+  assert.ok(zoomedOut.end > now);
+  // …so the one-sided snap rule re-engages follow (the pin then holds the
+  // right edge at the stop: a zoom-out at the wall is right-anchored,
+  // exactly like a parked zoom-out clamping at now).
+  const zSpan = zoomedOut.end - zoomedOut.start;
+  assert.equal(followAfterGesture(false, view.end, zoomedOut, now, false, mppx(zSpan, plotW)), true);
+  // The parked-mode equivalent: the clamp right-anchors the same view.
+  const clamped = clampViewToNow(zoomedOut, now);
+  assert.equal(clamped.end, now);
+  assert.equal(clamped.end - clamped.start, zSpan);
 });
 
 test('clampViewToNow: the hard end stop — end never passes now, span preserved, no-op at/before now', () => {
