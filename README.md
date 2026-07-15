@@ -77,7 +77,7 @@ The build also emits a TypeScript declaration sibling for every module — `dist
 
 CI runs on every push (`.github/workflows/deploy.yml`). Pushes to `master` deploy `dist/` to GitHub Pages automatically.
 
-Branches that touch the timeline chart (`src/ui/`) or `showcase/` also publish a live single-file demo of `<timeline-view>` (fake local data, every visual looping) to buildhost: `https://sites.pazer.build/js-snippets/branch/<branch>/` (`/` in branch names flattened to `-`). Build it locally with `pnpm build:showcase` → `showcase/dist/index.html`.
+Branches that touch the timeline chart (`src/ui/`) or `showcase/` also publish a live single-file demo of `<timeline-view>` (fake local data, every visual looping) to buildhost: `https://sites.pazer.build/js-snippets/branch/<branch>/` (`/` in branch names flattened to `-`). The preview is private/token-gated by operator decision — do not add `public: 'true'` to the publish step. Build it locally with `pnpm build:showcase` → `showcase/dist/index.html`.
 
 ## LLM Documentation
 

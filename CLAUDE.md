@@ -180,6 +180,13 @@ always agree, and the demo never runs dry.
   (master pushes always publish). The gate is in-job (a TypeScript-action
   step), NEVER a workflow-level paths filter — the same workflow runs the
   library build.
+- **Access — private by operator decision (2026-07-15)**: the preview is
+  token-gated (`Authorization: Bearer …` or `?token=…`) because the repo is
+  private, so buildhost's OIDC-auto-provisioned `js-snippets` project — and
+  its sites — is private too. The operator has explicitly ruled it stays
+  that way ("do not make it public, i like it the way it is"). Do NOT add
+  `public: 'true'` to the showcase job's buildhost-publish-site step in
+  deploy.yml — that is not a missing fix, it is a rejected option.
 - **Post-#39 note**: the page feature-detects newer component API
   (`legendEntries`, the built-in `cancelled` style) so it builds against any
   branch's `src/ui`; rendering-side features (minimap, fullscreen, skip
