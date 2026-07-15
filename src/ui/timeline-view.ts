@@ -254,6 +254,14 @@ const CONNECTOR_TOL = 4;
 const CLICK_SLOP = 4;
 const EMPTY_DASH: number[] = [];
 const MARKER_DASH = [4, 3];
+// A terminal-cut ('outline'-kind) segment never renders narrower than this
+// many DEVICE pixels — a kill tail is typically sub-second (docker-kill
+// latency), which at a 10-min window maps under half a CSS px and used to
+// vanish entirely, leaving a cancelled bar pixel-identical to a success.
+const TERMINAL_SEG_MIN_DEVICE_PX = 3;
+// A dashed border needs room to read as dashes; narrower bars draw it
+// solid (the hollow body still carries the state on a tiny bar).
+const BORDER_DASH_MIN_PX = 12;
 
 // -- The custom element ----------------------------------------------------------------
 
@@ -2174,10 +2182,26 @@ export class TimelineViewElement extends HTMLElement {
       const w = this.plotWidth();
       const rv = this.renderView();
       for (const s of n.segs) {
-        const sx0 = Math.max(x0, this.gutterW + timeToX(s.start, rv, w));
+        let sx0 = Math.max(x0, this.gutterW + timeToX(s.start, rv, w));
         const sx1 = Math.min(x1, this.gutterW + timeToX(s.end ?? (n.end ?? now), rv, w));
-        if (sx1 - sx0 < 0.5) continue;
         const ss = this.resolved(n.catKey, s.kind, null);
+        if (ss.pattern === 'outline') {
+          // A terminal cut (e.g. a kill tail: cancel requested → finished).
+          // Unlike decorative phases it must NEVER vanish: it keeps a
+          // minimum device-pixel footprint (grown backward from its end —
+          // the tail sits at the bar end) instead of the sub-half-px skip,
+          // and renders visibly — a dark scrim over the dead tail plus a
+          // bright cut line at the kill point — never a near-invisible
+          // low-alpha wash.
+          const minW = TERMINAL_SEG_MIN_DEVICE_PX / dpr;
+          if (sx1 - sx0 < minW) sx0 = Math.max(x0, sx1 - minW);
+          ctx.fillStyle = withAlpha('#000000', 0.45);
+          ctx.fillRect(sx0, y, sx1 - sx0, bh);
+          ctx.fillStyle = withAlpha(t.fg, 0.85);
+          ctx.fillRect(sx0, y, Math.min(1, sx1 - sx0), bh);
+          continue;
+        }
+        if (sx1 - sx0 < 0.5) continue;
         if (ss.pattern === 'hatch' || ss.pattern === 'stipple') {
           ctx.fillStyle = withAlpha(ss.fill, 0.2);
           ctx.fillRect(sx0, y, sx1 - sx0, bh);
@@ -2187,7 +2211,7 @@ export class TimelineViewElement extends HTMLElement {
             ctx.fillRect(sx0, y, sx1 - sx0, bh);
           }
         } else {
-          ctx.fillStyle = ss.pattern === 'outline' ? withAlpha(ss.fill, 0.12) : ss.fill;
+          ctx.fillStyle = ss.fill;
           ctx.fillRect(sx0, y, sx1 - sx0, bh);
         }
         // Hairline phase boundary.
@@ -2228,12 +2252,15 @@ export class TimelineViewElement extends HTMLElement {
     }
 
     // Border — width capped for sliver bars so a 2px emphasis border can't
-    // swallow a 4px compact track.
+    // swallow a 4px compact track. Dashes (the cancelled treatment) fall
+    // back to solid below BORDER_DASH_MIN_PX, where a dash pattern reads
+    // as broken corners rather than a dashed edge.
     ctx.strokeStyle = style.border;
     ctx.lineWidth = Math.min(style.borderWidth, Math.max(1, bh / 4));
-    if (style.dash) ctx.setLineDash(style.dash);
+    const dash = style.dash && bw >= BORDER_DASH_MIN_PX ? style.dash : null;
+    if (dash) ctx.setLineDash(dash);
     ctx.stroke(path);
-    if (style.dash) ctx.setLineDash(EMPTY_DASH);
+    if (dash) ctx.setLineDash(EMPTY_DASH);
 
     // Corner glyph (emphasis): a filled notch triangle, top-right.
     if (style.glyph === 'bang' && bw >= 8) {

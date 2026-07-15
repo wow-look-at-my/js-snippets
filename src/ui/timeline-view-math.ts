@@ -950,7 +950,11 @@ export type StyleMap = Record<string, IntervalStyle>;
  * `styles` property): '' solid; 'emphasis'/'failed' unmissable — thick
  * emphasis border + corner bang glyph + stipple, hue untouched;
  * 'dim'/'queued' desaturated + translucent; 'hatch'/'waiting' 45° stripes;
- * 'outline' hollow.
+ * 'outline' hollow; 'cancelled' hollow + DASHED category-hue border —
+ * reads "stopped, not failed" at a glance: never the emphasis color,
+ * never the bang glyph, never a solid success body. (Below dash
+ * legibility the element draws the border solid; the hollow body still
+ * separates a tiny cancelled bar from a solid one.)
  */
 export const DEFAULT_STYLES: StyleMap = {
   '': { pattern: 'solid' },
@@ -961,6 +965,7 @@ export const DEFAULT_STYLES: StyleMap = {
   hatch: { pattern: 'hatch', alphaScale: 0.85 },
   waiting: { pattern: 'hatch', alphaScale: 0.85 },
   outline: { pattern: 'outline' },
+  cancelled: { pattern: 'outline', border: { width: 1.5, dash: [4, 3] } },
 };
 
 // -- Coverage / async history ---------------------------------------------------------

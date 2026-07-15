@@ -704,6 +704,17 @@ test('DEFAULT_STYLES: the required built-in treatments exist and alias', () => {
   assert.equal(DEFAULT_STYLES.outline.pattern, 'outline');
 });
 
+test("DEFAULT_STYLES: 'cancelled' is hollow + dashed, distinct from BOTH failure and success", () => {
+  const c = DEFAULT_STYLES.cancelled;
+  assert.equal(c.pattern, 'outline', 'hollow body — never a solid success-look bar');
+  assert.ok((c.border?.dash?.length ?? 0) >= 2, 'dashed whole-span border');
+  assert.notEqual(c.border?.emphasis, true, 'category hue, never the failure emphasis color');
+  assert.equal(c.glyph ?? 'none', 'none', 'no failure bang glyph');
+  // Failure keeps its own unmistakable signature: solid-stroke emphasis
+  // border + bang — no dash overlap between the two treatments.
+  assert.equal(DEFAULT_STYLES.failed.border?.dash, undefined);
+});
+
 // -- Coverage ----------------------------------------------------------------------
 
 test('mergeRanges: merges overlaps and touches, drops empties, sorts', () => {
