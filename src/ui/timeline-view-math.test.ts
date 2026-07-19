@@ -98,8 +98,7 @@ import {
   FIT_HYSTERESIS_FRAC,
   frameBudgetMs,
   shouldRender,
-  clockWakeDelayMs,
-  CLOCK_WAKE_MAX_MS,
+  clockDrawBudgetMs,
   IDLE_FRAME_MS,
   IDLE_BATTERY_FRAME_MS,
   dimColor,
@@ -2263,57 +2262,68 @@ test('shouldRender: gates a 60Hz rAF stream to the tier budget without aliasing'
   assert.ok(battery >= 95 && battery <= 105, `battery ≈ 10fps over 10s, got ${battery / 10}/s`);
 });
 
-test('clockWakeDelayMs: zoomed OUT sleeps one wake per device pixel of advance', () => {
-  // 15-min span over a 900px plot at dpr 1: the scene moves one device
-  // pixel per 1000ms — the idle loop is replaced by a single 1s timer.
-  const view = { start: 0, end: 900_000 };
-  assert.equal(clockWakeDelayMs(view, 900, 1, IDLE_FRAME_MS), CLOCK_WAKE_MAX_MS);
-  // At dpr 2 the pixel period halves (device-pixel space, matching
-  // snapViewToDevicePixels): 500ms wakes.
-  assert.equal(clockWakeDelayMs(view, 900, 2, IDLE_FRAME_MS), 500);
-  // A week-long span would advance a pixel every ~11 minutes — the wake
-  // clamps to CLOCK_WAKE_MAX_MS so an ongoing bar's pulse keeps visibly
-  // breathing (the aggressive idle floor, ~1fps).
-  assert.equal(clockWakeDelayMs({ start: 0, end: 7 * 86_400_000 }, 900, 1, IDLE_FRAME_MS), CLOCK_WAKE_MAX_MS);
-});
-
-test('clockWakeDelayMs: zoomed IN keeps the plain tier-paced loop (returns 0)', () => {
-  // A 10s span over 900px at dpr 2: ~5.6ms per device pixel — faster than
-  // any tier budget, so the existing rAF loop (whose tier pacing is the
-  // ceiling) stays.
+test('clockDrawBudgetMs: normal zooms render at the plain tier budget', () => {
+  // A 10s span over 900px at dpr 1: ~11ms per device pixel — the scene
+  // moves at least a pixel per tier frame, so the budget IS the tier's
+  // (min(tier fps, px/sec) = tier fps): pre-existing pacing, unchanged.
   const view = { start: 0, end: 10_000 };
-  assert.equal(clockWakeDelayMs(view, 900, 2, IDLE_FRAME_MS), 0);
-  assert.equal(clockWakeDelayMs(view, 900, 2, IDLE_BATTERY_FRAME_MS), 0);
+  assert.equal(clockDrawBudgetMs(view, 900, 1, IDLE_FRAME_MS), IDLE_FRAME_MS);
+  assert.equal(clockDrawBudgetMs(view, 900, 2, IDLE_FRAME_MS), IDLE_FRAME_MS);
+  assert.equal(clockDrawBudgetMs(view, 900, 2, IDLE_BATTERY_FRAME_MS), IDLE_BATTERY_FRAME_MS);
 });
 
-test('clockWakeDelayMs: NEVER faster than the baseline — nonzero delays always exceed the budget', () => {
-  // The operator's hard constraint: this throttle only ever LOWERS the
-  // redraw rate. Sweep spans/widths/dprs/budgets: every result is either
-  // 0 (keep the existing loop, whose pacing is the ceiling) or a wake
-  // STRICTLY longer than the tier budget, capped at CLOCK_WAKE_MAX_MS.
+test('clockDrawBudgetMs: zoomed OUT widens to the exact per-device-pixel period — no upper cap', () => {
+  // 15-min span over a 900px plot at dpr 1: one device pixel per 1000ms.
+  const view = { start: 0, end: 900_000 };
+  assert.equal(clockDrawBudgetMs(view, 900, 1, IDLE_FRAME_MS), 1000);
+  // dpr 2 halves the pixel period (device-pixel space, matching
+  // snapViewToDevicePixels).
+  assert.equal(clockDrawBudgetMs(view, 900, 2, IDLE_FRAME_MS), 500);
+  // A week-long span advances a pixel every ~11 minutes and the budget
+  // says exactly that — deliberately NO cap (the retired ~1s clock-wake
+  // floor is what read as stuttery stepping; each 1px step now lands
+  // precisely when due and intermediate frames would be identical).
+  assert.equal(clockDrawBudgetMs({ start: 0, end: 7 * 86_400_000 }, 900, 1, IDLE_FRAME_MS), (7 * 86_400_000) / 900);
+});
+
+test('clockDrawBudgetMs: the tier budget is a hard floor — never renders faster than the tier', () => {
+  // The ceiling constraint, structurally max(): sweep spans/widths/dprs/
+  // budgets — every result is >= the tier budget, and equals it exactly
+  // when the per-pixel period fits inside it.
   for (const span of [1_000, 60_000, 900_000, 3_600_000, 7 * 86_400_000]) {
     for (const plotW of [200, 900, 2500]) {
       for (const dpr of [1, 1.5, 2, 3]) {
         for (const budget of [IDLE_FRAME_MS, IDLE_BATTERY_FRAME_MS]) {
-          const d = clockWakeDelayMs({ start: 0, end: span }, plotW, dpr, budget);
-          assert.ok(d === 0 || (d > budget && d <= CLOCK_WAKE_MAX_MS), `span ${span} w ${plotW} dpr ${dpr} budget ${budget}: ${d}`);
+          const d = clockDrawBudgetMs({ start: 0, end: span }, plotW, dpr, budget);
+          const period = span / (plotW * dpr);
+          assert.ok(d >= budget, `span ${span} w ${plotW} dpr ${dpr} budget ${budget}: ${d} < ${budget}`);
+          assert.equal(d, Math.max(budget, period));
         }
       }
     }
   }
 });
 
-test('clockWakeDelayMs: interactive tier (budget 0) and degenerate geometry keep the loop', () => {
+test('clockDrawBudgetMs: monotone in span — zooming out never speeds up the cadence', () => {
+  let prev = 0;
+  for (const span of [1_000, 10_000, 60_000, 900_000, 3_600_000, 86_400_000]) {
+    const d = clockDrawBudgetMs({ start: 0, end: span }, 900, 1, IDLE_FRAME_MS);
+    assert.ok(d >= prev, `span ${span}: ${d} < ${prev}`);
+    prev = d;
+  }
+});
+
+test('clockDrawBudgetMs: interactive tier (budget 0) yields the bare px period; degenerate geometry falls back to the tier', () => {
   const view = { start: 0, end: 900_000 };
-  // Full-rate interactive is the existing ceiling — the wake never
-  // replaces it (responsiveness first while the user is active).
-  assert.equal(clockWakeDelayMs(view, 900, 1, 0), 0);
-  // Degenerate inputs: fall back to the loop, never a bogus timer.
-  assert.equal(clockWakeDelayMs({ start: 5, end: 5 }, 900, 1, IDLE_FRAME_MS), 0);
-  assert.equal(clockWakeDelayMs({ start: 10, end: 0 }, 900, 1, IDLE_FRAME_MS), 0);
-  assert.equal(clockWakeDelayMs(view, 0, 1, IDLE_FRAME_MS), 0);
-  assert.equal(clockWakeDelayMs(view, 900, NaN, IDLE_FRAME_MS), 0);
-  assert.equal(clockWakeDelayMs({ start: NaN, end: 1 }, 900, 1, IDLE_FRAME_MS), 0);
+  // min(display rate, px rate) with an uncapped interactive tier is just
+  // the px rate — 1000ms per device pixel here.
+  assert.equal(clockDrawBudgetMs(view, 900, 1, 0), 1000);
+  // Degenerate inputs: plain tier pacing, never a bogus throttle.
+  assert.equal(clockDrawBudgetMs({ start: 5, end: 5 }, 900, 1, IDLE_FRAME_MS), IDLE_FRAME_MS);
+  assert.equal(clockDrawBudgetMs({ start: 10, end: 0 }, 900, 1, IDLE_FRAME_MS), IDLE_FRAME_MS);
+  assert.equal(clockDrawBudgetMs(view, 0, 1, IDLE_FRAME_MS), IDLE_FRAME_MS);
+  assert.equal(clockDrawBudgetMs(view, 900, NaN, IDLE_FRAME_MS), IDLE_FRAME_MS);
+  assert.equal(clockDrawBudgetMs({ start: NaN, end: 1 }, 900, 1, IDLE_FRAME_MS), IDLE_FRAME_MS);
 });
 
 // -- dimColor (the uniform dim transform) ----------------------------------------------
