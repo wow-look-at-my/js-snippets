@@ -224,7 +224,15 @@ dynamic lane count (1-50+), smooth with thousands of in-window intervals
 (viewport culling, dirty-flag rAF drawing, DPR-aware backing store capped
 at 3, adaptive idle pacing — full rate while interacting + a ~500ms
 grace, ~30fps idle, ~10fps idle on battery via navigator.getBattery
-feature-detection, paused while the document is hidden). Canvas text is
+feature-detection, paused while the document is hidden — and those tier
+rates are a CEILING: clock-driven animation (the follow-now scroll,
+ongoing-bar growth) is additionally event-driven below it, sleeping on a
+single timer wake per whole device pixel of time-axis advance
+(clockWakeDelayMs, capped at ~1s so pulses keep breathing) whenever that
+period exceeds the tier budget, so a zoomed-out followed chart draws ~1
+frame/s instead of 30 and a chart with nothing animating draws nothing
+at all; input/data/hover changes still render immediately via the dirty
+flag). Canvas text is
 kept crisp: the 2d context is OPAQUE (alpha: false — the chart paints
 its own background every frame, and an opaque canvas gets subpixel text
 antialiasing where an alpha one gets grayscale-only; keep --timeline-bg
@@ -235,7 +243,15 @@ stability-first: the viewport origin is snapped to whole DEVICE pixels
 once per frame and nothing else on the time axis is rounded (text
 origins are the one per-element exception — nothing tiles against a
 label), so follow-mode scrolling translates the whole scene in integer
-device-pixel steps and bars never jiggle relative to each other. Not a
+device-pixel steps and bars never jiggle relative to each other. The now
+line is the one VIEWPORT-anchored element: its x is computed from the
+RAW view (nowLineX) — never the snapped render view, whose per-frame
+quantization error used to wiggle the line between adjacent device
+pixels — so while follow-now is engaged it holds perfectly still as the
+scene scrolls under it. Hatch/stipple pattern fills are phase-anchored
+to the CONTENT they fill (a span's unclamped origin, a coverage gap's
+start), not to the canvas, so the texture travels 1:1 with its span
+instead of the span sliding over a static screen-space pattern. Not a
 Gantt (many bars per row), not a flame chart (no nesting).
 
 Color encodes CATEGORY: interval.category (default lane.group, then
@@ -581,12 +597,14 @@ empty-text (empty-state hint), fullscreen (reflected viewport-fill mode
 fullscreen toggle), no-minimap (hide the bottom minimap strip),
 no-legend (hide the "?" legend pill).
 
-Interaction: plain wheel / two-finger scroll — deltaX ALWAYS pans time;
-plain deltaY scrolls the lane stack when it overflows the host and is
-otherwise NOT consumed at all (no preventDefault — the page scrolls
-normally over the chart; vertical scrolling never pans the chart
-sideways); a diagonal gesture routes each axis to its own behavior and
-is consumed iff at least one axis routed (all deltaMode-normalized);
+Interaction: plain wheel / two-finger scroll routes by DOMINANT axis —
+horizontal-dominant (|deltaX| > |deltaY|) pans time (consumed; its minor
+vertical component nudges the lane stack when it overflows the host);
+VERTICAL-dominant — ties included — is NEVER consumed, whether or not
+the lanes overflow (no preventDefault, no zoom: the page scrolls
+normally over the chart, and the lane stack scrolls by pointer drag or
+arrow keys instead; vertical scrolling never pans the chart sideways);
+all deltas deltaMode-normalized;
 ctrl/meta+wheel zooms anchored under the cursor (pixel-precise trackpad
 deltas apply 1:1; discrete wheel steps glide ~130ms; always consumed —
 never browser page-zoom; the cursor anchor holds while follow-now is
@@ -658,10 +676,12 @@ Exports:
     composable; ZOOM_PX_PER_DOUBLE px per doubling),
     routeWheel(WheelInput, lanesOverflow) → WheelRoute {zoomPx, panPx,
     laneScrollPx, consumed} (the gesture router: ctrl/meta = zoom,
-    always consumed; shift = time pan; else deltaX pans time and deltaY
-    scrolls lanes ONLY when they overflow — a plain vertical wheel over
-    a non-overflowing chart routes nowhere and consumed=false means DO
-    NOT preventDefault, let the page scroll; deltaMode normalized),
+    always consumed; shift = time pan; else the DOMINANT axis decides —
+    horizontal-dominant (|dx| > |dy|) pans time, consumed, with the
+    minor deltaY nudging lanes only when they overflow; vertical-dominant
+    incl. ties routes NOWHERE regardless of overflow, and consumed=false
+    means DO NOT preventDefault, let the page scroll; deltaMode
+    normalized),
     clampViewToNow(view, now) → TimeView (the hard right
     end stop: a user view's end never passes now, span preserved),
     followAfterGesture(wasFollowing, prevEnd, next, now, isPan,
@@ -687,7 +707,14 @@ Exports:
     in integer device-pixel steps), snapTextOrigin(v, dpr) → number (a
     CSS-px coordinate snapped to the nearest whole device pixel — for
     TEXT draw origins only, where per-element rounding is crispness, not
-    jiggle; never round bar geometry per element).
+    jiggle; never round bar geometry per element),
+    nowLineX(now, view, gutterX, plotWidthCss, dpr) → number (the now
+    line's snapped x, computed against the RAW view — while follow-now
+    pins the view the result is frame-to-frame CONSTANT; the snapped
+    render view's per-frame quantization error would wiggle it between
+    adjacent device pixels — landing on the half-device-px grid for a
+    crisp 1px stroke; the one viewport-anchored exception to the global
+    rounding policy).
   Staleness: STALE_AFTER_DEFAULT_MS (10_000), feedIsStale(now,
     lastFresh, staleAfterMs) → boolean (never stale before any data or
     with a non-finite/non-positive threshold; strictly-past-threshold
@@ -828,4 +855,12 @@ Exports:
     frameBudgetMs(tier) (0 / IDLE_FRAME_MS ≈ 33.3 / IDLE_BATTERY_FRAME_MS
     = 100), shouldRender(nowTs, lastRenderTs, budgetMs, rafIntervalMs?)
     (rAF frame gate with anti-aliasing slack), INTERACT_GRACE_MS (= 500ms
-    of full rate after the last input).
+    of full rate after the last input), clockWakeDelayMs(view,
+    plotWidthCss, dpr, budgetMs) → number (event-driven idle cadence for
+    clock-driven animation: the ms until the time axis next advances one
+    whole device pixel — span/(plotW*dpr) — capped at CLOCK_WAKE_MAX_MS
+    (1000); 0 = keep the plain rAF loop, returned whenever the period
+    fits the tier budget, the budget is 0/interactive, or geometry is
+    degenerate; a nonzero delay is always > budgetMs, so the wake can
+    only ever LOWER the redraw rate below the tier ceiling, never raise
+    it), CLOCK_WAKE_MAX_MS.
