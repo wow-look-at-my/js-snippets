@@ -204,12 +204,17 @@ export interface WheelRoute {
  * Route a wheel/trackpad gesture: ctrl/meta+wheel zooms (always consumed —
  * a pinch stream must never leak browser page-zoom, even on a zero-delta
  * tick); shift+wheel pans time (a vertical wheel pans horizontally);
- * otherwise deltaX pans time and deltaY scrolls the lane stack ONLY when
- * it overflows the host. A plain vertical wheel over a non-overflowing
- * chart is NOT consumed — vertical scrolling must never scroll the chart
- * sideways, and the page keeps scrolling normally across the chart. A
- * diagonal two-finger gesture applies each axis to its own behavior and is
- * consumed iff at least one axis routed.
+ * otherwise the DOMINANT axis decides. Horizontal-dominant (|dx| > |dy|):
+ * deltaX pans time — consumed — and the gesture's minor vertical
+ * component still nudges the lane stack when it overflows the host (a
+ * diagonal two-finger pan moves both axes; the event is consumed either
+ * way, so nothing is half-forwarded). Vertical-dominant — ties included —
+ * routes NOTHING, whether or not the lanes overflow: a plain vertical
+ * wheel belongs to the PAGE (no preventDefault, no zoom, no lane scroll),
+ * so page scrolling always works across the chart; the lane stack scrolls
+ * by pointer drag or arrow keys instead. (An overflowing lane stack used
+ * to capture plain deltaY here, which ate the page's vertical scroll on
+ * exactly the busy multi-lane charts that always overflow.)
  */
 export function routeWheel(e: WheelInput, lanesOverflow: boolean): WheelRoute {
   const dx = wheelDeltaToPixels(e.deltaX, e.deltaMode);
@@ -219,8 +224,8 @@ export function routeWheel(e: WheelInput, lanesOverflow: boolean): WheelRoute {
     const pan = dy || dx;
     return { zoomPx: 0, panPx: pan, laneScrollPx: 0, consumed: pan !== 0 };
   }
-  const laneScrollPx = lanesOverflow ? dy : 0;
-  return { zoomPx: 0, panPx: dx, laneScrollPx, consumed: dx !== 0 || laneScrollPx !== 0 };
+  if (!(Math.abs(dx) > Math.abs(dy))) return { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false };
+  return { zoomPx: 0, panPx: dx, laneScrollPx: lanesOverflow ? dy : 0, consumed: true };
 }
 
 // -- Follow-now rule ---------------------------------------------------------------
@@ -388,6 +393,29 @@ export function snapViewToDevicePixels(view: TimeView, plotWidthCss: number, dpr
 export function snapTextOrigin(v: number, dpr: number): number {
   if (!Number.isFinite(v) || !(dpr > 0)) return v;
   return Math.round(v * dpr) / dpr;
+}
+
+/**
+ * The now line's x (CSS px, `gutterX` offset included), snapped to the
+ * device-pixel grid + half a device px (a crisp 1px stroke). Computed
+ * against the RAW view — deliberately NOT the snapViewToDevicePixels
+ * render view all scene geometry uses: while follow-now pins the view,
+ * `now` sits at a FIXED fraction of the raw view's span, so this x is
+ * frame-to-frame CONSTANT; routing it through the snapped view instead
+ * re-adds the origin's per-frame quantization error (±half a device px),
+ * which flips the rounded x between adjacent device pixels as the view
+ * slides — the now line visibly wiggles while everything else scrolls
+ * smoothly. On a parked (static) view the two computations differ only by
+ * a constant sub-device-px offset, so the line just steps whole device
+ * pixels as the clock advances. Scene geometry must keep the snapped
+ * render view (bars are SCENE-anchored and must translate together); the
+ * now line alone is VIEWPORT-anchored, which is why it alone reads the
+ * raw view. Degenerate dpr passes the unsnapped x through.
+ */
+export function nowLineX(now: number, view: TimeView, gutterX: number, plotWidthCss: number, dpr: number): number {
+  const x = gutterX + timeToX(now, view, plotWidthCss);
+  if (!Number.isFinite(x) || !(dpr > 0)) return x;
+  return (Math.round(x * dpr) + 0.5) / dpr;
 }
 
 // -- Time ticks --------------------------------------------------------------------
@@ -1765,4 +1793,42 @@ export function frameBudgetMs(tier: RenderTier): number {
 export function shouldRender(nowTs: number, lastRenderTs: number, budgetMs: number, rafIntervalMs = 16.7): boolean {
   if (budgetMs <= 0) return true;
   return nowTs - lastRenderTs >= budgetMs - rafIntervalMs / 2;
+}
+
+/**
+ * Ceiling on the clock-wake delay: even a chart whose time-per-device-px
+ * period is minutes redraws at least ~1/s while a live animation (the
+ * follow scroll, an ongoing bar's leading-edge pulse) is on screen — the
+ * aggressive idle FLOOR. Keeps the pulse visibly breathing and live
+ * chrome honest at negligible cost; a chart with nothing clock-driven
+ * still schedules NOTHING at all.
+ */
+export const CLOCK_WAKE_MAX_MS = 1000;
+
+/**
+ * Event-driven cadence for CLOCK-driven animation (the follow-now scroll
+ * and ongoing-bar growth): nothing on the time axis moves a visible
+ * amount until the clock advances one whole DEVICE pixel at the current
+ * scale — span / (plotWidthCss * dpr) ms — so instead of spinning a rAF
+ * loop that mostly skips, the element sleeps on ONE scheduled timer wake
+ * per pixel of advance. Returns that wake delay in ms, clamped to
+ * CLOCK_WAKE_MAX_MS, or 0 meaning "keep the plain rAF loop": the
+ * per-pixel period already fits inside `budgetMs` (the current tier's
+ * frame budget — frameBudgetMs — which stays the CEILING; this throttle
+ * only ever LOWERS the rate, so a nonzero delay is always > budgetMs and
+ * the chart never redraws faster than the pre-existing tier pacing). A
+ * zero/negative budget (the interactive tier renders every rAF) also
+ * returns 0 — the wake replaces only the throttled IDLE tiers; while the
+ * user interacts, full-rate rAF is the existing ceiling and stays as-is.
+ * Degenerate geometry (no width, bad dpr, empty span) returns 0 too —
+ * fall back to the loop, never a bogus timer.
+ */
+export function clockWakeDelayMs(view: TimeView, plotWidthCss: number, dpr: number, budgetMs: number): number {
+  if (!(budgetMs > 0)) return 0;
+  const span = view.end - view.start;
+  const wDev = plotWidthCss * dpr;
+  if (!Number.isFinite(span) || span <= 0 || !Number.isFinite(wDev) || wDev <= 0) return 0;
+  const period = span / wDev;
+  if (!(period > budgetMs)) return 0;
+  return Math.min(period, CLOCK_WAKE_MAX_MS);
 }

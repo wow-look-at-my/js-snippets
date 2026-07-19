@@ -73,6 +73,7 @@ import {
   clampViewToNow,
   snapViewToDevicePixels,
   snapTextOrigin,
+  nowLineX,
   durationWidthPx,
   edgeContinuation,
   MIN_BAR_PX,
@@ -97,6 +98,8 @@ import {
   FIT_HYSTERESIS_FRAC,
   frameBudgetMs,
   shouldRender,
+  clockWakeDelayMs,
+  CLOCK_WAKE_MAX_MS,
   IDLE_FRAME_MS,
   IDLE_BATTERY_FRAME_MS,
   dimColor,
@@ -863,9 +866,10 @@ const wheel = (over: Partial<WheelInput>): WheelInput => ({
 });
 
 // The full routing matrix: {plain, ctrl, meta, shift} x {deltaX only,
-// deltaY only, diagonal} x {lanes overflow, no overflow}. `consumed` is
-// the preventDefault contract — false means the element must NOT call
-// preventDefault and the page scrolls normally over the chart.
+// deltaY only, diagonal by dominant axis} x {lanes overflow, no
+// overflow}. `consumed` is the preventDefault contract — false means the
+// element must NOT call preventDefault and the page scrolls normally over
+// the chart.
 
 test('routeWheel: deltaX always pans time (consumed), with and without lane overflow', () => {
   for (const lanesOverflow of [false, true]) {
@@ -874,21 +878,47 @@ test('routeWheel: deltaX always pans time (consumed), with and without lane over
   }
 });
 
-test('routeWheel: plain deltaY scrolls lanes only when they overflow — NEVER pans time', () => {
-  assert.deepEqual(routeWheel(wheel({ deltaY: 5 }), true), { zoomPx: 0, panPx: 0, laneScrollPx: 5, consumed: true });
-  // No overflow: nothing routes and the event is NOT consumed — no
-  // preventDefault, the page scrolls. Vertical scrolling must never
-  // scroll the chart sideways.
-  assert.deepEqual(routeWheel(wheel({ deltaY: 5 }), false), { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false });
-  assert.deepEqual(routeWheel(wheel({ deltaY: -240 }), false), { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false });
+test('routeWheel: plain deltaY routes NOTHING — page scroll wins even over an overflowing lane stack', () => {
+  // The vertical-scroll contract: a vertical-dominant modifier-less wheel
+  // is never consumed, so preventDefault is never called and the page
+  // scrolls over the chart — regardless of lane overflow (an overflowing
+  // stack used to capture deltaY and eat the page's scroll on exactly the
+  // busy charts that always overflow).
+  for (const lanesOverflow of [false, true]) {
+    assert.deepEqual(routeWheel(wheel({ deltaY: 5 }), lanesOverflow), { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false });
+    assert.deepEqual(routeWheel(wheel({ deltaY: -240 }), lanesOverflow), { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false });
+  }
 });
 
-test('routeWheel: a diagonal gesture routes each axis to its own behavior', () => {
+test('routeWheel: a HORIZONTAL-dominant diagonal pans time; its minor deltaY nudges overflowing lanes', () => {
   assert.deepEqual(routeWheel(wheel({ deltaX: -6, deltaY: 4 }), true), { zoomPx: 0, panPx: -6, laneScrollPx: 4, consumed: true });
-  // No overflow: deltaX pans time, the vertical component is DROPPED (not
-  // half-forwarded to the page — the event is consumed because one axis
-  // routed).
+  // No overflow: deltaX pans time, the minor vertical component is
+  // DROPPED (not half-forwarded to the page — the event is consumed
+  // because the dominant axis routed).
   assert.deepEqual(routeWheel(wheel({ deltaX: -6, deltaY: 4 }), false), { zoomPx: 0, panPx: -6, laneScrollPx: 0, consumed: true });
+});
+
+test('routeWheel: a VERTICAL-dominant diagonal (ties included) belongs to the page', () => {
+  for (const lanesOverflow of [false, true]) {
+    // |dy| > |dx|: the whole gesture goes to the page — the minor dx is
+    // never half-applied as a sideways chart pan.
+    assert.deepEqual(routeWheel(wheel({ deltaX: 3, deltaY: -9 }), lanesOverflow), {
+      zoomPx: 0,
+      panPx: 0,
+      laneScrollPx: 0,
+      consumed: false,
+    });
+    // An exact tie counts as vertical: only a CLEARLY horizontal gesture
+    // may take the event away from page scrolling.
+    assert.deepEqual(routeWheel(wheel({ deltaX: 5, deltaY: 5 }), lanesOverflow), {
+      zoomPx: 0,
+      panPx: 0,
+      laneScrollPx: 0,
+      consumed: false,
+    });
+    // Zero-delta plain tick: nothing to route, not consumed.
+    assert.equal(routeWheel(wheel({}), lanesOverflow).consumed, false);
+  }
 });
 
 test('routeWheel: ctrl/meta+wheel is zoom only (deltaX ignored), always consumed', () => {
@@ -939,8 +969,16 @@ test('routeWheel: shift+wheel pans time (vertical delta wins, else horizontal), 
 
 test('routeWheel: deltaMode 1 (lines) normalizes to pixels on every path', () => {
   assert.deepEqual(routeWheel(wheel({ deltaX: -2, deltaMode: 1 }), false), { zoomPx: 0, panPx: -32, laneScrollPx: 0, consumed: true });
-  assert.deepEqual(routeWheel(wheel({ deltaY: 3, deltaMode: 1 }), true), { zoomPx: 0, panPx: 0, laneScrollPx: 48, consumed: true });
-  // Discrete vertical wheel, no overflow: still a pure passthrough.
+  // Horizontal-dominant discrete diagonal over overflowing lanes: both
+  // axes come out normalized (lineHeight 16).
+  assert.deepEqual(routeWheel(wheel({ deltaX: -4, deltaY: 1, deltaMode: 1 }), true), {
+    zoomPx: 0,
+    panPx: -64,
+    laneScrollPx: 16,
+    consumed: true,
+  });
+  // Discrete vertical wheel: a pure passthrough, overflow or not.
+  assert.deepEqual(routeWheel(wheel({ deltaY: 3, deltaMode: 1 }), true), { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false });
   assert.deepEqual(routeWheel(wheel({ deltaY: 3, deltaMode: 1 }), false), { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false });
   assert.deepEqual(routeWheel(wheel({ deltaY: -1, deltaMode: 1, ctrlKey: true }), false), {
     zoomPx: -16,
@@ -948,6 +986,56 @@ test('routeWheel: deltaMode 1 (lines) normalizes to pixels on every path', () =>
     laneScrollPx: 0,
     consumed: true,
   });
+});
+
+// -- Now-line x ------------------------------------------------------------------
+
+test('nowLineX: rock-steady while follow-now pins the view (the wiggle regression)', () => {
+  // A steady follow pin holds `now` at a fixed span fraction of the RAW
+  // view. Across hundreds of frames — while snapViewToDevicePixels keeps
+  // re-quantizing the view origin underneath — the snapped now-line x
+  // must come out IDENTICAL every frame. (Computing it through the
+  // snapped render view instead re-adds the origin's per-frame ±half-px
+  // error and flips the rounded x between adjacent device pixels.)
+  const span = 15 * 60_000;
+  const lead = 0.02;
+  const plotW = 990;
+  const gutter = 73.4;
+  for (const dpr of [1, 1.5, 2, 3]) {
+    const xs = new Set<number>();
+    for (let f = 0; f < 400; f++) {
+      const now = 1_752_000_000_000 + f * 16.7;
+      const end = now + span * lead;
+      const view = { start: end - span, end };
+      xs.add(nowLineX(now, view, gutter, plotW, dpr));
+    }
+    assert.equal(xs.size, 1, `dpr ${dpr}: expected one constant x, saw ${xs.size}`);
+  }
+});
+
+test('nowLineX: lands on the half-device-pixel grid (crisp 1px stroke)', () => {
+  for (const dpr of [1, 1.5, 2, 3]) {
+    const view = { start: 1_000_000, end: 1_900_000 };
+    const x = nowLineX(1_400_000, view, 80.25, 987.5, dpr);
+    const dev = x * dpr - 0.5;
+    assert.ok(Math.abs(dev - Math.round(dev)) < 1e-6, `dpr ${dpr}: ${x} is not on the half-device-px grid`);
+  }
+});
+
+test('nowLineX: on a parked (static) view the line steps whole device pixels with the clock', () => {
+  const view = { start: 0, end: 900_000 };
+  const plotW = 900;
+  const dpr = 2;
+  const msPerDevPx = (view.end - view.start) / (plotW * dpr);
+  const x0 = nowLineX(450_000, view, 60, plotW, dpr);
+  const x3 = nowLineX(450_000 + 3 * msPerDevPx, view, 60, plotW, dpr);
+  assert.ok(Math.abs(x3 - (x0 + 3 / dpr)) < 1e-9, `expected exactly 3 device px of advance, got ${x3 - x0}`);
+});
+
+test('nowLineX: degenerate dpr passes the unsnapped x through', () => {
+  const view = { start: 0, end: 1000 };
+  assert.equal(nowLineX(500, view, 10, 100, 0), 10 + 50);
+  assert.equal(nowLineX(500, view, 10, 100, NaN), 10 + 50);
 });
 
 // -- Follow-now rule ----------------------------------------------------------------
@@ -2173,6 +2261,59 @@ test('shouldRender: gates a 60Hz rAF stream to the tier budget without aliasing'
   assert.ok(idle >= 280 && idle <= 320, `idle ≈ 30fps over 10s, got ${idle / 10}/s`);
   const battery = countAt(IDLE_BATTERY_FRAME_MS);
   assert.ok(battery >= 95 && battery <= 105, `battery ≈ 10fps over 10s, got ${battery / 10}/s`);
+});
+
+test('clockWakeDelayMs: zoomed OUT sleeps one wake per device pixel of advance', () => {
+  // 15-min span over a 900px plot at dpr 1: the scene moves one device
+  // pixel per 1000ms — the idle loop is replaced by a single 1s timer.
+  const view = { start: 0, end: 900_000 };
+  assert.equal(clockWakeDelayMs(view, 900, 1, IDLE_FRAME_MS), CLOCK_WAKE_MAX_MS);
+  // At dpr 2 the pixel period halves (device-pixel space, matching
+  // snapViewToDevicePixels): 500ms wakes.
+  assert.equal(clockWakeDelayMs(view, 900, 2, IDLE_FRAME_MS), 500);
+  // A week-long span would advance a pixel every ~11 minutes — the wake
+  // clamps to CLOCK_WAKE_MAX_MS so an ongoing bar's pulse keeps visibly
+  // breathing (the aggressive idle floor, ~1fps).
+  assert.equal(clockWakeDelayMs({ start: 0, end: 7 * 86_400_000 }, 900, 1, IDLE_FRAME_MS), CLOCK_WAKE_MAX_MS);
+});
+
+test('clockWakeDelayMs: zoomed IN keeps the plain tier-paced loop (returns 0)', () => {
+  // A 10s span over 900px at dpr 2: ~5.6ms per device pixel — faster than
+  // any tier budget, so the existing rAF loop (whose tier pacing is the
+  // ceiling) stays.
+  const view = { start: 0, end: 10_000 };
+  assert.equal(clockWakeDelayMs(view, 900, 2, IDLE_FRAME_MS), 0);
+  assert.equal(clockWakeDelayMs(view, 900, 2, IDLE_BATTERY_FRAME_MS), 0);
+});
+
+test('clockWakeDelayMs: NEVER faster than the baseline — nonzero delays always exceed the budget', () => {
+  // The operator's hard constraint: this throttle only ever LOWERS the
+  // redraw rate. Sweep spans/widths/dprs/budgets: every result is either
+  // 0 (keep the existing loop, whose pacing is the ceiling) or a wake
+  // STRICTLY longer than the tier budget, capped at CLOCK_WAKE_MAX_MS.
+  for (const span of [1_000, 60_000, 900_000, 3_600_000, 7 * 86_400_000]) {
+    for (const plotW of [200, 900, 2500]) {
+      for (const dpr of [1, 1.5, 2, 3]) {
+        for (const budget of [IDLE_FRAME_MS, IDLE_BATTERY_FRAME_MS]) {
+          const d = clockWakeDelayMs({ start: 0, end: span }, plotW, dpr, budget);
+          assert.ok(d === 0 || (d > budget && d <= CLOCK_WAKE_MAX_MS), `span ${span} w ${plotW} dpr ${dpr} budget ${budget}: ${d}`);
+        }
+      }
+    }
+  }
+});
+
+test('clockWakeDelayMs: interactive tier (budget 0) and degenerate geometry keep the loop', () => {
+  const view = { start: 0, end: 900_000 };
+  // Full-rate interactive is the existing ceiling — the wake never
+  // replaces it (responsiveness first while the user is active).
+  assert.equal(clockWakeDelayMs(view, 900, 1, 0), 0);
+  // Degenerate inputs: fall back to the loop, never a bogus timer.
+  assert.equal(clockWakeDelayMs({ start: 5, end: 5 }, 900, 1, IDLE_FRAME_MS), 0);
+  assert.equal(clockWakeDelayMs({ start: 10, end: 0 }, 900, 1, IDLE_FRAME_MS), 0);
+  assert.equal(clockWakeDelayMs(view, 0, 1, IDLE_FRAME_MS), 0);
+  assert.equal(clockWakeDelayMs(view, 900, NaN, IDLE_FRAME_MS), 0);
+  assert.equal(clockWakeDelayMs({ start: NaN, end: 1 }, 900, 1, IDLE_FRAME_MS), 0);
 });
 
 // -- dimColor (the uniform dim transform) ----------------------------------------------

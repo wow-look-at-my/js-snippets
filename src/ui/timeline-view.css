@@ -453,6 +453,33 @@ canvas.minimap[hidden] {
   font-size: 10px;
 }
 
+/* -- Minimap lift for the corner chrome ------------------------------------------ */
+/* While the minimap strip is visible (the element unhides canvas.minimap,
+ * which precedes all the chrome in the shadow DOM, so the sibling
+ * combinator can key off it — the same idiom as `.fs-pill[hidden] ~
+ * .live-pill` above), EVERY piece of corner chrome rides up above the
+ * band TOGETHER, keeping the exact stacking gaps of the base offsets.
+ * Each value is its base offset + 32px (MINIMAP_H in timeline-view.ts —
+ * the strip canvas' own inline height comes from that constant). The lift
+ * lives HERE, next to the base offsets it shifts, precisely because a
+ * partial lift from element code once raised only the fullscreen toggle +
+ * live pill and parked the ⤢ button underneath the statically-positioned
+ * "?" legend pill. */
+
+canvas.minimap:not([hidden]) ~ .live-pill,
+canvas.minimap:not([hidden]) ~ .fs-pill {
+  bottom: 42px; /* 10px base + 32px strip */
+}
+
+canvas.minimap:not([hidden]) ~ .legend-pill {
+  bottom: 76px; /* 44px base + 32px strip */
+}
+
+canvas.minimap:not([hidden]) ~ .legend-panel {
+  bottom: 108px; /* 76px base + 32px strip */
+  max-height: calc(100% - 128px); /* keep the same 20px top clearance as the base rule */
+}
+
 @media (prefers-reduced-motion: reduce) {
   .tooltip,
   .live-pill,

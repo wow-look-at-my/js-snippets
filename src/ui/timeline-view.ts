@@ -30,13 +30,15 @@
  * disengaging lets the backward deltas consume the lead (any residual
  * glides out), and the pill glides to the followed position — the view
  * never teleports in a single frame (reduced motion snaps instead).
- * Interaction is trackpad-first: two-finger pan (x = time;
- * y scrolls the lane stack when it overflows, and is otherwise left to
- * the PAGE — a plain vertical wheel never pans the chart sideways and
- * never has its default prevented, so page scrolling works across the
- * chart), ctrl/meta+wheel = smooth zoom anchored under the cursor
- * (discrete wheel steps glide), shift+wheel = time pan, drag = pan, pinch =
- * zoom, arrows/±/Home/End when focused. `loadRange` turns scrolling into
+ * Interaction is trackpad-first, and wheel routing is by DOMINANT axis: a
+ * horizontal-dominant wheel pans time (its minor vertical component
+ * nudges the lane stack when it overflows); a VERTICAL-dominant wheel
+ * with no modifier is never consumed — no preventDefault, no zoom — so
+ * page scrolling always works across the chart (the lane stack scrolls
+ * by drag or arrow keys instead); ctrl/meta+wheel = smooth zoom anchored
+ * under the cursor (discrete wheel steps glide; trackpad pinch arrives
+ * as ctrl+wheel), shift+wheel = time pan, drag = pan, pinch = zoom,
+ * arrows/±/Home/End when focused. `loadRange` turns scrolling into
  * the past into async history requests — for BACKWARD gaps only; the live
  * forward edge always belongs to the consumer's own setData/mergeData
  * `coverage` — with uncovered regions visibly distinct from empty-but-known
@@ -83,11 +85,19 @@
  * honoring prefers-reduced-motion).
  *
  * Cheap by construction: draws only when dirty (one rAF at a time), a
- * continuous loop runs only while following/animating and the element is
- * visible, and idle animation is paced adaptively — full rate while
+ * continuous loop runs only while tweens/gestures animate and the element
+ * is visible, and idle animation is paced adaptively — full rate while
  * interacting (plus a short grace window), ~30fps idle, ~10fps idle on
  * battery (feature-detected via navigator.getBattery), paused while the
- * document is hidden; culled to the viewport; DPR-aware (capped at 3), on
+ * document is hidden. Those tier rates are a CEILING, and clock-driven
+ * animation (the follow-now scroll, ongoing-bar growth) is event-driven
+ * below it: nothing on the time axis moves a visible amount until the
+ * clock advances one whole device pixel, so when that period exceeds the
+ * tier budget the loop STOPS and a single clock-wake timer (capped ~1s so
+ * pulses keep breathing) redraws exactly per pixel of advance — a
+ * zoomed-out followed chart draws ~1 frame/s instead of 30, and a chart
+ * with nothing animating draws nothing at all; culled to the viewport;
+ * DPR-aware (capped at 3), on
  * an OPAQUE canvas (subpixel text AA; keep --timeline-bg opaque).
  * Theme via --timeline-* custom properties (see THEME_DEFAULTS); the DOM
  * chrome (tooltip, live pill, empty hint) is styled by timeline-view.css.
@@ -114,6 +124,7 @@ import {
   feedIsStale,
   snapViewToDevicePixels,
   snapTextOrigin,
+  nowLineX,
   MIN_SPAN_MS,
   MAX_SPAN_MS,
   timeTicks,
@@ -151,6 +162,7 @@ import {
   historyProbe,
   frameBudgetMs,
   shouldRender,
+  clockWakeDelayMs,
   INTERACT_GRACE_MS,
   type RenderTier,
   type TimelineLane,
@@ -360,6 +372,10 @@ const MINIMAP_H = 32;
 // Hosts shorter than this hide the strip: below ~140px the band would eat
 // a third of an already-cramped plot.
 const MINIMAP_MIN_HOST_PX = 140;
+// Side length (CSS px) of the repeating hatch/stipple pattern tile —
+// shared by tile generation (patternFor) and phase anchoring
+// (anchorPattern), where translating by whole tiles must be identity.
+const PATTERN_TILE_PX = 7;
 
 // -- Legend ------------------------------------------------------------------------
 
@@ -564,6 +580,10 @@ export class TimelineViewElement extends HTMLElement {
 
   private raf = 0;
   private dirty = false;
+  // The single scheduled clock-wake timer (scheduleNext): armed INSTEAD of
+  // the rAF loop while the only animation is clock-driven and slower than
+  // the tier budget; null whenever a frame is pending or nothing is due.
+  private clockWake: ReturnType<typeof setTimeout> | null = null;
   private connected = false;
   private inView = true;
   private ro: ResizeObserver | null = null;
@@ -731,6 +751,7 @@ export class TimelineViewElement extends HTMLElement {
       cancelAnimationFrame(this.raf);
       this.raf = 0;
     }
+    this.clearClockWake();
   }
 
   attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null): void {
@@ -1750,20 +1771,40 @@ export class TimelineViewElement extends HTMLElement {
     this.schedule();
   }
 
-  /** True while something time-based needs continuous frames. */
+  /** True while something time-based needs frames at all (tween- or clock-driven). */
   private animating(): boolean {
+    return this.tweening() || this.clockAnimating();
+  }
+
+  /**
+   * Short-lived eased transitions (zoom glide, layout/lead/edge tweens)
+   * plus async-history churn — these genuinely need CONTINUOUS tier-paced
+   * rAF frames, and they all settle within about a second.
+   */
+  private tweening(): boolean {
     if (this.glidePx !== 0 || this.layoutAnim !== null || this.leadAnim !== null || this.edgeAnim !== null) return true;
-    // While STALE the followed view is frozen at the dead feed's edge —
-    // nothing moves, so no continuous frames (the watchdog interval keeps
-    // the note's counter alive and notices recovery).
-    if (this.following && !this.feedStale) return true;
     // In-flight history loads AND failed ones waiting out the fixed retry
     // cadence both need frames — without the latter, a rejected loadRange in
     // a paused historical view would park silently until the next input
     // instead of retrying every ~2s.
-    if (this.loadRangeFn && (this.coverage.pending() || this.coverage.waitingRetry(this.nowMs()))) return true;
+    return this.loadRangeFn !== null && Boolean(this.coverage.pending() || this.coverage.waitingRetry(this.nowMs()));
+  }
+
+  /**
+   * CLOCK-driven animation: the follow-now scroll and visible ongoing-bar
+   * growth/pulse. These advance with the wall clock — but only ~one
+   * device pixel per span/(plotW*dpr) ms — so they do not demand
+   * continuous frames: when that period exceeds the tier frame budget the
+   * post-frame scheduler parks on a single clock-wake timer instead of
+   * spinning the rAF loop (see scheduleNext).
+   */
+  private clockAnimating(): boolean {
+    // While STALE the followed view is frozen at the dead feed's edge —
+    // nothing moves, so no frames (the watchdog interval keeps the note's
+    // counter alive and notices recovery).
+    if (this.following && !this.feedStale) return true;
     if (this.reducedMotion || this.feedStale) return false; // frozen stale bars don't pulse
-    // Ongoing intervals pulse only while their live edge is in view.
+    // Ongoing intervals grow/pulse only while their live edge is in view.
     const now = this.nowMs();
     if (now < this.view.start || this.byId.size === 0) return false;
     for (const per of this.perLane) {
@@ -1784,6 +1825,7 @@ export class TimelineViewElement extends HTMLElement {
 
   private onFrame = (t: number): void => {
     this.raf = 0;
+    this.clearClockWake(); // a running frame owns the (re)scheduling decision — never leave a stale wake behind
     // Adaptive pacing: a pure animation frame (nothing dirty) renders only
     // when the current tier's budget has elapsed — full rate while
     // interacting, ~30fps idle, ~10fps idle on battery. Dirty frames
@@ -1806,9 +1848,52 @@ export class TimelineViewElement extends HTMLElement {
       this.dirty = false;
       this.draw();
     }
-    if (this.animating()) this.schedule();
-    else this.lastFrame = 0;
+    this.scheduleNext();
   };
+
+  /**
+   * Post-frame scheduling — the event-driven half of idle rendering.
+   * Tweens keep the continuous tier-paced rAF loop (short-lived).
+   * CLOCK-driven animation (the follow scroll, ongoing bars) keeps the
+   * loop only while the time axis moves at least one whole device pixel
+   * per tier frame budget; zoomed further out, the loop STOPS and one
+   * clock-wake timer sized to the per-pixel period (clockWakeDelayMs,
+   * capped at CLOCK_WAKE_MAX_MS so an ongoing bar's pulse keeps visibly
+   * breathing) invalidates exactly when the scene will next have advanced
+   * a pixel — between wakes the chart draws NOTHING. Nothing animating
+   * schedules nothing at all. The tier budgets remain the CEILING: a wake
+   * delay is always longer than the budget, so this path only ever LOWERS
+   * the redraw rate below today's pacing, never raises it — and events
+   * (input, data, hover) still render immediately via invalidate(), whose
+   * dirty rAF cadence is itself display-bounded.
+   */
+  private scheduleNext(): void {
+    if (this.tweening()) {
+      this.schedule();
+      return;
+    }
+    if (this.clockAnimating()) {
+      const delay = clockWakeDelayMs(this.view, this.plotWidth(), this.dpr, frameBudgetMs(this.renderTier()));
+      if (delay === 0) {
+        this.schedule();
+        return;
+      }
+      this.lastFrame = 0;
+      this.clockWake = setTimeout(() => {
+        this.clockWake = null;
+        this.invalidate();
+      }, delay);
+      return;
+    }
+    this.lastFrame = 0;
+  }
+
+  private clearClockWake(): void {
+    if (this.clockWake !== null) {
+      clearTimeout(this.clockWake);
+      this.clockWake = null;
+    }
+  }
 
   private onVisibility = (): void => {
     if (!document.hidden) this.invalidate();
@@ -1861,16 +1946,17 @@ export class TimelineViewElement extends HTMLElement {
     // too short. While visible, the PLOT canvas cedes the strip's band
     // (cssW/cssH describe the plot canvas only, so every downstream
     // computation — lane packing, auto-fit, tooltip clamps, hit tests —
-    // stays consistent without knowing the strip exists), and the corner
-    // buttons ride up above the band.
+    // stays consistent without knowing the strip exists). The corner
+    // chrome (fullscreen toggle, live pill, "?" legend pill + panel)
+    // rides up above the band via the stylesheet's
+    // `canvas.minimap:not([hidden]) ~ …` lift rules — ALL of it together,
+    // never from here: a partial inline lift once parked the ⤢ toggle
+    // under the statically-positioned legend pill.
     const wantMM = !this.hasAttribute('no-minimap') && this.byId.size > 0 && hostH >= MINIMAP_MIN_HOST_PX;
     if (wantMM !== this.mmVisible) {
       this.mmVisible = wantMM;
       this.mmCanvas.hidden = !wantMM;
       this.canvas.style.height = wantMM ? `calc(100% - ${MINIMAP_H}px)` : '';
-      const lift = wantMM ? `${MINIMAP_H + 10}px` : '';
-      this.pillEl.style.bottom = lift;
-      this.fsEl.style.bottom = lift;
     }
     const bw = Math.max(1, Math.round(this.clientWidth * dpr));
     const bh = Math.max(1, Math.round(Math.max(1, hostH - (wantMM ? MINIMAP_H : 0)) * dpr));
@@ -1992,7 +2078,7 @@ export class TimelineViewElement extends HTMLElement {
     const key = `${kind}\u0000${color}`;
     const hit = this.patternCache.get(key);
     if (hit) return hit;
-    const size = 7;
+    const size = PATTERN_TILE_PX;
     const dpr = this.dpr;
     const tile = document.createElement('canvas');
     tile.width = size * dpr;
@@ -2026,6 +2112,32 @@ export class TimelineViewElement extends HTMLElement {
     pattern.setTransform?.(new DOMMatrix().scale(1 / dpr));
     this.patternCache.set(key, pattern);
     return pattern;
+  }
+
+  /**
+   * Phase-anchor a cached pattern to a CONTENT origin — a span's
+   * unclamped start x / track top y, a coverage gap's start — so the tile
+   * grid travels 1:1 with what it fills. createPattern tiles are pinned
+   * to the CANVAS origin by default: under a scrolling/panning viewport
+   * that read as spans sliding over a static hatch behind a stencil
+   * instead of carrying their own texture. Anchoring to the (unclamped)
+   * content origin keeps the phase stable while a span is partially
+   * clipped off-screen AND rides lane scrolling/height changes in y. The
+   * origin folds mod the tile size — identical rendering (a whole-tile
+   * translate is identity), numerically tame for far-off-screen origins —
+   * and non-finite origins fall back to the canvas-anchored default.
+   * setTransform REPLACES the creation-time matrix, so the 1/dpr tile
+   * scale is re-applied here; call before every patterned fill — the
+   * cache shares one CanvasPattern per (kind, color) and the transform is
+   * read at fill time.
+   */
+  private anchorPattern(pat: CanvasPattern, ox: number, oy: number): CanvasPattern {
+    const px = ((ox % PATTERN_TILE_PX) + PATTERN_TILE_PX) % PATTERN_TILE_PX;
+    const py = ((oy % PATTERN_TILE_PX) + PATTERN_TILE_PX) % PATTERN_TILE_PX;
+    if (Number.isFinite(px) && Number.isFinite(py)) {
+      pat.setTransform?.(new DOMMatrix().translateSelf(px, py).scaleSelf(1 / this.dpr));
+    }
+    return pat;
   }
 
   // -- Geometry ----------------------------------------------------------------
@@ -2135,9 +2247,10 @@ export class TimelineViewElement extends HTMLElement {
   private onWheel = (e: WheelEvent): void => {
     const route = routeWheel(e, this.maxLaneScroll() > 0);
     // Consume (preventDefault) ONLY when some axis actually routed to the
-    // chart. A plain vertical wheel while the lanes don't overflow routes
-    // nowhere — it must reach the page and scroll it normally, never pan
-    // the chart sideways. (The listener stays {passive: false} so
+    // chart. A plain VERTICAL-dominant wheel routes nowhere — regardless
+    // of lane overflow — so it must reach the page and scroll it
+    // normally; ctrl/meta zooms, shift and horizontal-dominant deltas pan
+    // (see routeWheel). (The listener stays {passive: false} so
     // preventDefault remains available for the consumed cases.)
     if (!route.consumed) return;
     e.preventDefault();
@@ -2878,7 +2991,10 @@ export class TimelineViewElement extends HTMLElement {
         if (x1 - x0 < 1) continue;
         const busy = pending !== null && pending.start < gap.end && pending.end > gap.start;
         const pat = this.patternFor('hatch', busy ? withAlpha(t.muted, 0.35) : withAlpha(t.muted, 0.18));
-        ctx.fillStyle = pat ?? withAlpha(t.muted, 0.08);
+        // Anchored to the gap's own start so the hatch scrolls WITH the
+        // uncovered region (the busy-crawl translate below still animates
+        // relative to it — pattern transforms compose with the CTM).
+        ctx.fillStyle = pat ? this.anchorPattern(pat, x0, AXIS_H) : withAlpha(t.muted, 0.08);
         ctx.save();
         if (busy && !this.reducedMotion) ctx.translate((now / 40) % 7, 0);
         ctx.fillRect(x0 - 7, AXIS_H, x1 - x0 + 7, h - AXIS_H);
@@ -2994,7 +3110,7 @@ export class TimelineViewElement extends HTMLElement {
       if (pat) {
         ctx.save();
         ctx.clip(path);
-        ctx.fillStyle = pat;
+        ctx.fillStyle = this.anchorPattern(pat, x0, y); // phase rides the bar, not the canvas
         ctx.fillRect(x0, y, bw, bh);
         ctx.restore();
       }
@@ -3049,7 +3165,10 @@ export class TimelineViewElement extends HTMLElement {
           ctx.fillRect(sx0, y, sx1 - sx0, bh);
           const pat = this.patternFor(ss.pattern, ss.fill);
           if (pat) {
-            ctx.fillStyle = pat;
+            // Anchored to the BAR's unclamped origin (one phase per bar):
+            // stable while the bar's start is clipped off-screen — the
+            // clamped sx0 would phase-jump at the clip boundary.
+            ctx.fillStyle = this.anchorPattern(pat, x0, y);
             ctx.fillRect(sx0, y, sx1 - sx0, bh);
           }
         } else {
@@ -3075,7 +3194,7 @@ export class TimelineViewElement extends HTMLElement {
         ctx.fillRect(x0, y, bw, bh);
         const pat = this.patternFor('hatch', withAlpha(t.muted, 0.5));
         if (pat) {
-          ctx.fillStyle = pat;
+          ctx.fillStyle = this.anchorPattern(pat, x0, y); // phase rides the bar
           ctx.fillRect(x0, y, bw, bh);
         }
         ctx.restore();
@@ -3371,10 +3490,16 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   private drawNowLine(ctx: CanvasRenderingContext2D, now: number): void {
-    const rv = this.renderView();
-    if (now < rv.start || now > rv.end) return;
+    // The RAW view, not renderView(): the now line is VIEWPORT-anchored —
+    // while follow-now pins the view, `now` sits at a fixed span fraction
+    // and this x must be frame-to-frame constant. The snapped render view
+    // carries a per-frame quantization error that used to flip the
+    // rounded x between adjacent device pixels — a visible wiggle in the
+    // one state where the line must hold perfectly still (see nowLineX).
+    const view = this.view;
+    if (now < view.start || now > view.end) return;
     const t = this.theme;
-    const x = snap(this.gutterW + timeToX(now, rv, this.plotWidth()), this.dpr);
+    const x = nowLineX(now, view, this.gutterW, this.plotWidth(), this.dpr);
     // Stale: the line is parked at the last vouched timestamp, not ticking —
     // muted + dashed so it can't be mistaken for a live edge.
     const stale = this.feedStale;
