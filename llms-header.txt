@@ -1,15 +1,19 @@
 # js-snippets
 
-Reusable ES modules served via GitHub Pages. Source is TypeScript + WGSL,
+Reusable ES modules served via buildhost sites. Source is TypeScript + WGSL,
 built to plain JS by ts0. Import directly by URL — no bundler needed.
 
-Base URL: https://wow-look-at-my.github.io/js-snippets
+Base URL: https://sites.pazer.build/js-snippets/branch/library
 
 ## Usage
 
 ```js
-import { loadHDR } from 'https://wow-look-at-my.github.io/js-snippets/webgpu/hdr-loader.js';
-import * as mat4 from 'https://wow-look-at-my.github.io/js-snippets/math/mat4.js';
+import { loadHDR } from 'https://sites.pazer.build/js-snippets/branch/library/webgpu/hdr-loader.js';
+import * as mat4 from 'https://sites.pazer.build/js-snippets/branch/library/math/mat4.js';
 ```
+
+Every module also serves a TypeScript declaration at the same URL with
+`.d.ts` in place of `.js` (e.g. …/math/mat4.d.ts) — fetch types alongside
+the code.
 
 ## Modules

@@ -7,8 +7,84 @@ Type: Vec3 = [number, number, number]
 ### math/mat4.js
 Minimal mat4 utilities. Column-major Float32Array(16). Imports vec3 internally.
 
-Exports: create, identity, perspective, lookAt, multiply, translate, rotateX,
-  rotateY, scale, reflectY, reflectZ, normalMatrix, invert
+Exports: create, identity, perspective, perspectiveGL, lookAt, multiply,
+  translate, rotateX, rotateY, rotateZ, scale, reflectY, reflectZ, transpose,
+  normalMatrix, normalMatrix3, invert
 Type: Mat4 = Float32Array
 
-Note: perspective() uses WebGPU clip-Z [0,1] convention.
+Signatures of note:
+- perspective(fovY, aspect, near, far) -> Mat4 -- WebGPU clip-Z [0,1].
+- perspectiveGL(fovY, aspect, near, far) -> Mat4 -- OpenGL/WebGL clip-Z [-1,1]
+  (use for a WebGL2 pipeline; contrast perspective above).
+- rotateZ(m, angle) -> Mat4 -- rotate about Z (mirrors rotateX/rotateY).
+- transpose(m) -> Mat4 -- 4x4 transpose.
+- normalMatrix(m) -> Mat4 -- transpose-of-inverse of the upper 3x3, embedded in a
+  4x4 (returns identity() if singular).
+- normalMatrix3(m) -> Float32Array(9) -- the same transform as a column-major mat3
+  (the GLSL/WGSL normal-matrix form); returns the identity 3x3 if singular
+  (matching normalMatrix).
+
+### math/sdf.js
+Pure signed-distance-field math (no DOM/GPU): primitives, a column-major point
+transform, a CPU grid bake of an arbitrary scene SDF, trilinear sampling with a
+continuous outside-the-box extension, ray/AABB intersection, and the Inigo
+Quilez closest-approach soft-shadow march. Mirror these formulas in any
+WGSL/GLSL twin.
+
+Constants: SDF_SPHERE, SDF_BOX, SDF_CYLINDER, SDF_TORUS
+Types: SdfParams = readonly [number,number,number,number];
+  SdfGrid = { data: Float32Array; dims: [number,number,number]; volMin: Vec3; volMax: Vec3 };
+  SceneSDF = (x,y,z) => number; SdfAabb = { min: Vec3; max: Vec3 };
+  SoftShadowOptions, SoftShadowResult = { vis: number; steps: number }.
+
+Exports:
+- sdSphere(p, [radius]), sdBox(p, [hx,hy,hz]), sdCylinder(p, [radius,halfH]),
+  sdTorus(p, [majorR,minorR]) -> number -- local-space primitive distances (Vec3 p).
+- primitiveSDF(type, p, params) -> number -- dispatch a primitive by SDF_* id.
+- transformPoint(m, p) -> Vec3 -- column-major affine point transform (w=1).
+- makeGrid(scene, volMin, volMax, dims) -> SdfGrid -- one-time CPU bake of a
+  scene callback `scene(x,y,z) => distance` into a dense voxel-centre grid.
+- trilinear(grid, q) -> number -- trilinear fetch at a clamped [0,1] coordinate.
+- sampleGrid(grid, p) -> number -- sample at a world point; inside = trilinear,
+  outside = max(edgeValue, distanceToBox) (continuous, never falsely shadowed).
+- intersectAABB(ro, rd, bmin, bmax) -> [tNear, tFar] (ray misses when tFar < max(tNear,0)).
+- softShadow(sampleFn, ro, rd, opts?) -> { vis, steps } -- IQ soft visibility in
+  [0,1]; opts: { tmin, tmax, k, maxSteps, minStep, maxStep, eps, aabb }.
+
+### math/noise.js
+Deterministic procedural noise -- integer hash -> value noise -> fbm, 2D and 3D.
+Pure; outputs in [0,1] unless noted. The 2D lattice is tileable (the hash wraps
+by `cells`); the 3D lattice is unbounded.
+
+Exports:
+- hash2(ix, iy, period, seed) -> [0,1) -- tileable 2D lattice hash.
+- smootherstep(t) -> number -- quintic easing 6t^5-15t^4+10t^3.
+- valueNoise2(u, v, cells, seed) -> [0,1) -- tileable 2D value noise.
+- fbm2(u, v, baseCells, octaves, seed) -> [0,1) -- 2D fractal Brownian motion.
+- ridged2(u, v, baseCells, octaves, seed) -> [0,1) -- (1-|2*fbm-1|)^2 ridges.
+- hash3(x, y, z, seed) -> [0,1) -- 3D lattice hash (non-tiling).
+- valueNoise3(x, y, z, seed) -> [0,1) -- 3D value noise.
+- fbm3(x, y, z, seed, octaves=4) -> [0,1) -- 3D fractal Brownian motion.
+
+### math/sampling.js
+Low-discrepancy + hemisphere sampling. Pure, deterministic. radicalInverse2 /
+hammersley match the GPU convention in webgpu/shaders/prefilter.wgsl, so the same
+index yields the same point on CPU and GPU.
+
+Exports:
+- radicalInverse2(i) -> [0,1) -- van der Corput base 2 (radicalInverse2(0)=0).
+- hammersley(i, n) -> [number, number] -- [i/n, radicalInverse2(i)] (hammersley(0,n)=[0,0]).
+- uniformHemisphere(u, v) -> Vec3 -- uniform-solid-angle direction on +Z (u=costheta).
+- cosineHemisphere(u, v) -> Vec3 -- cosine-weighted direction on +Z (Malley, r=sqrt(u)).
+
+### math/gaussian-kernel.js
+Separable Gaussian blur kernel builder (linear-sampling). Pure math. Merges
+adjacent tap pairs into one bilinear fetch at a fractional texel offset (halves
+the texture samples while reproducing the exact discrete Gaussian).
+
+Type: GaussianKernel = { sigma, radius, weights: number[], entries: [offset,weight][] }
+Exports:
+- MAX_RADIUS: number -- kernel-radius cap (192).
+- buildGaussianKernel(sigma) -> GaussianKernel -- entries[0] is the centre tap;
+  entries[1..] are side taps sampled at BOTH +offset and -offset. Two-sided
+  integer-tap weights sum to exactly 1.
