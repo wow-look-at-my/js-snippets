@@ -279,7 +279,7 @@ over the region's GEOMETRY: fill, hatching, and border all get the same
 dimColor transform (50% saturation, 50% value — hue and alpha
 untouched), so the section reads quieter than a running span. Label and
 badge text is deliberately EXEMPT from that filter: every span-surface
-label (bar labels, the cluster ×N badge, adapter-composed badge strings
+label (bar labels, adapter-composed badge strings
 like queue ordinals) always renders at the full-contrast foreground
 (--timeline-fg) over a thin counter-color halo (labelHaloColor: dark
 rim under a light fg, light rim under a dark one), so text stays
@@ -303,11 +303,14 @@ the timeline scrolls — and a real-duration bar is clamped to MIN_BAR_PX
 Instant markers CLUSTER at scale: pips whose centers would visually
 overlap in the current window (within ~12px of a neighbor — a greedy
 transitive sweep, re-derived per layout pass) merge into ONE point-like
-×N marker — the SAME diamond pip as a single instant, with a ×N count
-badge beside it: the badge alone carries the group meaning (membership
-is exactly "would visually overlap", so a badged pip can only ever BE a
-cluster) — never a duration bar: an instantaneous event has no length,
-and neither does a pile of them. The cluster packs
+STACKED marker — the SAME diamond pip as a single instant, drawn as a
+stack of exactly THREE copies (two ghost copies offset up-right behind
+the true front pip; always three, NEVER scaled by the member count —
+the stack silhouette alone says "several live here", and there is no
+count text on the canvas: the tooltip carries the real ×N count;
+membership is exactly "would visually overlap", so a stacked pip can
+only ever BE a cluster) — never a duration bar: an instantaneous event
+has no length, and neither does a pile of them. The cluster packs
 as ONE row slot spanning its member extent, so a burst of coincident
 instants can't blow up the lane height; membership depends only on time
 deltas and the scale, so panning never re-clusters (no jitter — the
@@ -438,7 +441,7 @@ Element <timeline-view> — data API (properties/methods, never attributes):
                       content are honored), and pathological content clips
                       at a max height instead of outgrowing the host —
                       nothing ever spills past the tooltip border. NEVER
-                      called for ×N cluster hits — their summary tooltip
+                      called for cluster hits — their summary tooltip
                       is component-built (see instant clustering above).
   loadRange         — (start, end) => Promise<{exhausted?: boolean} | void>.
                       Invoked (one request at a time, min-chunk widened;
@@ -487,9 +490,21 @@ renders in the emphasis color.
 
 Viewport / follow:
   viewport          — getter {start, end} (ms).
+  DEFAULT window    — until the first user gesture or setViewport call,
+                      the visible span is ASPECT-DERIVED: 3 minutes at a
+                      16:9 container, scaled linearly by the host's
+                      actual aspect ratio (defaultSpanForAspect, clamped
+                      ~2s..~7d), ending at now — and re-derived on every
+                      host resize, END anchored, while still untouched.
+                      Any gesture or setViewport latches the window as
+                      CHOSEN and the default never applies again;
+                      followNow / jumpToNow move position only and do
+                      NOT latch. Consumers that call setViewport keep
+                      their own initial window entirely.
   setViewport(start, end) — explicit window (span clamped ~2s..~7d;
                       hard-stops at now; engages follow only when it
-                      ends within the 2-device-px snap zone of now).
+                      ends within the 2-device-px snap zone of now;
+                      latches the window as chosen — see DEFAULT window).
   followNow         — boolean (default true): right edge pinned to live
                       now. Any backward PAN (wheel, drag, arrow keys)
                       disengages immediately — even a tiny step, so
@@ -542,7 +557,7 @@ Viewport / follow:
                       no-fullscreen-button attribute (the property and
                       attribute keep working programmatically).
   Events: 'viewportchange' {start, end, followNow} on user-driven changes,
-  'intervalclick' {interval, lane} (single intervals only — a ×N cluster
+  'intervalclick' {interval, lane} (single intervals only — a cluster
   click zooms to its member extent instead), 'intervalhover'
   {interval|null, lane|null}, 'connectorclick' {connector}, 'laneclick'
   {lane} (a click on a gutter label — lets consumers make lanes
@@ -555,7 +570,7 @@ Viewport / follow:
 
 Legend (the "?" pill): a small button stacked above the fullscreen
   toggle opens an in-place glyph dictionary — the component-owned
-  vocabulary (filled/hollow instant pips, the ×N cluster badge, the
+  vocabulary (filled/hollow instant pips, the stacked cluster pip, the
   failed stipple + bang, hatched wait/queued phases, dim de-emphasis,
   the cancelled span's dashed hollow + terminal kill cut) followed by
   any consumer `legendEntries`. Rows name a GLYPH and its meaning —
@@ -618,12 +633,20 @@ Home = jump to the earliest known data. The wheel listener sits on the
 HOST, so those rules apply over the DOM chrome (live pill, fullscreen
 toggle, stale note) exactly as over the canvas — a horizontal delta is
 consumed wherever it lands — and the host + canvas carry
-overscroll-behavior: none, so pulling further at the left pan boundary
-(or any edge) never chains into the browser's history-back/forward
-navigation gesture, wheel or touch (chrome buttons keep
-touch-action: manipulation so taps stay instant; the canvas stays
-touch-action: none). Page-LEVEL containment (html/body) stays the
-embedding page's own business.
+overscroll-behavior-x: none (HORIZONTAL only), so pulling further at
+the left pan boundary never chains into the browser's
+history-back/forward navigation gesture, wheel or touch, while the
+VERTICAL axis stays free to chain page scrolling exactly like the wheel
+router promises. TOUCH mirrors the same rule via the plot canvas'
+touch-action: pan-y: a one-finger vertical swipe scrolls the PAGE (the
+browser claims it and the element stops), a horizontal one-finger drag
+pans the chart, and two-finger pinch-zoom still belongs to the element
+(pan-y doesn't allow browser pinch) — the accepted tradeoff is that
+one-finger vertical LANE-drag is gone on touch (arrow keys and desktop
+drag are unaffected); the minimap strip keeps touch-action: none (a
+pure horizontal-drag control), and chrome buttons keep touch-action:
+manipulation so taps stay instant. Page-LEVEL containment (html/body)
+stays the embedding page's own business.
 
 CSS custom properties (dark Scratch Proto defaults; see THEME_DEFAULTS):
   --timeline-bg            — plot background          (#0d0f14)
@@ -673,6 +696,10 @@ Exports:
   Scale/zoom: timeToX(t, view, width), xToTime(x, view, width),
     panView(view, dt), zoomView(view, anchor, factor, minSpan?, maxSpan?)
     (anchor-preserving, span clamped; MIN_SPAN_MS = 2s, MAX_SPAN_MS = 7d),
+    defaultSpanForAspect(hostW, hostH, refSpanMs?) → span ms (the
+    aspect-scaled DEFAULT window: DEFAULT_SPAN_REF_MS = 3 min at 16:9,
+    linear in the container aspect, clamped to the span limits;
+    degenerate sizes fall back to the reference),
     wheelDeltaToPixels(delta, deltaMode, lineHeight?, pageHeight?)
     (deltaMode 0/1/2 → px), zoomFactorForWheel(deltaPx) (exponential,
     composable; ZOOM_PX_PER_DOUBLE px per doubling),
@@ -684,6 +711,11 @@ Exports:
     incl. ties routes NOWHERE regardless of overflow, and consumed=false
     means DO NOT preventDefault, let the page scroll; deltaMode
     normalized),
+    classifyWheel(WheelInput) → WheelClass 'zoom' | 'pan' |
+    'passthrough' (the routing decision without magnitudes, normalized
+    the same way; lanesOverflow deliberately has no input — a test-pinned
+    invariant guarantees routeWheel(e, o).consumed ===
+    (classifyWheel(e) !== 'passthrough') for ALL inputs and overflow),
     clampViewToNow(view, now) → TimeView (the hard right
     end stop: a user view's end never passes now, span preserved),
     followAfterGesture(wasFollowing, prevEnd, next, now, isPan,
@@ -781,7 +813,8 @@ Exports:
     ongoing intervals — drives the element's edge shadow).
   Instant clustering: clusterInstants(items, view, plotWidth, joinPx?,
     instantPx?) → {clusters: InstantCluster[], memberOf: number[]} (the
-    scale-aware greedy transitive sweep behind the element's ×N markers:
+    scale-aware greedy transitive sweep behind the element's stacked
+    cluster markers:
     terminal items whose duration maps under instantPx merge while their
     starts sit within joinPx (CLUSTER_JOIN_PX = 12) of a neighbor at
     this scale; clusters have >= 2 members, everything else gets

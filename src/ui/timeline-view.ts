@@ -45,8 +45,10 @@
  * ones and an explicit end-of-history boundary. Browser navigation
  * gestures never fire over the component: the wheel listener lives on the
  * HOST (horizontal deltas over the DOM chrome are consumed like over the
- * canvas) and the host carries overscroll-behavior: none, so panning hard
- * into exhausted history can't turn into a history-back swipe. A corner
+ * canvas) and the host carries overscroll-behavior-x: none, so panning
+ * hard into exhausted history can't turn into a history-back swipe —
+ * horizontal ONLY, so vertical scroll chaining (and vertical touch pans,
+ * via the plot canvas' touch-action: pan-y) stays the page's. A corner
  * ⤢ toggle (always visible; `no-fullscreen-button` hides it) flips the
  * reflected `fullscreen` attribute: viewport-fill via position:fixed —
  * deliberately NOT the Fullscreen API — with the page scroll locked while
@@ -96,7 +98,14 @@
  * effective rate is min(tier fps, device px per second) — the loop keeps
  * running and skips frames that would be pixel-identical, on an even
  * frame-aligned cadence (clockDrawBudgetMs; never timer wakes, so motion
- * stays smooth at every zoom); culled to the viewport; DPR-aware (capped
+ * stays smooth at every zoom); culled to the viewport (per-lane
+ * lower-bound binary search — a drawn frame costs O(visible), never
+ * O(all data)); clustering/track-assignment memoized (position-
+ * independent clustering re-derives only on data/zoom/width changes;
+ * assignment additionally on window-start quanta); the minimap's density
+ * marks served from a pixel-shifted offscreen texture (one blit per
+ * frame; merges paint only their sliver; full rebuilds run async in
+ * slices); DPR-aware (capped
  * at 3), on
  * an OPAQUE canvas (subpixel text AA; keep --timeline-bg opaque).
  * Theme via --timeline-* custom properties (see THEME_DEFAULTS); the DOM
@@ -127,6 +136,8 @@ import {
   nowLineX,
   MIN_SPAN_MS,
   MAX_SPAN_MS,
+  DEFAULT_SPAN_REF_MS,
+  defaultSpanForAspect,
   timeTicks,
   timeTickStep,
   formatTimeTick,
@@ -249,7 +260,7 @@ export type LoadRangeFn = (start: number, end: number) => Promise<{ exhausted?: 
 
 /**
  * What the pointer is over — handed to tooltipFor and hover/click events.
- * 'cluster' (a ×N group of visually-overlapping instant markers) is the
+ * 'cluster' (a stacked group of visually-overlapping instant markers) is the
  * one hit type NEVER handed to tooltipFor: its summary tooltip is
  * component-built, and clicking it zooms to the member extent instead of
  * dispatching intervalclick.
@@ -286,12 +297,13 @@ interface NInterval {
   state: string;
   segs: NSeg[] | null;
   track: number;
-  /** True while a ×N cluster represents this instant (it is not drawn/hit itself). */
+  /** True while a cluster marker represents this instant (it is not drawn/hit itself). */
   clustered: boolean;
 }
 
 /**
- * A ×N cluster of instant markers, re-derived per layout pass at the
+ * A cluster of instant markers (drawn as a fixed 3-stack of pips),
+ * re-derived per layout pass at the
  * current scale (clusterInstants). Occupies ONE packing slot spanning its
  * member extent — coincident instants can never blow up the lane height.
  */
@@ -325,7 +337,6 @@ interface ResolvedStyle {
 // grey (unreadable) over dimmed/hatched sections, flipping with zoom as
 // the anchor crossed segment boundaries.
 
-const DEFAULT_SPAN_MS = 15 * 60_000;
 const LAYOUT_TWEEN_MS = 150; // lane-height ease on visible-track-count AND fit-height change
 const AXIS_H = 22;
 const LANE_LABEL_MIN_PX = 10; // below this lane height the gutter label is tooltip-only
@@ -375,6 +386,20 @@ const MINIMAP_MIN_HOST_PX = 140;
 // shared by tile generation (patternFor) and phase anchoring
 // (anchorPattern), where translating by whole tiles must be identity.
 const PATTERN_TILE_PX = 7;
+// Fraction of the span the window START may drift before track assignment
+// re-runs (the visible-layout memo's quantum). Small enough that an item
+// entering the window rides a stale row only for a blink; large enough
+// that follow-mode's per-device-pixel drift amortizes ~dozens of frames
+// per assignment.
+const ASSIGN_QUANTUM_FRAC = 0.02;
+// Span buckets for the clustering memo: ~0.14% span change per bucket —
+// float noise from the follow pin's per-frame end±span arithmetic (sub-µs
+// on epoch-ms magnitudes) can never re-bucket, while any real zoom step
+// crosses buckets immediately (scale-aware clustering stays "re-clusters
+// as you zoom").
+function spanBucket(span: number): number {
+  return Math.round(Math.log2(span) * 512);
+}
 
 // -- Legend ------------------------------------------------------------------------
 
@@ -402,7 +427,7 @@ export interface TimelineLegendEntry {
 const LEGEND_ROWS: readonly { swatch: string; text: string }[] = [
   { swatch: 'lg-instant', text: 'instant — a zero-duration event (filled pip)' },
   { swatch: 'lg-cancelled-pip', text: 'cancelled instant (hollow, dashed pip)' },
-  { swatch: 'lg-cluster', text: '×N — several instants clustered at this zoom; zoom in or click to split' },
+  { swatch: 'lg-cluster', text: 'stacked pips — several instants clustered at this zoom; zoom in or click to split' },
   { swatch: 'lg-bar lg-failed', text: 'failed — stippled body, red border, corner bang' },
   { swatch: 'lg-bar lg-hatch', text: 'hatched phase — a declared wait (lock, group slot, sleep) or queued time' },
   { swatch: 'lg-bar lg-dim', text: 'dim — queued / de-emphasized' },
@@ -463,6 +488,64 @@ export class TimelineViewElement extends HTMLElement {
   private mmDrag: { mode: 'left' | 'right' | 'middle'; lastX: number } | null = null;
   private hadData = false; // data-emptiness edge → re-evaluate strip visibility
 
+  // -- Data extent / cull metadata (recomputed exactly in rebuild(); grown
+  // incrementally in ingestInterval so it is never stale-small between) --
+  /** Max terminated end across ALL intervals (-Infinity with none) — the minimap extent's data end, O(1) per frame. */
+  private mmLatestEnd = -Infinity;
+  /** Ongoing (end = null) intervals, flat — live-drawn on the minimap every frame, never baked into the density texture. */
+  private mmOngoing: NInterval[] = [];
+  /** Per lane: max TERMINATED duration (ms; 0 when none) — the drawIntervals lower-bound cull radius. */
+  private laneMaxDur: number[] = [];
+  /** Per lane: earliest ONGOING start (Infinity when none) — ongoing bars block the cull down to here. */
+  private laneOngoingStart: number[] = [];
+
+  // -- Minimap density texture (the pixel-shifted offscreen cache) --
+  // The strip's per-lane density marks live in an offscreen texture that
+  // the frame path BLITS (one drawImage) instead of refilling O(N) rects:
+  // the texture's time→x mapping is FROZEN at mmTexExtent and only steps
+  // when the live extent has drifted a whole strip pixel (then ONE
+  // scale-blit re-maps the existing pixels — the "pixel shift" for this
+  // compressing geometry); merges paint only their new right-edge marks;
+  // everything else (geometry/theme/lane-count/extent-start changes,
+  // accumulated resample drift) rebuilds ASYNCHRONOUSLY in budgeted
+  // slices into a second texture that swaps in atomically while the old
+  // one keeps serving. The now tick and the viewport window rect are
+  // live overdraws every frame — never baked in.
+  private mmTex: HTMLCanvasElement | null = null;
+  private mmTexCtx: CanvasRenderingContext2D | null = null;
+  /** Double-buffer partner for extent steps (self-blit needs snapshot semantics). */
+  private mmTexB: HTMLCanvasElement | null = null;
+  private mmTexBCtx: CanvasRenderingContext2D | null = null;
+  private mmTexExtent: TimeView = { start: 0, end: 1 };
+  private mmTexEpoch = -1; // packEpoch the texture content reflects
+  private mmTexW = 0; // device px
+  private mmTexH = 0;
+  private mmTexDpr = 1;
+  private mmTexLaneN = -1;
+  private mmTexTheme = -1; // mmThemeGen stamp
+  private mmThemeGen = 0; // bumped by readTheme() — colors baked into the texture went stale
+  private mmTexScaleAcc = 1; // cumulative shrink since the last full build (resample-blur budget)
+  private mmTexSteps = 0; // extent steps since the last full build
+  private mmTexDirty = false; // a baked mark was rewritten in place → full rebuild required
+  /** Terminated intervals ingested since the texture's epoch — the incremental right-edge paints. */
+  private mmPendingNew: NInterval[] = [];
+  private mmRebuild: {
+    tex: HTMLCanvasElement;
+    ctx: CanvasRenderingContext2D;
+    extent: TimeView;
+    epoch: number;
+    themeGen: number;
+    laneN: number;
+    w: number; // device px
+    h: number;
+    dpr: number;
+    laneIdx: number;
+    itemIdx: number;
+  } | null = null;
+  private mmRebuildTimer: ReturnType<typeof setTimeout> | null = null;
+  /** catKey → the 0.55-alpha density fill (cleared with the theme). */
+  private mmDimCache = new Map<string, string>();
+
   // -- Fullscreen (viewport-fill) --
   // While the host carries the `fullscreen` attribute it is position:fixed
   // over the whole viewport and the PAGE scroll is locked (html overflow
@@ -490,8 +573,16 @@ export class TimelineViewElement extends HTMLElement {
   private styleMap: StyleMap = { ...DEFAULT_STYLES };
 
   // -- Viewport --
-  private view: TimeView = { start: 0, end: 1 }; // set on connect/first data
+  private view: TimeView = { start: 0, end: 1 }; // seeded in the constructor; aspect-derived on first layout
   private following = true;
+  // Latched by the FIRST user gesture or programmatic setViewport (every
+  // window-changing path funnels through applyUserView; setViewport latches
+  // explicitly too). While false, resizeBackingStore keeps (re)deriving the
+  // DEFAULT span from the host's aspect ratio (defaultSpanForAspect) — a
+  // chosen window must always beat the default. followNow / jumpToNow /
+  // the per-frame pin move POSITION only and deliberately do NOT latch:
+  // the default governs the SPAN alone.
+  private viewTouched = false;
   private laneScroll = 0;
   // The ONE scalar behind every follow transition: the current lead of the
   // view's end over "now", as a fraction of the span. Steady follow pins
@@ -531,7 +622,7 @@ export class TimelineViewElement extends HTMLElement {
   private downHit: TimelineHit | null = null;
   private hover: TimelineHit | null = null;
   private hoverIntervalId: string | null = null;
-  private hoverClusterId: string | null = null; // first-member id of the hovered ×N cluster
+  private hoverClusterId: string | null = null; // first-member id of the hovered cluster
   private glidePx = 0; // pending discrete-wheel zoom, in wheel px
   private glideX = 0; // zoom anchor (canvas x) for the glide
   private lastFrame = 0;
@@ -541,13 +632,36 @@ export class TimelineViewElement extends HTMLElement {
   private batteryOff: (() => void) | null = null;
 
   // -- Visible-window lane layout + auto-fit --
+  // The old single memo keyed (epoch, rv.start, rv.end, plotW) re-ran the
+  // WHOLE pack pipeline every frame in follow mode (the pin moves rv.start
+  // each drawn frame). Decomposed: CLUSTERING is position-independent
+  // (clusterInstants reads the view only as span — pinned by the "pure
+  // pans never change membership" test), so it memoizes on
+  // (epoch, span bucket, plotW); TRACK ASSIGNMENT additionally re-runs
+  // when the window START has moved a quantum (ASSIGN_QUANTUM_FRAC of the
+  // span) since the last pass — items only ENTER the data via merges
+  // (epoch bump), and an item sliding in over a stale row for under a
+  // quantum is invisible in practice. layoutLanes/auto-fit stay per-frame
+  // (O(lanes), the tweens need them).
   private packEpoch = 0; // bumped on data changes; forces a re-pack
-  private packedEpoch = -1;
-  private packedStart = NaN;
-  private packedEnd = NaN;
-  private packedPlotW = NaN; // clustering is scale-aware: a resize re-derives it
-  // Per-lane ×N clusters for the current window (rebuilt with the pack).
+  private clusteredEpoch = -1;
+  private clusteredSpanKey = NaN; // log-quantized span bucket (spanBucket)
+  private clusteredPlotW = NaN; // clustering is scale-aware: a resize re-derives it
+  private assignedEpoch = -1;
+  private assignedSpanKey = NaN;
+  private assignedPlotW = NaN;
+  private assignedStart = NaN;
+  // Per-lane clusters for the current window (rebuilt with the clustering pass).
   private laneClusters: NCluster[][] = [];
+  // Per-lane pack inputs (unclustered items + one slot per cluster), cached
+  // between clustering passes and re-fed to the allocator on assignment.
+  private lanePackItems: PackItem[][] = [];
+  private lanePackTargets: { track: number }[][] = [];
+  // The unclustered items alone, per lane, in (start, id) order — the draw
+  // loop iterates THIS instead of skipping clustered members one by one
+  // (at busy zooms most visible instants are clustered: iterating the full
+  // lane burned thousands of skip-checks per frame).
+  private laneUnclustered: NInterval[][] = [];
   // Sticky row state, one allocator per lane ID (not index — lane
   // insertions must never hand one lane's row memory to another). The
   // state deliberately survives setData: a full resync must not reshuffle
@@ -650,8 +764,12 @@ export class TimelineViewElement extends HTMLElement {
     // the corner when the toggle is opted out.
     shadow.append(this.canvas, this.mmCanvas, this.tooltipEl, this.fsEl, this.pillEl, this.emptyEl, this.staleEl, this.legendEl, this.legendPanelEl);
 
+    // Seed end = now with the 3-min reference span as the never-sized
+    // fallback; the first resizeBackingStore with a real host box
+    // re-derives the span from the container's aspect ratio (end stays
+    // anchored) while the view is still untouched.
     const now = this.nowMs();
-    this.view = { start: now - DEFAULT_SPAN_MS, end: now };
+    this.view = { start: now - DEFAULT_SPAN_REF_MS, end: now };
   }
 
   // -- Lifecycle -------------------------------------------------------------
@@ -753,6 +871,12 @@ export class TimelineViewElement extends HTMLElement {
       this.raf = 0;
     }
     this.clockDrawDue = 0;
+    // Park any in-flight minimap rebuild; a reconnect's first frame
+    // re-arms the slice chain (mmKickRebuild re-schedules idempotently).
+    if (this.mmRebuildTimer !== null) {
+      clearTimeout(this.mmRebuildTimer);
+      this.mmRebuildTimer = null;
+    }
   }
 
   attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null): void {
@@ -923,6 +1047,10 @@ export class TimelineViewElement extends HTMLElement {
     this.markers = [];
     this.coverage = new CoverageTracker();
     this.loadTick++;
+    // A full replace invalidates every mark the minimap density texture
+    // baked — the incremental queue only covers additions.
+    this.mmTexDirty = true;
+    this.mmPendingNew.length = 0;
     this.mergeData(data);
   }
 
@@ -1026,12 +1154,18 @@ export class TimelineViewElement extends HTMLElement {
     this.perLane = [];
     this.connectors = [];
     this.markers = markers;
+    // Lane replacement can renumber every row — the baked marks are stale.
+    this.mmTexDirty = true;
+    this.mmPendingNew.length = 0;
     this.mergeData({ lanes, intervals: kept, connectors });
   }
 
   setIntervals(intervals: TimelineInterval[]): void {
     this.byId.clear();
     this.perLane = this.lanes.map(() => []);
+    // Full interval replace — the baked density marks are all stale.
+    this.mmTexDirty = true;
+    this.mmPendingNew.length = 0;
     for (const iv of intervals) this.ingestInterval(iv);
     this.rebuild();
   }
@@ -1123,6 +1257,10 @@ export class TimelineViewElement extends HTMLElement {
     const s = toMs(start);
     const e = toMs(end);
     if (!Number.isFinite(s) || !Number.isFinite(e) || !(e > s)) return;
+    // A consumer-chosen window beats the aspect default from here on
+    // (applyUserView latches too — this is the explicit belt for the one
+    // programmatic path consumers call directly).
+    this.viewTouched = true;
     const span = Math.min(Math.max(e - s, MIN_SPAN_MS), MAX_SPAN_MS);
     this.applyUserView({ start: s, end: s + span }, { jump: true });
   }
@@ -1198,9 +1336,35 @@ export class TimelineViewElement extends HTMLElement {
     if (prev) {
       const arr = this.perLane[prev.laneIdx];
       arr.splice(arr.indexOf(prev), 1);
+      // Replacing an already-TERMINATED interval can rewrite a mark the
+      // minimap density texture already baked — stale pixels only a full
+      // repaint can clear. (An ongoing→terminated transition is the
+      // normal live flow and is NOT dirtying: the ongoing version was
+      // never baked, the terminated one queues below.)
+      if (prev.end !== null) this.mmTexDirty = true;
     }
     this.byId.set(iv.id, n);
     this.perLane[laneIdx].push(n);
+    // Incremental cull/extent metadata (grow-only here — rebuild() runs
+    // right after every ingest batch and recomputes exactly, shrinking
+    // included; a transiently too-large bound only costs a few loop
+    // iterations, never correctness).
+    if (n.end !== null) {
+      if (n.end > this.mmLatestEnd) this.mmLatestEnd = n.end;
+      const dur = n.end - n.start;
+      if (!(this.laneMaxDur[laneIdx] >= dur)) this.laneMaxDur[laneIdx] = dur;
+      // Right-edge sliver for the density texture. Bounded: past the cap
+      // (a hidden strip never drains the queue, or a giant setData) the
+      // queue folds into one full-rebuild flag instead of growing.
+      if (this.mmPendingNew.length >= 4096) {
+        this.mmPendingNew.length = 0;
+        this.mmTexDirty = true;
+      } else {
+        this.mmPendingNew.push(n);
+      }
+    } else if (!(this.laneOngoingStart[laneIdx] <= n.start)) {
+      this.laneOngoingStart[laneIdx] = n.start;
+    }
   }
 
   /**
@@ -1209,8 +1373,55 @@ export class TimelineViewElement extends HTMLElement {
    * historical parallelism burst stops padding its lane once off-screen.
    */
   private rebuild(): void {
+    // Re-sort only lanes that actually fell out of (start, id) order: a
+    // live merge APPENDS near-now intervals, leaving most lanes already
+    // sorted — the O(n) plain-compare check replaces an O(n log n)
+    // comparator sort per lane per merge (the 5s merge spike).
     for (const per of this.perLane) {
-      per.sort((a, b) => a.start - b.start || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      let sorted = true;
+      for (let i = 1; i < per.length; i++) {
+        const a = per[i - 1];
+        const b = per[i];
+        if (a.start > b.start || (a.start === b.start && a.id > b.id)) {
+          sorted = false;
+          break;
+        }
+      }
+      if (!sorted) per.sort((a, b) => a.start - b.start || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    }
+    // Exact recompute of the cull/extent metadata the ingest path grew
+    // incrementally (this pass also SHRINKS after replaces): per-lane max
+    // terminated duration + earliest ongoing start (the drawIntervals
+    // lower-bound cull), the global latest end (the minimap extent's data
+    // end — the retired per-frame O(N) mmExtent scan), and the flat
+    // ongoing list the minimap live-draws over its density texture. One
+    // O(N) pass per DATA CHANGE, next to the O(N log N) re-sort that
+    // already runs here — never per frame.
+    {
+      const laneN = this.perLane.length;
+      this.laneMaxDur.length = laneN;
+      this.laneOngoingStart.length = laneN;
+      this.mmOngoing.length = 0;
+      let latest = -Infinity;
+      for (let li = 0; li < laneN; li++) {
+        const per = this.perLane[li];
+        let maxDur = 0;
+        let ongoing = Infinity;
+        for (let i = 0; i < per.length; i++) {
+          const n = per[i];
+          if (n.end === null) {
+            if (n.start < ongoing) ongoing = n.start;
+            this.mmOngoing.push(n);
+          } else {
+            const dur = n.end - n.start;
+            if (dur > maxDur) maxDur = dur;
+            if (n.end > latest) latest = n.end;
+          }
+        }
+        this.laneMaxDur[li] = maxDur;
+        this.laneOngoingStart[li] = ongoing;
+      }
+      this.mmLatestEnd = latest;
     }
     // Row memory follows its lane's lifetime: allocators for lanes that
     // no longer exist are dropped; surviving lanes keep theirs (so a full
@@ -1254,25 +1465,47 @@ export class TimelineViewElement extends HTMLElement {
     const rv = this.renderView();
     const m = this.metrics();
     const plotW = this.plotWidth();
+    const span = rv.end - rv.start;
+    const spanKey = spanBucket(span);
     const structure = this.targetCounts.length !== this.perLane.length;
     let changed = false;
-    if (
-      this.packedEpoch !== this.packEpoch ||
-      this.packedStart !== rv.start ||
-      this.packedEnd !== rv.end ||
-      this.packedPlotW !== plotW ||
-      structure
-    ) {
-      this.packedEpoch = this.packEpoch;
-      this.packedStart = rv.start;
-      this.packedEnd = rv.end;
-      this.packedPlotW = plotW;
+    // CLUSTERING — position-independent (proven: membership is a function
+    // of (data, span, plotW) only), so pure pans and the follow pin never
+    // re-cluster. Zooming crosses span buckets and re-clusters at once.
+    const needCluster =
+      this.clusteredEpoch !== this.packEpoch || this.clusteredSpanKey !== spanKey || this.clusteredPlotW !== plotW || structure;
+    if (needCluster) {
+      // A pure zoom/resize re-cluster sees the exact objects of the last
+      // pass — clusterLane's membership-identical fast path may reuse its
+      // derived structures. A data change (epoch moved) always rebuilds.
+      const sameData = this.clusteredEpoch === this.packEpoch && !structure;
+      this.clusteredEpoch = this.packEpoch;
+      this.clusteredSpanKey = spanKey;
+      this.clusteredPlotW = plotW;
+      this.laneClusters.length = this.perLane.length;
+      this.lanePackItems.length = this.perLane.length;
+      this.lanePackTargets.length = this.perLane.length;
+      this.laneUnclustered.length = this.perLane.length;
+      for (let i = 0; i < this.perLane.length; i++) this.clusterLane(i, rv, plotW, sameData);
+    }
+    // TRACK ASSIGNMENT — re-runs with the clustering, and additionally
+    // once the window start has drifted a quantum since the last pass.
+    const needAssign =
+      needCluster ||
+      this.assignedEpoch !== this.packEpoch ||
+      this.assignedSpanKey !== spanKey ||
+      this.assignedPlotW !== plotW ||
+      !(Math.abs(rv.start - this.assignedStart) < span * ASSIGN_QUANTUM_FRAC);
+    if (needAssign) {
+      this.assignedEpoch = this.packEpoch;
+      this.assignedSpanKey = spanKey;
+      this.assignedPlotW = plotW;
+      this.assignedStart = rv.start;
       const prev = this.targetCounts;
       const next = new Array<number>(this.perLane.length);
       changed = structure;
-      this.laneClusters.length = this.perLane.length;
       for (let i = 0; i < this.perLane.length; i++) {
-        next[i] = this.packLane(i, rv, plotW);
+        next[i] = this.assignLane(i, rv);
         if (!changed && prev[i] !== next[i]) changed = true;
       }
       this.targetCounts = next;
@@ -1347,47 +1580,97 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   /**
-   * Cluster + row one lane for the current window; returns its visible
-   * track count. Instant markers that visually overlap at this scale
-   * merge into ×N clusters (clusterInstants — component-native and
-   * scale-aware, so zooming in splits them); each cluster then packs as
-   * ONE item spanning its member extent, which is what keeps a burst of
-   * coincident instants from blowing up the lane height. Rows come from
-   * the lane's sticky TrackAllocator; a cluster's packing identity is its
-   * FIRST member's id, stable while membership is (pure pans never change
-   * membership), so a cluster's row doesn't hop frame to frame. Members
-   * ride their cluster's row — hit rects and connector endpoints anchored
-   * on a member resolve to the cluster's position.
+   * Cluster one lane at the current scale (the position-independent half
+   * of the old packLane). Instant markers that visually overlap at this
+   * scale merge into clusters (clusterInstants — component-native and
+   * scale-aware, so zooming in splits them); each cluster becomes ONE
+   * pack slot spanning its member extent, which is what keeps a burst of
+   * coincident instants from blowing up the lane height. The lane's pack
+   * inputs (items + write-back targets) are cached for the assignment
+   * passes that run between re-clusterings.
    */
-  private packLane(laneIdx: number, rv: TimeView, plotW: number): number {
+  private clusterLane(laneIdx: number, rv: TimeView, plotW: number, sameData: boolean): void {
     const per = this.perLane[laneIdx];
     const lane = this.lanes[laneIdx];
     const { clusters, memberOf } = clusterInstants(per, rv, plotW);
-    const ncs: NCluster[] = clusters.map((c) => {
-      const members = c.indices.map((j) => per[j]);
+    // Membership-identical fast path — pure ZOOM/RESIZE re-clusters only
+    // (`sameData`: the pack epoch is unchanged, so `per` holds exactly the
+    // objects the previous pass saw; a data change always rebuilds). Most
+    // zoom bucket steps change NO lane's membership, and a cluster is a
+    // CONTIGUOUS run of the sorted instant order, so (count, first, last)
+    // member-reference identity proves the whole membership matches — then
+    // every derived structure (NCluster objects, pack items/targets, the
+    // unclustered list, per-item clustered flags) is already exactly
+    // right and the rebuild below is skipped wholesale.
+    if (sameData) {
+      const prev = this.laneClusters[laneIdx];
+      if (prev !== undefined && prev.length === clusters.length && this.lanePackItems[laneIdx] !== undefined && this.laneUnclustered[laneIdx] !== undefined) {
+        let same = true;
+        for (let k = 0; k < clusters.length; k++) {
+          const idx = clusters[k].indices;
+          const pm = prev[k].members;
+          if (pm.length !== idx.length || pm[0] !== per[idx[0]] || pm[pm.length - 1] !== per[idx[idx.length - 1]]) {
+            same = false;
+            break;
+          }
+        }
+        if (same) return;
+      }
+    }
+    const ncs: NCluster[] = new Array(clusters.length);
+    for (let ci = 0; ci < clusters.length; ci++) {
+      const c = clusters[ci];
+      const members = new Array<NInterval>(c.indices.length);
+      for (let k = 0; k < c.indices.length; k++) members[k] = per[c.indices[k]];
       const keys = this.clusterKeys(members, lane);
-      return { id: `cluster:${members[0].id}`, laneIdx, extent: c.extent, members, catKey: keys.catKey, state: keys.state, track: -1 };
-    });
+      ncs[ci] = { id: `cluster:${members[0].id}`, laneIdx, extent: c.extent, members, catKey: keys.catKey, state: keys.state, track: -1 };
+    }
     const items: PackItem[] = [];
     const targets: { track: number }[] = [];
+    const unclustered: NInterval[] = [];
     for (let j = 0; j < per.length; j++) {
       per[j].clustered = memberOf[j] >= 0;
       if (memberOf[j] >= 0) continue;
       items.push(per[j]);
       targets.push(per[j]);
+      unclustered.push(per[j]);
     }
-    for (const nc of ncs) {
+    for (let k = 0; k < ncs.length; k++) {
+      const nc = ncs[k];
       items.push({ id: nc.id, start: nc.extent.start, end: nc.extent.end });
       targets.push(nc);
     }
+    this.laneClusters[laneIdx] = ncs;
+    this.lanePackItems[laneIdx] = items;
+    this.lanePackTargets[laneIdx] = targets;
+    this.laneUnclustered[laneIdx] = unclustered;
+  }
+
+  /**
+   * Row one lane for the current window from its cached pack inputs;
+   * returns its visible track count. Rows come from the lane's sticky
+   * TrackAllocator; a cluster's packing identity is its FIRST member's
+   * id, stable while membership is (pure pans never change membership),
+   * so a cluster's row doesn't hop frame to frame. Members ride their
+   * cluster's row — hit rects and connector endpoints anchored on a
+   * member resolve to the cluster's position.
+   */
+  private assignLane(laneIdx: number, rv: TimeView): number {
+    const lane = this.lanes[laneIdx];
+    const items = this.lanePackItems[laneIdx];
+    const targets = this.lanePackTargets[laneIdx];
     const { tracks, trackCount } = this.allocatorFor(lane.id).assign(items, rv);
     for (let k = 0; k < tracks.length; k++) {
       if (tracks[k] >= 0) targets[k].track = tracks[k];
     }
-    for (const nc of ncs) {
-      if (nc.track >= 0) for (const member of nc.members) member.track = nc.track;
+    const ncs = this.laneClusters[laneIdx];
+    for (let k = 0; k < ncs.length; k++) {
+      const nc = ncs[k];
+      if (nc.track >= 0) {
+        const members = nc.members;
+        for (let mi = 0; mi < members.length; mi++) members[mi].track = nc.track;
+      }
     }
-    this.laneClusters[laneIdx] = ncs;
     return trackCount;
   }
 
@@ -1401,15 +1684,21 @@ export class TimelineViewElement extends HTMLElement {
     const laneCat = lane.group ?? lane.id;
     let state = members[0]?.state ?? '';
     let catKey = members[0]?.catKey ?? laneCat;
-    for (const member of members) {
+    for (let i = 0; i < members.length; i++) {
+      const member = members[i];
       if (member.state !== state) state = '';
       if (member.catKey !== catKey) catKey = laneCat;
     }
     return { catKey, state };
   }
 
+  // Cached — theme-derived constants, refreshed by readTheme(). metrics()
+  // sits inside rectForInto on the per-bar draw path: allocating a fresh
+  // object per call was ~thousands of allocations per drawn frame.
+  private metricsCache = { trackHeight: THEME_DEFAULTS.trackHeight, trackGap: 2, lanePad: 3 };
+
   private metrics(): { trackHeight: number; trackGap: number; lanePad: number } {
-    return { trackHeight: this.theme.trackHeight, trackGap: 2, lanePad: 3 };
+    return this.metricsCache;
   }
 
   /** Effective compact track height: the themed value, never above the normal height. */
@@ -1669,6 +1958,10 @@ export class TimelineViewElement extends HTMLElement {
    * teleports this replaced. Reduced motion snaps both.
    */
   private applyUserView(next: TimeView, opts?: { pan?: boolean; jump?: boolean; zoom?: boolean }): void {
+    // Every user gesture (wheel, glide, drag, pinch, keyboard, minimap)
+    // and programmatic setViewport funnels through here — the window is
+    // now CHOSEN, so the aspect-derived default span stops applying.
+    this.viewTouched = true;
     const span = next.end - next.start;
     const now = this.liveEdge(); // stale mode: gestures clamp/dock at the FROZEN edge
     const wasFollowing = this.following;
@@ -1977,6 +2270,23 @@ export class TimelineViewElement extends HTMLElement {
     this.dpr = dpr;
     this.cssW = bw / dpr;
     this.cssH = bh / dpr;
+    // Aspect-scaled DEFAULT zoom: until the first user gesture or
+    // programmatic setViewport (viewTouched), the visible span derives
+    // from the HOST box's aspect ratio — 3 min at 16:9, scaled linearly
+    // (defaultSpanForAspect, clamped) — re-derived on every real resize
+    // with the view END anchored. The host box (container aspect) on
+    // purpose, not the plot box: the default must not couple to gutter
+    // auto-sizing or minimap visibility. A chosen window is never
+    // overridden — this block stops running forever once touched.
+    if (!this.viewTouched) {
+      const hostW = this.clientWidth;
+      if (hostW > 0 && hostH > 0) {
+        const span = defaultSpanForAspect(hostW, hostH);
+        if (span !== this.view.end - this.view.start) {
+          this.view = { start: this.view.end - span, end: this.view.end };
+        }
+      }
+    }
     this.readTheme();
     this.clampLaneScroll();
     this.invalidate();
@@ -2019,6 +2329,7 @@ export class TimelineViewElement extends HTMLElement {
     t.gutterWidth = readNum(cs, '--timeline-gutter-width', THEME_DEFAULTS.gutterWidth, 0, 400);
     this.fontAxis = `${t.fontSize - 1}px ${t.font}`;
     this.fontBar = `${t.fontSize}px ${t.font}`;
+    this.metricsCache.trackHeight = t.trackHeight;
     this.labelHalo = labelHaloColor(t.fg);
     this.oklch = typeof CSS !== 'undefined' && !!CSS.supports && CSS.supports('color', 'oklch(0.6 0.1 120)');
     const ctx = this.ctx2d();
@@ -2029,6 +2340,10 @@ export class TimelineViewElement extends HTMLElement {
     }
     this.colorCache.clear();
     this.patternCache.clear();
+    // Theme colors are baked into the minimap density texture — stamp it
+    // stale (an async rebuild repaints it) and drop the cached fills.
+    this.mmThemeGen++;
+    this.mmDimCache.clear();
     this.layout = layoutLanes(this.displayCounts, this.metrics(), this.displayHeights);
     this.autoGutter();
   }
@@ -2159,11 +2474,22 @@ export class TimelineViewElement extends HTMLElement {
    * cache shares one CanvasPattern per (kind, color) and the transform is
    * read at fill time.
    */
+  /** Reused by anchorPattern — setTransform reads the matrix synchronously, so one mutable instance is safe (and kills a per-patterned-fill allocation). */
+  private patternMatrix = typeof DOMMatrix !== 'undefined' ? new DOMMatrix() : null;
+
   private anchorPattern(pat: CanvasPattern, ox: number, oy: number): CanvasPattern {
     const px = ((ox % PATTERN_TILE_PX) + PATTERN_TILE_PX) % PATTERN_TILE_PX;
     const py = ((oy % PATTERN_TILE_PX) + PATTERN_TILE_PX) % PATTERN_TILE_PX;
-    if (Number.isFinite(px) && Number.isFinite(py)) {
-      pat.setTransform?.(new DOMMatrix().translateSelf(px, py).scaleSelf(1 / this.dpr));
+    const m = this.patternMatrix;
+    if (m && Number.isFinite(px) && Number.isFinite(py)) {
+      const s = 1 / this.dpr;
+      m.a = s;
+      m.b = 0;
+      m.c = 0;
+      m.d = s;
+      m.e = px;
+      m.f = py;
+      pat.setTransform?.(m);
     }
     return pat;
   }
@@ -2177,15 +2503,26 @@ export class TimelineViewElement extends HTMLElement {
    * hold exact relative offsets while the viewport translates.
    */
   private rectFor(n: NInterval, now: number): HitRect {
+    return this.rectForInto(n, now, { x: 0, y: 0, w: 0, h: 0 });
+  }
+
+  /** rectFor into a caller-owned rect — the draw loop's per-frame path reuses one scratch rect instead of allocating per bar. */
+  private rectForInto(n: NInterval, now: number, out: HitRect): HitRect {
     const w = this.plotWidth();
     const m = this.metrics();
     const rv = this.renderView();
     const th = this.laneTrackHeight(n.laneIdx); // per-lane: compact lanes (and tweens) shrink rect + hit target together
     const xs = this.gutterW + timeToX(n.start, rv, w);
     const xe = this.gutterW + timeToX(n.end ?? now, rv, w);
-    const y = AXIS_H + this.layout.tops[n.laneIdx] - this.laneScroll + trackTop(n.track, m, th);
-    return { x: xs, y, w: Math.max(0, xe - xs), h: th };
+    out.x = xs;
+    out.y = AXIS_H + this.layout.tops[n.laneIdx] - this.laneScroll + trackTop(n.track, m, th);
+    out.w = Math.max(0, xe - xs);
+    out.h = th;
+    return out;
   }
+
+  /** The draw loop's reused rect (drawInterval only — hit tests and connectors keep their own). */
+  private rectScratch: HitRect = { x: 0, y: 0, w: 0, h: 0 };
 
   // -- Hit testing ---------------------------------------------------------------
 
@@ -2215,7 +2552,7 @@ export class TimelineViewElement extends HTMLElement {
       }
     }
     // Intervals: topmost = last in draw order within the lane — which
-    // puts the lane's ×N cluster markers (drawn after its bars) first.
+    // puts the lane's cluster stack markers (drawn after its bars) first.
     const laneIdx = this.laneAtY(y);
     if (laneIdx >= 0) {
       const ncs = this.laneClusters[laneIdx];
@@ -2470,23 +2807,21 @@ export class TimelineViewElement extends HTMLElement {
    * The strip's data extent: earliest loaded interval start — widened by
    * coverage knowledge (the first covered time, the exhausted-history
    * boundary) — through max(live edge, latest interval end). Null while
-   * nothing is loaded (the strip is hidden then anyway). O(n) over the
-   * loaded intervals; called per drawn frame and per strip pointer event,
-   * both of which already do O(n) work.
+   * nothing is loaded (the strip is hidden then anyway). O(lanes) now:
+   * `earliest` reads each lane's sorted head, `latest` is the
+   * incrementally-maintained mmLatestEnd (recomputed exactly in
+   * rebuild()) — the old per-frame O(N) full scan is gone.
    */
   private mmExtent(): TimeView | null {
     let earliest = Infinity;
-    let latest = -Infinity;
-    for (const per of this.perLane) {
+    for (let li = 0; li < this.perLane.length; li++) {
+      const per = this.perLane[li];
       if (per.length > 0 && per[0].start < earliest) earliest = per[0].start;
-      for (const n of per) {
-        if (n.end !== null && n.end > latest) latest = n.end;
-      }
     }
     const cov = this.coverage.coveredRanges();
     return minimapExtent(
       Number.isFinite(earliest) ? earliest : null,
-      Number.isFinite(latest) ? latest : null,
+      Number.isFinite(this.mmLatestEnd) ? this.mmLatestEnd : null,
       this.liveEdge(),
       this.coverage.exhaustedBefore,
       cov.length > 0 ? cov[0].start : null,
@@ -2583,7 +2918,7 @@ export class TimelineViewElement extends HTMLElement {
       this.invalidate();
     }
     // Cluster hover ring (keyed by the first member — the cluster's
-    // identity). No intervalhover: a ×N group is not a single interval.
+    // identity). No intervalhover: a cluster is not a single interval.
     const nextCluster = hit?.type === 'cluster' ? (hit.intervals[0]?.id ?? null) : null;
     if (nextCluster !== this.hoverClusterId) {
       this.hoverClusterId = nextCluster;
@@ -2820,6 +3155,14 @@ export class TimelineViewElement extends HTMLElement {
    * window rect with grabbable edge handles. Rendered only from draw() —
    * the strip repaints exactly when the main chart does (same rAF loop,
    * same dirty flag, same idle pacing), never on its own schedule.
+   *
+   * The density marks are served from an offscreen TEXTURE (one blit per
+   * frame) instead of the old O(all-intervals) per-frame refill — see the
+   * mmTex field block: frozen quantized extent mapping + whole-pixel
+   * steps (a single scale-blit), incremental right-edge paints on merge,
+   * async sliced full rebuilds, atomic swap. Only the now tick, the
+   * window rect, and the handful of ONGOING interval marks (their ends
+   * track the live clock) draw per frame.
    */
   private drawMinimap(): void {
     if (!this.mmVisible) return;
@@ -2845,38 +3188,45 @@ export class TimelineViewElement extends HTMLElement {
     const ext = this.mmExtent();
     if (!ext) return;
     const now = this.liveEdge();
-    // Per-lane collapsed density marks. Sub-pixel runs stay ≥ 1px so the
-    // low-alpha marks accumulate into a density read where they pile up.
+    // Keep the density texture current (steps/increments/rebuild kicks),
+    // then blit it mapped from its frozen extent onto the live one — an
+    // identity blit between steps (sub-strip-pixel drift is invisible),
+    // and the same general mapping stretches a stale-geometry texture
+    // while an async rebuild is in flight.
+    this.mmSyncTexture(ext, w, h);
+    const tex = this.mmTex;
+    if (tex) {
+      const dx0 = timeToX(this.mmTexExtent.start, ext, w);
+      const dx1 = timeToX(this.mmTexExtent.end, ext, w);
+      if (dx1 > dx0) ctx.drawImage(tex, 0, 0, tex.width, tex.height, dx0, 0, dx1 - dx0, h);
+    }
+    // ONGOING intervals are never baked (their right edge is the live
+    // clock) — draw their marks over the texture every frame; there are
+    // only ever a handful at once.
     const laneN = this.perLane.length;
-    const padY = 3;
-    const rowH = laneN > 0 ? (h - padY * 2) / laneN : 0;
-    const markH = Math.max(1, Math.min(rowH * 0.75, 6));
-    const dim = new Map<string, string>();
-    for (let li = 0; li < laneN; li++) {
-      const per = this.perLane[li];
-      const y = padY + li * rowH + (rowH - markH) / 2;
-      for (const n of per) {
+    const ongoing = this.mmOngoing;
+    if (ongoing.length > 0 && laneN > 0) {
+      const padY = 3;
+      const rowH = (h - padY * 2) / laneN;
+      const markH = Math.max(1, Math.min(rowH * 0.75, 6));
+      const x1 = timeToX(now, ext, w);
+      for (let i = 0; i < ongoing.length; i++) {
+        const n = ongoing[i];
         const x0 = timeToX(n.start, ext, w);
-        if (x0 > w) break; // sorted by start
-        const x1 = timeToX(n.end ?? now, ext, w);
-        if (x1 < 0) continue;
-        let fill = dim.get(n.catKey);
-        if (fill === undefined) {
-          fill = withAlpha(this.resolved(n.catKey, '', null).fill, 0.55);
-          dim.set(n.catKey, fill);
-        }
-        ctx.fillStyle = fill;
+        if (x0 > w || x1 < 0) continue;
+        const y = padY + n.laneIdx * rowH + (rowH - markH) / 2;
+        ctx.fillStyle = this.mmDimFill(n.catKey);
         ctx.fillRect(x0, y, Math.max(x1 - x0, 1), markH);
       }
     }
     // The live edge, frozen + muted while the feed is stale (the main
-    // now line's language).
+    // now line's language). Live overdraw — never baked into the texture.
     const nx = timeToX(now, ext, w);
     if (nx >= 0 && nx <= w) {
       ctx.fillStyle = this.feedStale ? t.muted : withAlpha(t.now, 0.8);
       ctx.fillRect(nx - 0.5, 0, 1, h);
     }
-    // The visible window: brighter rect + edge handle bars.
+    // The visible window: brighter rect + edge handle bars. Live overdraw.
     const rect = minimapWindowRect(this.view, ext, w);
     ctx.fillStyle = withAlpha(t.fg, 0.1);
     ctx.fillRect(rect.x0, 0, rect.x1 - rect.x0, h);
@@ -2886,6 +3236,304 @@ export class TimelineViewElement extends HTMLElement {
     ctx.fillStyle = withAlpha(t.fg, 0.75);
     ctx.fillRect(rect.x0 - 1.5, 1, 3, h - 2);
     ctx.fillRect(rect.x1 - 1.5, 1, 3, h - 2);
+  }
+
+  /** catKey → the 0.55-alpha density fill (cached; cleared with the theme). */
+  private mmDimFill(catKey: string): string {
+    let fill = this.mmDimCache.get(catKey);
+    if (fill === undefined) {
+      fill = withAlpha(this.resolved(catKey, '', null).fill, 0.55);
+      this.mmDimCache.set(catKey, fill);
+    }
+    return fill;
+  }
+
+  /**
+   * Keep the density texture serving the current strip: decide between a
+   * synchronous FIRST build (nothing exists to serve meanwhile — one-time,
+   * equal to a single frame of the old per-frame cost), an ASYNC sliced
+   * rebuild (geometry/theme/lane-count/extent-start changes, in-place mark
+   * rewrites, accumulated resample drift — the old texture keeps serving,
+   * stretched by the frame blit's general mapping, until the swap), or
+   * INCREMENTAL maintenance (merge slivers painted at the frozen mapping;
+   * whole-strip-pixel extent steps via one scale-blit).
+   */
+  private mmSyncTexture(ext: TimeView, w: number, h: number): void {
+    const dpr = this.dpr;
+    const bw = Math.max(1, Math.round(w * dpr));
+    const bh = Math.max(1, Math.round(h * dpr));
+    const laneN = this.perLane.length;
+    if (this.mmTex === null) {
+      const built = this.mmPaintFull(ext, bw, bh, dpr, laneN);
+      if (built) this.mmAdoptTexture(built);
+      return;
+    }
+    const geomOk =
+      this.mmTexW === bw && this.mmTexH === bh && this.mmTexDpr === dpr && this.mmTexLaneN === laneN && this.mmTexTheme === this.mmThemeGen;
+    const contentOk =
+      geomOk && !this.mmTexDirty && this.mmTexExtent.start === ext.start && this.mmTexScaleAcc > 0.92 && this.mmTexSteps < 96;
+    if (!contentOk) {
+      this.mmKickRebuild(ext, bw, bh, dpr, laneN);
+      return;
+    }
+    // Incremental: paint marks merged since the last bake (stepping the
+    // frozen extent first if any lands beyond its end — painting INTO the
+    // texture at its own extent is exact by definition), then step the
+    // mapping once pure clock growth has drifted it a whole strip pixel.
+    if (this.mmPendingNew.length > 0) {
+      const pend = this.mmPendingNew;
+      let needEnd = this.mmTexExtent.end;
+      for (let i = 0; i < pend.length; i++) {
+        const e = pend[i].end;
+        if (e !== null && e > needEnd) needEnd = e;
+      }
+      if (needEnd > this.mmTexExtent.end) this.mmStepExtent(ext, w);
+      this.mmPaintPending(w, h, laneN);
+      this.mmTexEpoch = this.packEpoch;
+    }
+    const errStart = Math.abs(timeToX(this.mmTexExtent.start, ext, w));
+    const errEnd = Math.abs(timeToX(this.mmTexExtent.end, ext, w) - w);
+    if (errStart >= 1 || errEnd >= 1) this.mmStepExtent(ext, w);
+  }
+
+  /**
+   * Step the texture's frozen extent to the live one with a single
+   * general scale-blit into the double-buffer partner (self-blit lacks
+   * snapshot semantics), then swap — the "pixel shift" for this
+   * compressing geometry. Handles live-end compression AND the
+   * pad-regime translation (minimapExtent's backward-padded start) in
+   * one primitive. Accumulates the resample-drift budget that
+   * eventually forces a clean async rebuild.
+   */
+  private mmStepExtent(ext: TimeView, w: number): void {
+    const tex = this.mmTex;
+    const b = this.mmTexB;
+    const bc = this.mmTexBCtx;
+    if (!tex || !b || !bc) return;
+    const dpr = this.mmTexDpr;
+    const dx0 = timeToX(this.mmTexExtent.start, ext, w) * dpr;
+    const dx1 = timeToX(this.mmTexExtent.end, ext, w) * dpr;
+    bc.setTransform(1, 0, 0, 1, 0, 0);
+    bc.clearRect(0, 0, b.width, b.height);
+    if (dx1 > dx0) bc.drawImage(tex, 0, 0, tex.width, tex.height, dx0, 0, dx1 - dx0, tex.height);
+    this.mmTexB = tex;
+    this.mmTexBCtx = this.mmTexCtx;
+    this.mmTex = b;
+    this.mmTexCtx = bc;
+    this.mmTexScaleAcc *= Math.max(0.0001, Math.min(1, (dx1 - dx0) / (w * dpr)));
+    this.mmTexSteps++;
+    this.mmTexExtent = { start: ext.start, end: ext.end };
+  }
+
+  /** Paint the merge sliver (mmPendingNew) into the live texture at its frozen extent, then clear the queue. */
+  private mmPaintPending(w: number, h: number, laneN: number): void {
+    const c = this.mmTexCtx;
+    if (!c) return;
+    const dpr = this.mmTexDpr;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const padY = 3;
+    const rowH = laneN > 0 ? (h - padY * 2) / laneN : 0;
+    const markH = Math.max(1, Math.min(rowH * 0.75, 6));
+    const extent = this.mmTexExtent;
+    const pend = this.mmPendingNew;
+    for (let i = 0; i < pend.length; i++) {
+      const n = pend[i];
+      // Skip superseded queue entries (replaced since ingest) and rows
+      // beyond the texture's lane count — both funnels to a full rebuild
+      // via mmTexDirty / the laneN stamp anyway.
+      if (n.end === null || this.byId.get(n.id) !== n || n.laneIdx >= laneN) continue;
+      const x0 = timeToX(n.start, extent, w);
+      const x1 = timeToX(n.end, extent, w);
+      if (x1 < 0 || x0 > w) continue;
+      const y = padY + n.laneIdx * rowH + (rowH - markH) / 2;
+      c.fillStyle = this.mmDimFill(n.catKey);
+      c.fillRect(x0, y, Math.max(x1 - x0, 1), markH);
+    }
+    pend.length = 0;
+  }
+
+  /**
+   * Start (or keep) an async full rebuild toward the current parameters.
+   * An in-flight rebuild already targeting them is left to finish (the
+   * slice chain is re-armed in case a disconnect dropped its timer); one
+   * targeting STALE parameters — a merge/resize/retheme landed mid-build —
+   * restarts from a fresh cursor.
+   */
+  private mmKickRebuild(ext: TimeView, bw: number, bh: number, dpr: number, laneN: number): void {
+    const r = this.mmRebuild;
+    if (
+      r !== null &&
+      r.epoch === this.packEpoch &&
+      r.themeGen === this.mmThemeGen &&
+      r.w === bw &&
+      r.h === bh &&
+      r.dpr === dpr &&
+      r.laneN === laneN &&
+      r.extent.start === ext.start
+    ) {
+      this.mmScheduleSlice();
+      return;
+    }
+    const tex = document.createElement('canvas');
+    tex.width = bw;
+    tex.height = bh;
+    const c = tex.getContext('2d');
+    if (!c) return;
+    this.mmRebuild = {
+      tex,
+      ctx: c,
+      extent: { start: ext.start, end: ext.end },
+      epoch: this.packEpoch,
+      themeGen: this.mmThemeGen,
+      laneN,
+      w: bw,
+      h: bh,
+      dpr,
+      laneIdx: 0,
+      itemIdx: 0,
+    };
+    // The queued sliver is covered by the full repaint about to run.
+    this.mmPendingNew.length = 0;
+    this.mmScheduleSlice();
+  }
+
+  /** Arm the next rebuild slice off the frame path (idempotent). */
+  private mmScheduleSlice(): void {
+    if (this.mmRebuildTimer !== null) return;
+    this.mmRebuildTimer = setTimeout(() => {
+      this.mmRebuildTimer = null;
+      this.mmRebuildSlice();
+    }, 0);
+  }
+
+  /**
+   * One budgeted (~3ms) rebuild slice: resume painting lanes/items into
+   * the pending texture from the (laneIdx, itemIdx) cursor. On
+   * completion the texture swaps in atomically — unless the parameters
+   * went stale mid-build (data/theme moved), in which case the result is
+   * discarded and the next frame re-kicks with fresh ones.
+   */
+  private mmRebuildSlice(): void {
+    const r = this.mmRebuild;
+    if (!r || !this.connected) return;
+    const c = r.ctx;
+    c.setTransform(r.dpr, 0, 0, r.dpr, 0, 0);
+    const w = r.w / r.dpr;
+    const h = r.h / r.dpr;
+    const padY = 3;
+    const rowH = r.laneN > 0 ? (h - padY * 2) / r.laneN : 0;
+    const markH = Math.max(1, Math.min(rowH * 0.75, 6));
+    const t0 = this.perfNow();
+    let count = 0;
+    while (r.laneIdx < r.laneN && r.laneIdx < this.perLane.length) {
+      const per = this.perLane[r.laneIdx];
+      const y = padY + r.laneIdx * rowH + (rowH - markH) / 2;
+      while (r.itemIdx < per.length) {
+        const n = per[r.itemIdx];
+        r.itemIdx++;
+        if (n.end === null) continue; // live-drawn every frame, never baked
+        const x0 = timeToX(n.start, r.extent, w);
+        if (x0 > w) break; // sorted by start — the rest of the lane is past the extent
+        const x1 = timeToX(n.end, r.extent, w);
+        if (x1 < 0) continue;
+        c.fillStyle = this.mmDimFill(n.catKey);
+        c.fillRect(x0, y, Math.max(x1 - x0, 1), markH);
+        if ((++count & 63) === 0 && this.perfNow() - t0 > 3) {
+          this.mmScheduleSlice();
+          return;
+        }
+      }
+      r.laneIdx++;
+      r.itemIdx = 0;
+    }
+    this.mmRebuild = null;
+    if (r.epoch !== this.packEpoch || r.themeGen !== this.mmThemeGen) {
+      // Painted from live arrays that changed mid-build — the content is
+      // unaccountable; drop it and let the next frame re-kick fresh.
+      this.invalidate();
+      return;
+    }
+    this.mmAdoptTexture(r);
+    this.invalidate(); // blit the fresh texture on the next frame
+  }
+
+  /** Synchronous full paint — the FIRST build only (nothing exists to serve while an async build runs). */
+  private mmPaintFull(
+    ext: TimeView,
+    bw: number,
+    bh: number,
+    dpr: number,
+    laneN: number,
+  ): { tex: HTMLCanvasElement; ctx: CanvasRenderingContext2D; extent: TimeView; epoch: number; themeGen: number; laneN: number; w: number; h: number; dpr: number } | null {
+    const tex = document.createElement('canvas');
+    tex.width = bw;
+    tex.height = bh;
+    const c = tex.getContext('2d');
+    if (!c) return null;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const w = bw / dpr;
+    const h = bh / dpr;
+    const padY = 3;
+    const rowH = laneN > 0 ? (h - padY * 2) / laneN : 0;
+    const markH = Math.max(1, Math.min(rowH * 0.75, 6));
+    for (let li = 0; li < laneN && li < this.perLane.length; li++) {
+      const per = this.perLane[li];
+      const y = padY + li * rowH + (rowH - markH) / 2;
+      for (let i = 0; i < per.length; i++) {
+        const n = per[i];
+        if (n.end === null) continue;
+        const x0 = timeToX(n.start, ext, w);
+        if (x0 > w) break; // sorted by start
+        const x1 = timeToX(n.end, ext, w);
+        if (x1 < 0) continue;
+        c.fillStyle = this.mmDimFill(n.catKey);
+        c.fillRect(x0, y, Math.max(x1 - x0, 1), markH);
+      }
+    }
+    return {
+      tex,
+      ctx: c,
+      extent: { start: ext.start, end: ext.end },
+      epoch: this.packEpoch,
+      themeGen: this.mmThemeGen,
+      laneN,
+      w: bw,
+      h: bh,
+      dpr,
+    };
+  }
+
+  /** Swap a completed texture in and reset the drift budgets + queues. */
+  private mmAdoptTexture(r: {
+    tex: HTMLCanvasElement;
+    ctx: CanvasRenderingContext2D;
+    extent: TimeView;
+    epoch: number;
+    themeGen: number;
+    laneN: number;
+    w: number;
+    h: number;
+    dpr: number;
+  }): void {
+    this.mmTex = r.tex;
+    this.mmTexCtx = r.ctx;
+    this.mmTexExtent = { start: r.extent.start, end: r.extent.end };
+    this.mmTexEpoch = r.epoch;
+    this.mmTexW = r.w;
+    this.mmTexH = r.h;
+    this.mmTexDpr = r.dpr;
+    this.mmTexLaneN = r.laneN;
+    this.mmTexTheme = r.themeGen;
+    this.mmTexScaleAcc = 1;
+    this.mmTexSteps = 0;
+    this.mmTexDirty = false;
+    this.mmPendingNew.length = 0;
+    if (!this.mmTexB || this.mmTexB.width !== r.w || this.mmTexB.height !== r.h) {
+      this.mmTexB = document.createElement('canvas');
+      this.mmTexB.width = r.w;
+      this.mmTexB.height = r.h;
+      this.mmTexBCtx = this.mmTexB.getContext('2d');
+    }
   }
 
   /**
@@ -3073,15 +3721,36 @@ export class TimelineViewElement extends HTMLElement {
     for (let laneIdx = 0; laneIdx < this.perLane.length; laneIdx++) {
       const laneTop = AXIS_H + tops[laneIdx] - this.laneScroll;
       if (laneTop + heights[laneIdx] < AXIS_H || laneTop > h) continue;
-      const per = this.perLane[laneIdx];
-      for (let i = 0; i < per.length; i++) {
+      // Iterate only the UNCLUSTERED items (built at cluster time, same
+      // (start, id) order — clustered members draw as their cluster's
+      // stack marker below, and skipping them one by one used to burn
+      // thousands of no-op iterations per frame on busy zooms).
+      const per = this.laneUnclustered[laneIdx] ?? this.perLane[laneIdx];
+      // Lower-bound cull: a TERMINATED item starting before
+      // rv.start − maxDur necessarily ended before the window; ongoing
+      // items (end = null, growing to now) block the bound only down to
+      // the lane's earliest ongoing start. Binary-search the first
+      // possibly-visible index (arrays are (start, id)-sorted) instead of
+      // scanning every frame from 0 — the loop is O(visible + log N),
+      // with the existing sorted `break` as the upper bound.
+      let cullFrom = rv.start - (this.laneMaxDur[laneIdx] ?? 0);
+      const ongoingStart = this.laneOngoingStart[laneIdx];
+      if (ongoingStart !== undefined && ongoingStart < cullFrom) cullFrom = ongoingStart;
+      let lo = 0;
+      let hi = per.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (per[mid].start < cullFrom) lo = mid + 1;
+        else hi = mid;
+      }
+      for (let i = lo; i < per.length; i++) {
         const n = per[i];
         if (n.start > rv.end) break; // sorted by start
         if ((n.end ?? now) < rv.start && n.end !== null) continue;
-        if (n.clustered) continue; // drawn as its cluster's ×N marker below
+        if (n.clustered) continue; // belt — membership changed since the last cluster pass
         this.drawInterval(ctx, n, now);
       }
-      // The lane's ×N cluster markers, over its bars.
+      // The lane's cluster stack markers, over its bars.
       const ncs = this.laneClusters[laneIdx];
       if (ncs) for (const c of ncs) this.drawCluster(ctx, c);
     }
@@ -3094,7 +3763,7 @@ export class TimelineViewElement extends HTMLElement {
     const dpr = this.dpr;
     const rv = this.renderView();
     const plotW = this.plotWidth();
-    const r = this.rectFor(n, now);
+    const r = this.rectForInto(n, now, this.rectScratch);
     const bh = r.h; // per-lane track height: compact lanes render slivers
     const style = this.resolved(n.catKey, n.state, this.overrideColor(n));
     const hovered = this.hoverIntervalId === n.id;
@@ -3329,6 +3998,7 @@ export class TimelineViewElement extends HTMLElement {
     cy: number,
     trackH: number,
     hovered: boolean,
+    ghost = false,
   ): void {
     const t = this.theme;
     // Pips shrink with the track but never below a visible 4px diamond
@@ -3361,7 +4031,13 @@ export class TimelineViewElement extends HTMLElement {
     }
     ctx.stroke();
     if (style.dash) ctx.setLineDash(EMPTY_DASH);
-    if (emphasis) {
+    // Ghost copies (the back layers of a cluster's 3-stack) draw fill +
+    // border only: no emphasis stem (an emphasis cluster shows ONE stem on
+    // its front copy, never a comb) and no hover ring (callers pass
+    // hovered=false for ghosts). The dashed-cancelled outline deliberately
+    // stays on ghosts — a cancelled cluster reads as a stack of dashed
+    // hollow diamonds, matching the per-state language.
+    if (emphasis && !ghost) {
       // Unmissable: a stem above the diamond, like an exclamation.
       ctx.strokeStyle = t.emphasis;
       ctx.lineWidth = 2;
@@ -3403,32 +4079,33 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   /**
-   * A ×N cluster marker: the SAME diamond pip as a single instant — the
-   * ×N count badge alone carries "several instants live here at this
-   * zoom". There is no collision to disambiguate (markers merge exactly
-   * while they'd visually overlap, so a badged pip can only ever BE a
-   * cluster), and a shape switch just made the group look like a foreign
-   * glyph. Styled by the members' shared state exactly like singles
-   * (all-skipped = dim-filled diamond, all-cancelled = hollow dashed
-   * diamond, mixed = the neutral default); sits at the extent midpoint,
-   * sliding along the visible slice at a window edge (clusterMarkerTime).
+   * A cluster marker: the SAME diamond pip as a single instant, drawn as
+   * a STACK of exactly THREE copies (two ghost copies offset up-right
+   * behind the true pip) — the stack silhouette alone carries "several
+   * instants live here at this zoom". Always three, never scaled by the
+   * member count: the glyph says "a stack", the tooltip carries the real
+   * count. There is no count text on the canvas. Styled by the members'
+   * shared state exactly like singles (all-skipped = dim-filled diamonds,
+   * all-cancelled = hollow dashed diamonds, mixed = the neutral default);
+   * the FRONT copy sits at the true anchor — the extent midpoint, sliding
+   * along the visible slice at a window edge (clusterMarkerTime) — so hit
+   * rects, hover ring, and tooltip anchoring are unchanged. Ghost copies
+   * skip the hover ring and emphasis stem (see drawInstant's `ghost`).
    * Like pips, clusters get no edge-continuation treatment — a point
    * marker has no clipped extent.
    */
   private drawCluster(ctx: CanvasRenderingContext2D, c: NCluster): void {
     const p = this.clusterPos(c);
     if (!p) return;
-    const t = this.theme;
     const style = this.resolved(c.catKey, c.state, null);
+    // Stack step: diagonal up-right offsets read as a card/coin stack. At
+    // the max pip radius (8) the step is 2px (total spread 4px); on
+    // compact 4px tracks it degrades to a 1px step — a slightly thickened
+    // pip instead of a smear.
+    const s = Math.max(1, Math.min(2, p.r * 0.35));
+    this.drawInstant(ctx, style, p.cx + 2 * s, p.cy - 2 * s, p.th, false, true);
+    this.drawInstant(ctx, style, p.cx + s, p.cy - s, p.th, false, true);
     this.drawInstant(ctx, style, p.cx, p.cy, p.th, this.hoverClusterId === c.members[0].id);
-    // ×N badge — same fit rule as bar labels (suppressed on slivers),
-    // same guaranteed-contrast treatment (never the member state's dim).
-    if (p.th >= t.fontSize + 3) {
-      ctx.font = this.fontBar;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      this.labelText(ctx, `×${c.members.length}`, this.textPx(p.cx + p.r + 4), this.textPx(p.cy + 0.5));
-    }
   }
 
   private drawConnectors(ctx: CanvasRenderingContext2D, now: number): void {
