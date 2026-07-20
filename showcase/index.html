@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>timeline-view showcase</title>
+		<!-- Page CSS is adopted by main.ts (imported as text through the same
+		     esbuild loader override the component's own .css import needs; a
+		     <link> here would be bundled by build-html's stylesheet pass,
+		     whose loader map the ts0.json esbuild override replaces). -->
+	</head>
+	<body>
+		<header>
+			<h1>&lt;timeline-view&gt; <span class="sub">live showcase</span></h1>
+			<p class="hint">
+				drag to pan &middot; ctrl/&#8984;+wheel or pinch to zoom &middot; shift+wheel or horizontal wheel to pan &middot;
+				vertical wheel scrolls the page &middot; hover anything for a tooltip &middot;
+				pan left for lazy-loaded history &middot; all data is fake and generated locally &mdash; no network.
+			</p>
+		</header>
+		<main>
+			<timeline-view id="main" history-end-text="demo history ends here"></timeline-view>
+			<h2>same feed, compact + retheme <span class="sub">(auto-fit demotes lanes; <code>--timeline-*</code> custom properties)</span></h2>
+			<timeline-view id="mini" class="light" no-live-pill history-end-text="demo history ends here"></timeline-view>
+		</main>
+		<script type="module" src="./main.ts"></script>
+	</body>
+</html>
