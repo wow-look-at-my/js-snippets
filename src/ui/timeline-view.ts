@@ -84,20 +84,20 @@
  * stops padding its lane once off-screen; height changes tween ~150ms,
  * honoring prefers-reduced-motion).
  *
- * Cheap by construction: draws only when dirty (one rAF at a time), a
- * continuous loop runs only while tweens/gestures animate and the element
- * is visible, and idle animation is paced adaptively — full rate while
+ * Cheap by construction: draws only when dirty (one rAF at a time), and a
+ * rAF loop runs only while something on screen actually moves — follow-now
+ * scroll, visible ongoing bars, tweens/gestures — and the element is
+ * visible; a parked static chart schedules nothing and draws nothing.
+ * While animating, frames are paced adaptively — full rate while
  * interacting (plus a short grace window), ~30fps idle, ~10fps idle on
  * battery (feature-detected via navigator.getBattery), paused while the
- * document is hidden. Those tier rates are a CEILING, and clock-driven
- * animation (the follow-now scroll, ongoing-bar growth) is event-driven
- * below it: nothing on the time axis moves a visible amount until the
- * clock advances one whole device pixel, so when that period exceeds the
- * tier budget the loop STOPS and a single clock-wake timer (capped ~1s so
- * pulses keep breathing) redraws exactly per pixel of advance — a
- * zoomed-out followed chart draws ~1 frame/s instead of 30, and a chart
- * with nothing animating draws nothing at all; culled to the viewport;
- * DPR-aware (capped at 3), on
+ * document is hidden. Those tier rates are the CEILING; when the only
+ * motion is clock-driven (the follow scroll, ongoing-bar growth) the
+ * effective rate is min(tier fps, device px per second) — the loop keeps
+ * running and skips frames that would be pixel-identical, on an even
+ * frame-aligned cadence (clockDrawBudgetMs; never timer wakes, so motion
+ * stays smooth at every zoom); culled to the viewport; DPR-aware (capped
+ * at 3), on
  * an OPAQUE canvas (subpixel text AA; keep --timeline-bg opaque).
  * Theme via --timeline-* custom properties (see THEME_DEFAULTS); the DOM
  * chrome (tooltip, live pill, empty hint) is styled by timeline-view.css.
@@ -162,7 +162,7 @@ import {
   historyProbe,
   frameBudgetMs,
   shouldRender,
-  clockWakeDelayMs,
+  clockDrawBudgetMs,
   INTERACT_GRACE_MS,
   type RenderTier,
   type TimelineLane,
@@ -580,10 +580,11 @@ export class TimelineViewElement extends HTMLElement {
 
   private raf = 0;
   private dirty = false;
-  // The single scheduled clock-wake timer (scheduleNext): armed INSTEAD of
-  // the rAF loop while the only animation is clock-driven and slower than
-  // the tier budget; null whenever a frame is pending or nothing is due.
-  private clockWake: ReturnType<typeof setTimeout> | null = null;
+  // Due timestamp of the next clock-paced draw — the even-spacing grid
+  // used while the only motion is clock-driven and slower than the tier
+  // rate (0 = grid unarmed). See onFrame: advanced by whole budgets from
+  // its own previous value, never re-anchored to the actual draw time.
+  private clockDrawDue = 0;
   private connected = false;
   private inView = true;
   private ro: ResizeObserver | null = null;
@@ -751,7 +752,7 @@ export class TimelineViewElement extends HTMLElement {
       cancelAnimationFrame(this.raf);
       this.raf = 0;
     }
-    this.clearClockWake();
+    this.clockDrawDue = 0;
   }
 
   attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null): void {
@@ -1771,15 +1772,20 @@ export class TimelineViewElement extends HTMLElement {
     this.schedule();
   }
 
-  /** True while something time-based needs frames at all (tween- or clock-driven). */
+  /**
+   * True while something time-based needs frames at all (tween- or
+   * clock-driven). ALL motion renders on the ONE rAF loop — while this
+   * holds, the loop stays armed; when it returns false the loop disarms
+   * and the chart draws nothing until the next invalidate().
+   */
   private animating(): boolean {
     return this.tweening() || this.clockAnimating();
   }
 
   /**
    * Short-lived eased transitions (zoom glide, layout/lead/edge tweens)
-   * plus async-history churn — these genuinely need CONTINUOUS tier-paced
-   * rAF frames, and they all settle within about a second.
+   * plus async-history churn — rendered at the plain tier rate, exactly
+   * the pre-existing pacing.
    */
   private tweening(): boolean {
     if (this.glidePx !== 0 || this.layoutAnim !== null || this.leadAnim !== null || this.edgeAnim !== null) return true;
@@ -1792,11 +1798,11 @@ export class TimelineViewElement extends HTMLElement {
 
   /**
    * CLOCK-driven animation: the follow-now scroll and visible ongoing-bar
-   * growth/pulse. These advance with the wall clock — but only ~one
-   * device pixel per span/(plotW*dpr) ms — so they do not demand
-   * continuous frames: when that period exceeds the tier frame budget the
-   * post-frame scheduler parks on a single clock-wake timer instead of
-   * spinning the rAF loop (see scheduleNext).
+   * growth/pulse. These advance with the wall clock — one device pixel
+   * per span/(plotW*dpr) ms — so while they are the ONLY motion, the rAF
+   * loop keeps running but skips down to that per-pixel rate: effective
+   * fps = min(tier fps, device px per second), delivered as evenly spaced
+   * rAF frames (see onFrame's clockDrawDue grid), never timer wakes.
    */
   private clockAnimating(): boolean {
     // While STALE the followed view is frozen at the dead feed's edge —
@@ -1825,15 +1831,54 @@ export class TimelineViewElement extends HTMLElement {
 
   private onFrame = (t: number): void => {
     this.raf = 0;
-    this.clearClockWake(); // a running frame owns the (re)scheduling decision — never leave a stale wake behind
     // Adaptive pacing: a pure animation frame (nothing dirty) renders only
-    // when the current tier's budget has elapsed — full rate while
-    // interacting, ~30fps idle, ~10fps idle on battery. Dirty frames
-    // (fresh data, hover changes) always render immediately.
-    if (!this.dirty && !shouldRender(t, this.lastRenderTs, frameBudgetMs(this.renderTier()))) {
-      if (this.animating()) this.schedule();
-      else this.lastFrame = 0;
-      return;
+    // when its draw budget has elapsed. The budget is the tier's — full
+    // rate while interacting, ~30fps idle, ~10fps idle on battery — and,
+    // while the ONLY motion is clock-driven (follow scroll, ongoing
+    // bars), it widens to the view's per-device-pixel period
+    // (clockDrawBudgetMs): effective fps = min(tier fps, device px/sec),
+    // skipping only frames that would be pixel-identical. All delivery is
+    // ON the rAF loop by skipping ticks — never a timer, so motion stays
+    // frame-aligned and smooth. Dirty frames (fresh data, hover changes)
+    // always render immediately.
+    if (!this.dirty) {
+      const tierBudget = frameBudgetMs(this.renderTier());
+      const budget = this.tweening() ? tierBudget : clockDrawBudgetMs(this.view, this.plotWidth(), this.dpr, tierBudget);
+      if (budget > tierBudget) {
+        // Clock-only motion slower than the tier rate: gate on the even
+        // due-time grid. The due advances by whole budgets from its own
+        // previous value (remainder carried, never re-anchored to the
+        // actual draw time), so intervals stay even frame-aligned
+        // multiples of the budget instead of jittering or drifting.
+        if (this.clockDrawDue === 0) this.clockDrawDue = this.lastRenderTs > 0 ? this.lastRenderTs + budget : t;
+        // Budget shrank mid-grid (zoom-in without a tween): a stale due
+        // must never park the chart more than one current period out.
+        if (this.clockDrawDue > t + budget) this.clockDrawDue = t + budget;
+        // Draw on the first rAF at/past the due point (same half-tick
+        // slack as the tier gate, via shouldRender's aliasing rule).
+        if (!shouldRender(t, this.clockDrawDue - budget, budget)) {
+          if (this.animating()) this.schedule();
+          else {
+            this.lastFrame = 0;
+            this.clockDrawDue = 0;
+          }
+          return;
+        }
+        this.clockDrawDue += budget;
+        // Stalled past a whole period (hidden tab, long main-thread
+        // block): re-anchor forward — one fresh frame now, no burst of
+        // catch-up draws.
+        if (this.clockDrawDue <= t) this.clockDrawDue = t + budget;
+      } else {
+        // Tier-paced (tweens/interaction, or the px rate meets the tier
+        // rate): the pre-existing pacing, unchanged.
+        this.clockDrawDue = 0;
+        if (!shouldRender(t, this.lastRenderTs, budget)) {
+          if (this.animating()) this.schedule();
+          else this.lastFrame = 0;
+          return;
+        }
+      }
     }
     const dt = this.lastFrame > 0 ? Math.min(100, t - this.lastFrame) : 16;
     this.lastFrame = t;
@@ -1848,52 +1893,12 @@ export class TimelineViewElement extends HTMLElement {
       this.dirty = false;
       this.draw();
     }
-    this.scheduleNext();
-  };
-
-  /**
-   * Post-frame scheduling — the event-driven half of idle rendering.
-   * Tweens keep the continuous tier-paced rAF loop (short-lived).
-   * CLOCK-driven animation (the follow scroll, ongoing bars) keeps the
-   * loop only while the time axis moves at least one whole device pixel
-   * per tier frame budget; zoomed further out, the loop STOPS and one
-   * clock-wake timer sized to the per-pixel period (clockWakeDelayMs,
-   * capped at CLOCK_WAKE_MAX_MS so an ongoing bar's pulse keeps visibly
-   * breathing) invalidates exactly when the scene will next have advanced
-   * a pixel — between wakes the chart draws NOTHING. Nothing animating
-   * schedules nothing at all. The tier budgets remain the CEILING: a wake
-   * delay is always longer than the budget, so this path only ever LOWERS
-   * the redraw rate below today's pacing, never raises it — and events
-   * (input, data, hover) still render immediately via invalidate(), whose
-   * dirty rAF cadence is itself display-bounded.
-   */
-  private scheduleNext(): void {
-    if (this.tweening()) {
-      this.schedule();
-      return;
-    }
-    if (this.clockAnimating()) {
-      const delay = clockWakeDelayMs(this.view, this.plotWidth(), this.dpr, frameBudgetMs(this.renderTier()));
-      if (delay === 0) {
-        this.schedule();
-        return;
-      }
+    if (this.animating()) this.schedule();
+    else {
       this.lastFrame = 0;
-      this.clockWake = setTimeout(() => {
-        this.clockWake = null;
-        this.invalidate();
-      }, delay);
-      return;
+      this.clockDrawDue = 0;
     }
-    this.lastFrame = 0;
-  }
-
-  private clearClockWake(): void {
-    if (this.clockWake !== null) {
-      clearTimeout(this.clockWake);
-      this.clockWake = null;
-    }
-  }
+  };
 
   private onVisibility = (): void => {
     if (!document.hidden) this.invalidate();
