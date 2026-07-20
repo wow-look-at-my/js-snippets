@@ -30,12 +30,19 @@
  * disengaging lets the backward deltas consume the lead (any residual
  * glides out), and the pill glides to the followed position — the view
  * never teleports in a single frame (reduced motion snaps instead).
- * Interaction is trackpad-first, and wheel routing is by DOMINANT axis: a
- * horizontal-dominant wheel pans time (its minor vertical component
- * nudges the lane stack when it overflows); a VERTICAL-dominant wheel
- * with no modifier is never consumed — no preventDefault, no zoom — so
- * page scrolling always works across the chart (the lane stack scrolls
- * by drag or arrow keys instead); ctrl/meta+wheel = smooth zoom anchored
+ * Interaction is trackpad-first, and wheel routing is by DOMINANT axis
+ * with a GESTURE-LEVEL AXIS LOCK (WheelGestureRouter): the first decisive
+ * unmodified event locks its stream's axis for as long as events keep
+ * arriving within WHEEL_GESTURE_GAP_MS. A horizontal-locked gesture is
+ * consumed WHOLE — dx pans time, the minor vertical component nudges the
+ * lane stack when it overflows and never leaks into page scroll (a real
+ * swipe's jittery minority events are individually vertical-dominant); a
+ * vertical-locked gesture (ties included) is never consumed — no
+ * preventDefault, no zoom, its horizontal jitter never pans the chart —
+ * so page scrolling always works across the chart (the lane stack scrolls
+ * by drag or arrow keys instead); a DECISIVE opposite-axis event (>2x
+ * dominance, ≥24px) re-locks mid-gesture, so a genuine direction change
+ * never waits out the gap; ctrl/meta+wheel = smooth zoom anchored
  * under the cursor (discrete wheel steps glide; trackpad pinch arrives
  * as ctrl+wheel), shift+wheel = time pan, drag = pan, pinch = zoom,
  * arrows/±/Home/End when focused. `loadRange` turns scrolling into
@@ -122,7 +129,7 @@ import {
   clampViewToNow,
   zoomView,
   zoomFactorForWheel,
-  routeWheel,
+  WheelGestureRouter,
   followAfterGesture,
   FOLLOW_LEAD_FRAC,
   FOLLOW_LEAD_TWEEN_MS,
@@ -625,6 +632,7 @@ export class TimelineViewElement extends HTMLElement {
   private hoverClusterId: string | null = null; // first-member id of the hovered cluster
   private glidePx = 0; // pending discrete-wheel zoom, in wheel px
   private glideX = 0; // zoom anchor (canvas x) for the glide
+  private wheelGesture = new WheelGestureRouter(); // stream-level axis lock
   private lastFrame = 0;
   private lastInputTs = -Infinity; // last wheel/drag/key input (perf-clock)
   private lastRenderTs = -Infinity; // last RENDERED frame (adaptive pacing)
@@ -2610,13 +2618,18 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   private onWheel = (e: WheelEvent): void => {
-    const route = routeWheel(e, this.maxLaneScroll() > 0);
-    // Consume (preventDefault) ONLY when some axis actually routed to the
-    // chart. A plain VERTICAL-dominant wheel routes nowhere — regardless
-    // of lane overflow — so it must reach the page and scroll it
-    // normally; ctrl/meta zooms, shift and horizontal-dominant deltas pan
-    // (see routeWheel). (The listener stays {passive: false} so
-    // preventDefault remains available for the consumed cases.)
+    // Stream-level routing: the gesture router applies routeWheel's
+    // per-event table to a stream's first decisive event and then LOCKS
+    // that axis (e.timeStamp bounds the gesture — WHEEL_GESTURE_GAP_MS of
+    // silence ends it). Consume (preventDefault) ONLY when the gesture
+    // routes to the chart: a horizontal-locked stream is consumed whole
+    // (its vertical jitter must never creep the page), a vertical-locked
+    // stream — plain vertical wheels included — routes nowhere regardless
+    // of lane overflow, so it reaches the page and scrolls it normally;
+    // ctrl/meta zooms and shift pans as per-event routeWheel, outside the
+    // lock. (The listener stays {passive: false} so preventDefault
+    // remains available for the consumed cases.)
+    const route = this.wheelGesture.route(e, this.maxLaneScroll() > 0, e.timeStamp);
     if (!route.consumed) return;
     e.preventDefault();
     this.noteInput();
