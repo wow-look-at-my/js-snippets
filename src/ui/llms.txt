@@ -574,12 +574,20 @@ Home = jump to the earliest known data. The wheel listener sits on the
 HOST, so those rules apply over the DOM chrome (live pill, fullscreen
 toggle, stale note) exactly as over the canvas — a horizontal delta is
 consumed wherever it lands — and the host + canvas carry
-overscroll-behavior: none, so pulling further at the left pan boundary
-(or any edge) never chains into the browser's history-back/forward
-navigation gesture, wheel or touch (chrome buttons keep
-touch-action: manipulation so taps stay instant; the canvas stays
-touch-action: none). Page-LEVEL containment (html/body) stays the
-embedding page's own business.
+overscroll-behavior-x: none (HORIZONTAL only), so pulling further at
+the left pan boundary never chains into the browser's
+history-back/forward navigation gesture, wheel or touch, while the
+VERTICAL axis stays free to chain page scrolling exactly like the wheel
+router promises. TOUCH mirrors the same rule via the plot canvas'
+touch-action: pan-y: a one-finger vertical swipe scrolls the PAGE (the
+browser claims it and the element stops), a horizontal one-finger drag
+pans the chart, and two-finger pinch-zoom still belongs to the element
+(pan-y doesn't allow browser pinch) — the accepted tradeoff is that
+one-finger vertical LANE-drag is gone on touch (arrow keys and desktop
+drag are unaffected); the minimap strip keeps touch-action: none (a
+pure horizontal-drag control), and chrome buttons keep touch-action:
+manipulation so taps stay instant. Page-LEVEL containment (html/body)
+stays the embedding page's own business.
 
 CSS custom properties (dark Scratch Proto defaults; see THEME_DEFAULTS):
   --timeline-bg            — plot background          (#0d0f14)
@@ -644,6 +652,11 @@ Exports:
     incl. ties routes NOWHERE regardless of overflow, and consumed=false
     means DO NOT preventDefault, let the page scroll; deltaMode
     normalized),
+    classifyWheel(WheelInput) → WheelClass 'zoom' | 'pan' |
+    'passthrough' (the routing decision without magnitudes, normalized
+    the same way; lanesOverflow deliberately has no input — a test-pinned
+    invariant guarantees routeWheel(e, o).consumed ===
+    (classifyWheel(e) !== 'passthrough') for ALL inputs and overflow),
     clampViewToNow(view, now) → TimeView (the hard right
     end stop: a user view's end never passes now, span preserved),
     followAfterGesture(wasFollowing, prevEnd, next, now, isPan,

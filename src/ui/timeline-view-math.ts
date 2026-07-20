@@ -253,6 +253,36 @@ export function routeWheel(e: WheelInput, lanesOverflow: boolean): WheelRoute {
   return { zoomPx: 0, panPx: dx, laneScrollPx: lanesOverflow ? dy : 0, consumed: true };
 }
 
+/** The three wheel-routing outcomes, without magnitudes (see classifyWheel). */
+export type WheelClass = 'zoom' | 'pan' | 'passthrough';
+
+/**
+ * classifyWheel(e): the routing decision without magnitudes.
+ *   'zoom'        iff e.ctrlKey || e.metaKey                       (always consumed, even zero-delta)
+ *   'pan'         iff (e.shiftKey && (dyPx || dxPx) !== 0)         (shift-pan: dy first, else dx — Chrome vs Firefox)
+ *                  || (!mods && |dxPx| > |dyPx|)                   (horizontal-dominant; implies dxPx !== 0)
+ *   'passthrough' otherwise — vertical-dominant (ties included), shift with all-zero deltas,
+ *                  or an all-zero unmodified tick. NEVER preventDefault on 'passthrough'.
+ * where dxPx/dyPx = wheelDeltaToPixels(delta, e.deltaMode) — classification happens
+ * AFTER deltaMode normalization so a line-mode (Firefox mouse) wheel classifies
+ * identically to its pixel-mode equivalent.
+ *
+ * A readability/test wrapper over routeWheel's `consumed` contract — the
+ * pinned invariant (see the test suite): for all e and lanesOverflow o,
+ * routeWheel(e, o).consumed === (classifyWheel(e) !== 'passthrough').
+ * `lanesOverflow` deliberately has NO input here: it only scales
+ * laneScrollPx inside an already-consumed horizontal-dominant route and
+ * must never influence consumption — an overflowing lane stack capturing
+ * plain vertical wheels is exactly the regression this pins out.
+ */
+export function classifyWheel(e: WheelInput): WheelClass {
+  if (e.ctrlKey || e.metaKey) return 'zoom';
+  const dx = wheelDeltaToPixels(e.deltaX, e.deltaMode);
+  const dy = wheelDeltaToPixels(e.deltaY, e.deltaMode);
+  if (e.shiftKey) return (dy || dx) !== 0 ? 'pan' : 'passthrough';
+  return Math.abs(dx) > Math.abs(dy) ? 'pan' : 'passthrough';
+}
+
 // -- Follow-now rule ---------------------------------------------------------------
 
 /** Fraction of the span "now" sits in from the right edge while following. */

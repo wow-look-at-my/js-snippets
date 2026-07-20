@@ -62,6 +62,7 @@ import {
   CoverageTracker,
   historyProbe,
   routeWheel,
+  classifyWheel,
   followAfterGesture,
   FOLLOW_LEAD_FRAC,
   FOLLOW_SNAP_DEVICE_PX,
@@ -1024,6 +1025,66 @@ test('routeWheel: deltaMode 1 (lines) normalizes to pixels on every path', () =>
     laneScrollPx: 0,
     consumed: true,
   });
+});
+
+test('classifyWheel: spot checks of the three classes', () => {
+  assert.equal(classifyWheel(wheel({ ctrlKey: true })), 'zoom'); // even zero-delta (pinch stream)
+  assert.equal(classifyWheel(wheel({ metaKey: true, deltaY: 4 })), 'zoom');
+  assert.equal(classifyWheel(wheel({ shiftKey: true, deltaY: 7 })), 'pan');
+  assert.equal(classifyWheel(wheel({ shiftKey: true, deltaX: 3 })), 'pan'); // Firefox puts shift-pan in deltaX
+  assert.equal(classifyWheel(wheel({ shiftKey: true })), 'passthrough'); // inert shift tick
+  assert.equal(classifyWheel(wheel({ deltaX: -8 })), 'pan'); // horizontal-dominant
+  assert.equal(classifyWheel(wheel({ deltaY: 120 })), 'passthrough'); // plain vertical → the page
+  assert.equal(classifyWheel(wheel({ deltaX: 5, deltaY: 5 })), 'passthrough'); // ties are vertical
+  assert.equal(classifyWheel(wheel({})), 'passthrough'); // zero-delta unmodified tick
+  // deltaMode normalization happens BEFORE classification: a line-mode
+  // wheel classifies exactly like its pixel-mode equivalent.
+  assert.equal(classifyWheel(wheel({ deltaY: 3, deltaMode: 1 })), 'passthrough');
+  assert.equal(classifyWheel(wheel({ deltaX: -2, deltaMode: 1 })), 'pan');
+});
+
+test('classifyWheel ↔ routeWheel invariant: consumed === (class !== passthrough), for ALL inputs and overflow', () => {
+  // The pinned contract: lane overflow must NEVER influence consumption
+  // (the pre-#42 regression), and the classifier must agree with the
+  // router byte-for-byte on every combination. Sweep the full matrix:
+  // modifiers × per-axis delta values (incl. zero, ties, negatives, and
+  // non-finite — which normalize to 0) × deltaMode × lanesOverflow.
+  const deltas = [-240, -16, -5, -1, 0, 1, 5, 16, 240, NaN, Infinity];
+  const modes = [0, 1, 2];
+  const mods = [
+    {},
+    { ctrlKey: true },
+    { metaKey: true },
+    { shiftKey: true },
+    { ctrlKey: true, shiftKey: true },
+    { metaKey: true, shiftKey: true },
+  ];
+  let checked = 0;
+  for (const mod of mods) {
+    for (const deltaMode of modes) {
+      for (const deltaX of deltas) {
+        for (const deltaY of deltas) {
+          const e = wheel({ deltaX, deltaY, deltaMode, ...mod });
+          const cls = classifyWheel(e);
+          for (const lanesOverflow of [false, true]) {
+            const route = routeWheel(e, lanesOverflow);
+            assert.equal(
+              route.consumed,
+              cls !== 'passthrough',
+              `mismatch at dx=${deltaX} dy=${deltaY} mode=${deltaMode} mods=${JSON.stringify(mod)} overflow=${lanesOverflow}: class=${cls}, consumed=${route.consumed}`,
+            );
+            checked++;
+          }
+          // The class also never depends on overflow by construction
+          // (classifyWheel has no overflow parameter) — and consumption
+          // agreeing across both overflow values re-proves the router
+          // side of that same rule.
+          assert.equal(routeWheel(e, false).consumed, routeWheel(e, true).consumed);
+        }
+      }
+    }
+  }
+  assert.ok(checked >= 6 * 3 * 11 * 11 * 2, `full matrix swept (${checked})`);
 });
 
 // -- Now-line x ------------------------------------------------------------------

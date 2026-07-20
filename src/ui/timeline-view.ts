@@ -45,8 +45,10 @@
  * ones and an explicit end-of-history boundary. Browser navigation
  * gestures never fire over the component: the wheel listener lives on the
  * HOST (horizontal deltas over the DOM chrome are consumed like over the
- * canvas) and the host carries overscroll-behavior: none, so panning hard
- * into exhausted history can't turn into a history-back swipe. A corner
+ * canvas) and the host carries overscroll-behavior-x: none, so panning
+ * hard into exhausted history can't turn into a history-back swipe —
+ * horizontal ONLY, so vertical scroll chaining (and vertical touch pans,
+ * via the plot canvas' touch-action: pan-y) stays the page's. A corner
  * ⤢ toggle (always visible; `no-fullscreen-button` hides it) flips the
  * reflected `fullscreen` attribute: viewport-fill via position:fixed —
  * deliberately NOT the Fullscreen API — with the page scroll locked while
