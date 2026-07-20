@@ -245,8 +245,9 @@ Instant markers CLUSTER at scale: pips whose centers would visually
 overlap in the current window (within ~12px of a neighbor — a greedy
 transitive sweep, re-derived per layout pass) merge into ONE point-like
 STACKED marker — the SAME diamond pip as a single instant, drawn as a
-stack of exactly THREE copies (two ghost copies offset up-right behind
-the true front pip; always three, NEVER scaled by the member count —
+stack of exactly THREE copies (two ghost copies offset straight RIGHT
+behind the true front pip with a depth fade — front full-bright, middle
+dimmer, back dimmest; always three, NEVER scaled by the member count —
 the stack silhouette alone says "several live here", and there is no
 count text on the canvas: the tooltip carries the real ×N count;
 membership is exactly "would visually overlap", so a stacked pip can

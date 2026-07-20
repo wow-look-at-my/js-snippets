@@ -382,6 +382,9 @@ const EDGE_SHADOW_ALPHA = 0.85;
 // laptops/mobiles) sharp instead of compositor-upscaled soft, without the
 // fully-uncapped perf cliff on 4k+ screens.
 const MAX_DPR = 3;
+// Cluster 3-stack ghost alphas (front draws at 1).
+const CLUSTER_MID_ALPHA = 0.65;
+const CLUSTER_BACK_ALPHA = 0.35;
 // The minimap strip's height (CSS px) — the plot canvas cedes this band
 // at the bottom while the strip is visible. One source of truth: the
 // element sets the strip canvas' CSS height from it too.
@@ -389,6 +392,12 @@ const MINIMAP_H = 32;
 // Hosts shorter than this hide the strip: below ~140px the band would eat
 // a third of an already-cramped plot.
 const MINIMAP_MIN_HOST_PX = 140;
+// Accumulated minimap-texture placement error (css px) that forces the
+// async full rebuild.
+const MM_DRIFT_REBUILD_PX = 1.75;
+// An extent step needing more than this fraction of the strip repainted
+// defers to the async rebuild instead.
+const MM_STEP_MAX_FRAC = 0.25;
 // Side length (CSS px) of the repeating hatch/stipple pattern tile —
 // shared by tile generation (patternFor) and phase anchoring
 // (anchorPattern), where translating by whole tiles must be identity.
@@ -507,17 +516,19 @@ export class TimelineViewElement extends HTMLElement {
   private laneOngoingStart: number[] = [];
 
   // -- Minimap density texture (the pixel-shifted offscreen cache) --
-  // The strip's per-lane density marks live in an offscreen texture that
-  // the frame path BLITS (one drawImage) instead of refilling O(N) rects:
-  // the texture's time→x mapping is FROZEN at mmTexExtent and only steps
-  // when the live extent has drifted a whole strip pixel (then ONE
-  // scale-blit re-maps the existing pixels — the "pixel shift" for this
-  // compressing geometry); merges paint only their new right-edge marks;
-  // everything else (geometry/theme/lane-count/extent-start changes,
-  // accumulated resample drift) rebuilds ASYNCHRONOUSLY in budgeted
-  // slices into a second texture that swaps in atomically while the old
-  // one keeps serving. The now tick and the viewport window rect are
-  // live overdraws every frame — never baked in.
+  // The strip's per-lane density marks live in an offscreen texture,
+  // ALWAYS allocated 1:1 with the strip's device-pixel size and only
+  // ever blitted same-size — never scaled. The time→x mapping is FROZEN
+  // at mmTexExtent and steps once the live extent has drifted a whole
+  // strip pixel: content SHIFTS by the whole-pixel delta (a same-size
+  // copy), only newly-exposed/invalidated columns repaint from data, and
+  // the residual (shift rounding + the compression a shift cannot
+  // express) accumulates in mmTexDriftPx until an ASYNC sliced rebuild
+  // into a second texture trues it up (also the path for geometry/theme/
+  // lane-count changes; the old texture keeps serving 1:1 meanwhile —
+  // skipped entirely on a size mismatch). Merges paint only their new
+  // right-edge marks. The now tick and the viewport window rect are live
+  // overdraws every frame — never baked in.
   private mmTex: HTMLCanvasElement | null = null;
   private mmTexCtx: CanvasRenderingContext2D | null = null;
   /** Double-buffer partner for extent steps (self-blit needs snapshot semantics). */
@@ -531,8 +542,7 @@ export class TimelineViewElement extends HTMLElement {
   private mmTexLaneN = -1;
   private mmTexTheme = -1; // mmThemeGen stamp
   private mmThemeGen = 0; // bumped by readTheme() — colors baked into the texture went stale
-  private mmTexScaleAcc = 1; // cumulative shrink since the last full build (resample-blur budget)
-  private mmTexSteps = 0; // extent steps since the last full build
+  private mmTexDriftPx = 0; // accumulated content placement error (css px) since the last full build
   private mmTexDirty = false; // a baked mark was rewritten in place → full rebuild required
   /** Terminated intervals ingested since the texture's epoch — the incremental right-edge paints. */
   private mmPendingNew: NInterval[] = [];
@@ -3171,11 +3181,11 @@ export class TimelineViewElement extends HTMLElement {
    *
    * The density marks are served from an offscreen TEXTURE (one blit per
    * frame) instead of the old O(all-intervals) per-frame refill — see the
-   * mmTex field block: frozen quantized extent mapping + whole-pixel
-   * steps (a single scale-blit), incremental right-edge paints on merge,
-   * async sliced full rebuilds, atomic swap. Only the now tick, the
-   * window rect, and the handful of ONGOING interval marks (their ends
-   * track the live clock) draw per frame.
+   * mmTex field block: 1:1 device-size texture, whole-pixel shift steps,
+   * incremental right-edge paints on merge, async sliced full rebuilds,
+   * atomic swap. Only the now tick, the window rect, and the handful of
+   * ONGOING interval marks (their ends track the live clock) draw per
+   * frame.
    */
   private drawMinimap(): void {
     if (!this.mmVisible) return;
@@ -3202,16 +3212,16 @@ export class TimelineViewElement extends HTMLElement {
     if (!ext) return;
     const now = this.liveEdge();
     // Keep the density texture current (steps/increments/rebuild kicks),
-    // then blit it mapped from its frozen extent onto the live one — an
-    // identity blit between steps (sub-strip-pixel drift is invisible),
-    // and the same general mapping stretches a stale-geometry texture
-    // while an async rebuild is in flight.
+    // then blit it 1:1 in device px — NEVER scaled. A size mismatch
+    // (resize/DPR change whose async rebuild hasn't swapped in yet) skips
+    // the blit: a blank band beats a stretched one, and the live
+    // overdraws below still render.
     this.mmSyncTexture(ext, w, h);
     const tex = this.mmTex;
-    if (tex) {
-      const dx0 = timeToX(this.mmTexExtent.start, ext, w);
-      const dx1 = timeToX(this.mmTexExtent.end, ext, w);
-      if (dx1 > dx0) ctx.drawImage(tex, 0, 0, tex.width, tex.height, dx0, 0, dx1 - dx0, h);
+    if (tex && tex.width === Math.max(1, Math.round(w * dpr)) && tex.height === Math.max(1, Math.round(h * dpr))) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(tex, 0, 0);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
     // ONGOING intervals are never baked (their right edge is the live
     // clock) — draw their marks over the texture every frame; there are
@@ -3265,11 +3275,11 @@ export class TimelineViewElement extends HTMLElement {
    * Keep the density texture serving the current strip: decide between a
    * synchronous FIRST build (nothing exists to serve meanwhile — one-time,
    * equal to a single frame of the old per-frame cost), an ASYNC sliced
-   * rebuild (geometry/theme/lane-count/extent-start changes, in-place mark
-   * rewrites, accumulated resample drift — the old texture keeps serving,
-   * stretched by the frame blit's general mapping, until the swap), or
-   * INCREMENTAL maintenance (merge slivers painted at the frozen mapping;
-   * whole-strip-pixel extent steps via one scale-blit).
+   * rebuild (geometry/theme/lane-count changes, in-place mark rewrites,
+   * accumulated placement drift — the old texture keeps serving 1:1
+   * until the swap), or INCREMENTAL maintenance (merge slivers painted
+   * at the frozen mapping; whole-strip-pixel extent steps via shift +
+   * exposed-column repaint).
    */
   private mmSyncTexture(ext: TimeView, w: number, h: number): void {
     const dpr = this.dpr;
@@ -3283,16 +3293,14 @@ export class TimelineViewElement extends HTMLElement {
     }
     const geomOk =
       this.mmTexW === bw && this.mmTexH === bh && this.mmTexDpr === dpr && this.mmTexLaneN === laneN && this.mmTexTheme === this.mmThemeGen;
-    const contentOk =
-      geomOk && !this.mmTexDirty && this.mmTexExtent.start === ext.start && this.mmTexScaleAcc > 0.92 && this.mmTexSteps < 96;
-    if (!contentOk) {
+    if (!geomOk || this.mmTexDirty || this.mmTexDriftPx >= MM_DRIFT_REBUILD_PX) {
       this.mmKickRebuild(ext, bw, bh, dpr, laneN);
       return;
     }
     // Incremental: paint marks merged since the last bake (stepping the
     // frozen extent first if any lands beyond its end — painting INTO the
     // texture at its own extent is exact by definition), then step the
-    // mapping once pure clock growth has drifted it a whole strip pixel.
+    // mapping once it has drifted a whole strip pixel.
     if (this.mmPendingNew.length > 0) {
       const pend = this.mmPendingNew;
       let needEnd = this.mmTexExtent.end;
@@ -3301,6 +3309,7 @@ export class TimelineViewElement extends HTMLElement {
         if (e !== null && e > needEnd) needEnd = e;
       }
       if (needEnd > this.mmTexExtent.end) this.mmStepExtent(ext, w);
+      if (this.mmTexDirty) return; // step deferred to the rebuild; the queue survives for its kick
       this.mmPaintPending(w, h, laneN);
       this.mmTexEpoch = this.packEpoch;
     }
@@ -3310,13 +3319,19 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   /**
-   * Step the texture's frozen extent to the live one with a single
-   * general scale-blit into the double-buffer partner (self-blit lacks
-   * snapshot semantics), then swap — the "pixel shift" for this
-   * compressing geometry. Handles live-end compression AND the
-   * pad-regime translation (minimapExtent's backward-padded start) in
-   * one primitive. Accumulates the resample-drift budget that
-   * eventually forces a clean async rebuild.
+   * Step the texture's frozen extent to the live one WITHOUT resampling:
+   * SHIFT the content by the whole-device-pixel translation delta (a
+   * same-size copy through the double-buffer partner — self-blit lacks
+   * snapshot semantics; never a scale-blit), clear + repaint from data
+   * only the columns the shift/compression exposed or invalidated, and
+   * accumulate the residual placement error (shift rounding + the
+   * compression a shift cannot express) into mmTexDriftPx — the budget
+   * that forces the async rebuild to true the approximation up. Handles
+   * live-end compression AND the pad-regime translation (minimapExtent's
+   * backward-padded start; exact under a shift) in one primitive. A step
+   * needing more than MM_STEP_MAX_FRAC of the strip repainted (a
+   * lazy-history jump) defers to the async rebuild via mmTexDirty — the
+   * old pixels keep serving 1:1, briefly misplaced, never stretched.
    */
   private mmStepExtent(ext: TimeView, w: number): void {
     const tex = this.mmTex;
@@ -3324,18 +3339,79 @@ export class TimelineViewElement extends HTMLElement {
     const bc = this.mmTexBCtx;
     if (!tex || !b || !bc) return;
     const dpr = this.mmTexDpr;
+    const bw = tex.width;
+    const bh = tex.height;
     const dx0 = timeToX(this.mmTexExtent.start, ext, w) * dpr;
     const dx1 = timeToX(this.mmTexExtent.end, ext, w) * dpr;
+    const k = Math.round(dx0); // whole-device-px shift
+    const leftW = Math.max(0, Math.min(k, bw)); // exposed left columns
+    // Right repaint start: where correctly-placed shifted content ends.
+    const xR = Math.max(leftW, Math.min(bw, Math.round(Math.min(dx1, k + bw))));
+    if (leftW + (bw - xR) > bw * MM_STEP_MAX_FRAC) {
+      this.mmTexDirty = true;
+      return;
+    }
     bc.setTransform(1, 0, 0, 1, 0, 0);
-    bc.clearRect(0, 0, b.width, b.height);
-    if (dx1 > dx0) bc.drawImage(tex, 0, 0, tex.width, tex.height, dx0, 0, dx1 - dx0, tex.height);
+    bc.clearRect(0, 0, bw, bh);
+    const cw = bw - Math.abs(k);
+    if (cw > 0) bc.drawImage(tex, Math.max(0, -k), 0, cw, bh, Math.max(0, k), 0, cw, bh);
+    if (xR < bw) bc.clearRect(xR, 0, bw - xR, bh);
     this.mmTexB = tex;
     this.mmTexBCtx = this.mmTexCtx;
     this.mmTex = b;
     this.mmTexCtx = bc;
-    this.mmTexScaleAcc *= Math.max(0.0001, Math.min(1, (dx1 - dx0) / (w * dpr)));
-    this.mmTexSteps++;
+    this.mmTexDriftPx += Math.max(Math.abs(k - dx0), Math.abs(k + bw - dx1)) / dpr;
     this.mmTexExtent = { start: ext.start, end: ext.end };
+    if (leftW > 0) this.mmRepaintRegion(0, leftW, w);
+    if (xR < bw) this.mmRepaintRegion(xR, bw, w);
+  }
+
+  /** Clear happened in the step; repaint device-px columns [x0, x1) from data at the frozen extent (clipped; laneMaxDur cull). */
+  private mmRepaintRegion(x0: number, x1: number, w: number): void {
+    const tex = this.mmTex;
+    const c = this.mmTexCtx;
+    if (!tex || !c || x1 <= x0) return;
+    const dpr = this.mmTexDpr;
+    const h = tex.height / dpr;
+    const laneN = this.mmTexLaneN;
+    const extent = this.mmTexExtent;
+    const span = extent.end - extent.start;
+    const bw = tex.width;
+    c.save();
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.beginPath();
+    c.rect(x0, 0, x1 - x0, tex.height);
+    c.clip();
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const padY = 3;
+    const rowH = laneN > 0 ? (h - padY * 2) / laneN : 0;
+    const markH = Math.max(1, Math.min(rowH * 0.75, 6));
+    // 2 css px margin: min-width marks + antialiasing bleed into the clip.
+    const margin = (2 * span) / Math.max(1, w);
+    const tA = extent.start + (x0 / bw) * span - margin;
+    const tB = extent.start + (x1 / bw) * span + margin;
+    for (let li = 0; li < laneN && li < this.perLane.length; li++) {
+      const per = this.perLane[li];
+      const cullFrom = tA - (this.laneMaxDur[li] ?? 0);
+      let lo = 0;
+      let hi = per.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (per[mid].start < cullFrom) lo = mid + 1;
+        else hi = mid;
+      }
+      const y = padY + li * rowH + (rowH - markH) / 2;
+      for (let i = lo; i < per.length; i++) {
+        const n = per[i];
+        if (n.start > tB) break; // sorted by start
+        if (n.end === null || n.end < tA) continue;
+        const mx0 = timeToX(n.start, extent, w);
+        const mx1 = timeToX(n.end, extent, w);
+        c.fillStyle = this.mmDimFill(n.catKey);
+        c.fillRect(mx0, y, Math.max(mx1 - mx0, 1), markH);
+      }
+    }
+    c.restore();
   }
 
   /** Paint the merge sliver (mmPendingNew) into the live texture at its frozen extent, then clear the queue. */
@@ -3370,7 +3446,9 @@ export class TimelineViewElement extends HTMLElement {
    * An in-flight rebuild already targeting them is left to finish (the
    * slice chain is re-armed in case a disconnect dropped its timer); one
    * targeting STALE parameters — a merge/resize/retheme landed mid-build —
-   * restarts from a fresh cursor.
+   * restarts from a fresh cursor. Extent motion is NOT staleness: the
+   * shift step trues the captured extent up post-swap (restarting on it
+   * would never converge under the pad-regime slide).
    */
   private mmKickRebuild(ext: TimeView, bw: number, bh: number, dpr: number, laneN: number): void {
     const r = this.mmRebuild;
@@ -3381,8 +3459,7 @@ export class TimelineViewElement extends HTMLElement {
       r.w === bw &&
       r.h === bh &&
       r.dpr === dpr &&
-      r.laneN === laneN &&
-      r.extent.start === ext.start
+      r.laneN === laneN
     ) {
       this.mmScheduleSlice();
       return;
@@ -3537,8 +3614,7 @@ export class TimelineViewElement extends HTMLElement {
     this.mmTexDpr = r.dpr;
     this.mmTexLaneN = r.laneN;
     this.mmTexTheme = r.themeGen;
-    this.mmTexScaleAcc = 1;
-    this.mmTexSteps = 0;
+    this.mmTexDriftPx = 0;
     this.mmTexDirty = false;
     this.mmPendingNew.length = 0;
     if (!this.mmTexB || this.mmTexB.width !== r.w || this.mmTexB.height !== r.h) {
@@ -4093,12 +4169,13 @@ export class TimelineViewElement extends HTMLElement {
 
   /**
    * A cluster marker: the SAME diamond pip as a single instant, drawn as
-   * a STACK of exactly THREE copies (two ghost copies offset up-right
-   * behind the true pip) — the stack silhouette alone carries "several
-   * instants live here at this zoom". Always three, never scaled by the
-   * member count: the glyph says "a stack", the tooltip carries the real
-   * count. There is no count text on the canvas. Styled by the members'
-   * shared state exactly like singles (all-skipped = dim-filled diamonds,
+   * a STACK of exactly THREE copies (two ghost copies offset straight
+   * RIGHT behind the true pip, fading with depth — middle dimmer, back
+   * dimmest) — the stack silhouette alone carries "several instants live
+   * here at this zoom". Always three, never scaled by the member count:
+   * the glyph says "a stack", the tooltip carries the real count. There
+   * is no count text on the canvas. Styled by the members' shared state
+   * exactly like singles (all-skipped = dim-filled diamonds,
    * all-cancelled = hollow dashed diamonds, mixed = the neutral default);
    * the FRONT copy sits at the true anchor — the extent midpoint, sliding
    * along the visible slice at a window edge (clusterMarkerTime) — so hit
@@ -4111,13 +4188,14 @@ export class TimelineViewElement extends HTMLElement {
     const p = this.clusterPos(c);
     if (!p) return;
     const style = this.resolved(c.catKey, c.state, null);
-    // Stack step: diagonal up-right offsets read as a card/coin stack. At
-    // the max pip radius (8) the step is 2px (total spread 4px); on
-    // compact 4px tracks it degrades to a 1px step — a slightly thickened
-    // pip instead of a smear.
+    // Step degrades to 1px on compact tracks.
     const s = Math.max(1, Math.min(2, p.r * 0.35));
-    this.drawInstant(ctx, style, p.cx + 2 * s, p.cy - 2 * s, p.th, false, true);
-    this.drawInstant(ctx, style, p.cx + s, p.cy - s, p.th, false, true);
+    ctx.save();
+    ctx.globalAlpha = CLUSTER_BACK_ALPHA;
+    this.drawInstant(ctx, style, p.cx + 2 * s, p.cy, p.th, false, true);
+    ctx.globalAlpha = CLUSTER_MID_ALPHA;
+    this.drawInstant(ctx, style, p.cx + s, p.cy, p.th, false, true);
+    ctx.restore();
     this.drawInstant(ctx, style, p.cx, p.cy, p.th, this.hoverClusterId === c.members[0].id);
   }
 
