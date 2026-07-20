@@ -459,14 +459,13 @@ canvas.minimap[hidden] {
   border-style: dashed;
 }
 
-/* Cluster: the same diamond as a stack of exactly three copies. The two
-   back copies are box-shadows on the rotated element — the offsets are in
-   the ROTATED frame, so local (0, -2.8px)/(0, -5.7px) renders as the
-   canvas glyph's screen-space up-right (2,-2)/(4,-4) steps. */
+/* Cluster: three copies stacked right with a depth fade (the canvas
+   glyph's CLUSTER_MID/BACK_ALPHA). Shadow offsets are in the ROTATED
+   frame: local (1.4, -1.4px)/(2.8, -2.8px) = screen (2,0)/(4,0). */
 .lg-cluster::before {
   box-shadow:
-    0 -2.8px 0 -0.5px rgba(122, 148, 183, 0.8),
-    0 -5.7px 0 -1px rgba(122, 148, 183, 0.55);
+    1.4px -1.4px 0 -0.5px rgba(122, 148, 183, 0.65),
+    2.8px -2.8px 0 -1px rgba(122, 148, 183, 0.35);
 }
 
 /* -- Minimap lift for the corner chrome ------------------------------------------ */
