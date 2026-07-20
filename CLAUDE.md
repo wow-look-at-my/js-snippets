@@ -2,9 +2,9 @@
 
 ## What This Repo Is
 
-A library of reusable ES modules. Source is TypeScript (`.ts`) plus WGSL/GLSL shaders (`.wgsl`/`.glsl`) under `src/`. [ts0](https://github.com/wow-look-at-my/ts0) compiles them to JavaScript, which deploys to GitHub Pages. **Only `.ts` and `.wgsl` files are committed — `.js` output is never checked in.**
+A library of reusable ES modules. Source is TypeScript (`.ts`) plus WGSL/GLSL shaders (`.wgsl`/`.glsl`) under `src/`. [ts0](https://github.com/wow-look-at-my/ts0) compiles them to JavaScript, which deploys to [buildhost](https://github.com/wow-look-at-my/buildhost) sites. **Only `.ts` and `.wgsl` files are committed — `.js` output is never checked in.**
 
-Base URL: `https://wow-look-at-my.github.io/js-snippets`
+Base URL: `https://sites.pazer.build/js-snippets/branch/library` (the legacy GitHub Pages site at `https://wow-look-at-my.github.io/js-snippets` serves frozen 2026-07-15 content — the org Actions artifact quota killed its deploys; see "Deploy")
 
 ## Directory Layout
 
@@ -112,7 +112,7 @@ pnpm build      # ts0 build (type-check + compile src/ -> dist/) + assemble dist
 
 The build is [ts0](https://github.com/wow-look-at-my/ts0)'s **js library target**, selected because `ts0.json`'s `entry` is the `src/` *directory*. ts0 type-checks (`tsc --noEmit`) and then compiles every `.ts` under `src/` to a parallel `.js` under `dist/`, preserving structure (`src/webgpu/sky.ts` → `dist/webgpu/sky.js`). Each file is its own esbuild entry point. Code shared between modules (e.g. `vec3`, imported by `mat4`) is deduplicated into a `dist/chunk-*.js` and imported — never copied into each output; non-shared local imports and `.wgsl`/`.glsl` shaders stay inlined. A consumer still imports a single URL — the browser fetches any shared chunk transitively. Shaders — and component stylesheets — are imported as text via the `loaders: { ".wgsl": "text", ".glsl": "text", ".css": "text" }` field in `ts0.json` (ambient decls in `wgsl.d.ts` / `glsl.d.ts` / `css.d.ts`).
 
-ts0 also emits TypeScript declarations into `dist/` (default-on for the js library target): every compiled module gets a `.d.ts` sibling next to its `.js` (chunks and `*.test.*` excluded), deployed to Pages at the same URL with the extension swapped — nothing new is committed, `dist/` stays gitignored.
+ts0 also emits TypeScript declarations into `dist/` (default-on for the js library target): every compiled module gets a `.d.ts` sibling next to its `.js` (chunks and `*.test.*` excluded), deployed to the site at the same URL with the extension swapped — nothing new is committed, `dist/` stays gitignored.
 
 `pnpm build` then runs `scripts/build-llms.mjs`, which combines `llms-header.txt` + all `src/**/llms.txt` files into `dist/llms.txt`.
 
@@ -139,7 +139,7 @@ Conventions:
 
 ## Deploy
 
-GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` job enables pnpm via corepack, runs `pnpm test` (type-check + `node --test`), then `pnpm build` (ts0 type-checks + compiles, then `dist/llms.txt` is assembled). A failing test fails CI. The `deploy` job (master only) `needs` the `build` job, so tests gate deploy too; it uploads `dist/` to GitHub Pages via `actions/deploy-pages`. The `showcase` job publishes the timeline demo page to buildhost per branch (see "Showcase" below); it self-gates on chart/showcase paths and succeeds as a no-op otherwise, so it never blocks the org's all-builds aggregation.
+GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` job enables pnpm via corepack, runs `pnpm test` (type-check + `node --test`), then `pnpm build` (ts0 type-checks + compiles, then `dist/llms.txt` is assembled). A failing test fails CI and gates the publish (same job, later step). The `build` job then publishes `dist/` to buildhost sites via `wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master` (OIDC, project `js-snippets`, `public: 'true'` so consumers keep importing anonymously): `master` → the stable `library` site branch (the canonical base URL), any other branch → `library-<flattened-branch>` so a change is verifiable from a real URL before merge. This replaced the GitHub Pages deploy 2026-07-20 (mirroring webhook-runner#93) after the org's Actions artifact-storage quota froze Pages at its 07-15 content; the `library-` prefix keeps the library sites clear of the showcase previews, which publish under the bare flattened branch name. The `showcase` job publishes the timeline demo page to buildhost per branch (see "Showcase" below); it self-gates on chart/showcase paths and succeeds as a no-op otherwise, so it never blocks the org's all-builds aggregation.
 
 ## Showcase (`showcase/`)
 

@@ -102,6 +102,7 @@ import {
   IDLE_FRAME_MS,
   IDLE_BATTERY_FRAME_MS,
   dimColor,
+  labelHaloColor,
   type WheelInput,
   type TimeView,
   type PackItem,
@@ -2370,4 +2371,36 @@ test('dimColor: applying to categoryColor output keeps the category hue family',
     assert.notEqual(dimmed, base);
     assert.match(dimmed, /^rgba\(/);
   }
+});
+
+// -- labelHaloColor (guaranteed label legibility) --------------------------------------
+
+test('labelHaloColor: dark halo under a light foreground', () => {
+  // The default dark-theme fg — labels are near-white, so the rim is dark.
+  assert.equal(labelHaloColor('#e8ecf4'), 'rgba(0, 0, 0, 0.55)');
+  assert.equal(labelHaloColor('#ffffff'), 'rgba(0, 0, 0, 0.55)');
+  // Mid-grey (relative luminance ≈ 0.216) still contrasts more with black.
+  assert.equal(labelHaloColor('#808080'), 'rgba(0, 0, 0, 0.55)');
+});
+
+test('labelHaloColor: light halo under a dark foreground (light themes)', () => {
+  assert.equal(labelHaloColor('#111318'), 'rgba(255, 255, 255, 0.55)');
+  assert.equal(labelHaloColor('#000000'), 'rgba(255, 255, 255, 0.55)');
+  // Below the WCAG crossover (relative luminance ≈ 0.179) white wins:
+  // #6b6b6b has relative luminance ≈ 0.15.
+  assert.equal(labelHaloColor('#6b6b6b'), 'rgba(255, 255, 255, 0.55)');
+});
+
+test('labelHaloColor: accepts every parseColor form; alpha in fg is ignored', () => {
+  assert.equal(labelHaloColor('rgb(232, 236, 244)'), 'rgba(0, 0, 0, 0.55)');
+  assert.equal(labelHaloColor('rgba(232, 236, 244, 0.2)'), 'rgba(0, 0, 0, 0.55)');
+  assert.equal(labelHaloColor('hsl(220, 35%, 93%)'), 'rgba(0, 0, 0, 0.55)');
+  assert.equal(labelHaloColor('oklch(0.95 0.01 250)'), 'rgba(0, 0, 0, 0.55)');
+  assert.equal(labelHaloColor('oklch(0.2 0.02 250)'), 'rgba(255, 255, 255, 0.55)');
+});
+
+test('labelHaloColor: unparseable colors fall back to the dark halo', () => {
+  // The dark default theme's shape — a var()/named fg keeps a sane rim.
+  assert.equal(labelHaloColor('var(--my-fg)'), 'rgba(0, 0, 0, 0.55)');
+  assert.equal(labelHaloColor('papayawhip'), 'rgba(0, 0, 0, 0.55)');
 });
