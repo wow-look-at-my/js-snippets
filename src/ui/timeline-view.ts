@@ -30,17 +30,34 @@
  * disengaging lets the backward deltas consume the lead (any residual
  * glides out), and the pill glides to the followed position — the view
  * never teleports in a single frame (reduced motion snaps instead).
- * Interaction is trackpad-first: two-finger pan (x = time;
- * y scrolls the lane stack when it overflows, and is otherwise left to
- * the PAGE — a plain vertical wheel never pans the chart sideways and
- * never has its default prevented, so page scrolling works across the
- * chart), ctrl/meta+wheel = smooth zoom anchored under the cursor
- * (discrete wheel steps glide), shift+wheel = time pan, drag = pan, pinch =
- * zoom, arrows/±/Home/End when focused. `loadRange` turns scrolling into
+ * Interaction is trackpad-first, and wheel routing is by DOMINANT axis: a
+ * horizontal-dominant wheel pans time (its minor vertical component
+ * nudges the lane stack when it overflows); a VERTICAL-dominant wheel
+ * with no modifier is never consumed — no preventDefault, no zoom — so
+ * page scrolling always works across the chart (the lane stack scrolls
+ * by drag or arrow keys instead); ctrl/meta+wheel = smooth zoom anchored
+ * under the cursor (discrete wheel steps glide; trackpad pinch arrives
+ * as ctrl+wheel), shift+wheel = time pan, drag = pan, pinch = zoom,
+ * arrows/±/Home/End when focused. `loadRange` turns scrolling into
  * the past into async history requests — for BACKWARD gaps only; the live
  * forward edge always belongs to the consumer's own setData/mergeData
  * `coverage` — with uncovered regions visibly distinct from empty-but-known
- * ones and an explicit end-of-history boundary.
+ * ones and an explicit end-of-history boundary. Browser navigation
+ * gestures never fire over the component: the wheel listener lives on the
+ * HOST (horizontal deltas over the DOM chrome are consumed like over the
+ * canvas) and the host carries overscroll-behavior-x: none, so panning
+ * hard into exhausted history can't turn into a history-back swipe —
+ * horizontal ONLY, so vertical scroll chaining (and vertical touch pans,
+ * via the plot canvas' touch-action: pan-y) stays the page's. A corner
+ * ⤢ toggle (always visible; `no-fullscreen-button` hides it) flips the
+ * reflected `fullscreen` attribute: viewport-fill via position:fixed —
+ * deliberately NOT the Fullscreen API — with the page scroll locked while
+ * active, Escape to exit, and a 'fullscreenchange' event. A minimap strip
+ * along the bottom (own canvas; hidden with no data, on short hosts, or
+ * via `no-minimap`) shows the full loaded extent as per-lane density
+ * marks with the viewport as a draggable window: edge handles resize it,
+ * grabbing the middle pans it, clicking outside centers it — all through
+ * the same follow/park/loadRange semantics as canvas gestures.
  *
  * FEED STALENESS: every setData/mergeData (or an explicit markFresh())
  * stamps the feed fresh; when `staleAfterMs` (default 10s) passes without
@@ -56,19 +73,41 @@
  *
  * Rendering is stability-first: the viewport origin is snapped to WHOLE
  * device pixels once per frame (bars keep exact relative offsets while
- * scrolling — no per-element rounding jiggle), bar-vs-pip shapes are
- * decided from data-space durations (never from rounded screen coords, so
- * shapes don't flicker during pans), and lane heights derive from the
- * parallelism visible in the CURRENT window (a historical burst stops
- * padding its lane once off-screen; height changes tween ~150ms, honoring
- * prefers-reduced-motion).
+ * scrolling — no per-element rounding jiggle; TEXT origins are the one
+ * per-element exception — they snap to the device grid for crisp glyph
+ * rasterization, stepping in whole pixels while things move), bar-vs-pip
+ * shapes are decided from data-space durations (never from rounded screen
+ * coords, so shapes don't flicker during pans), rows are VERTICALLY
+ * STICKY (a stateful per-lane TrackAllocator: a visible interval keeps
+ * its sub-track while on screen — panning and live updates never
+ * reshuffle the rows being watched — a returning interval remembers its
+ * old row, new arrivals fill from the bottom), and lane heights derive
+ * from the parallelism visible in the CURRENT window (a historical burst
+ * stops padding its lane once off-screen; height changes tween ~150ms,
+ * honoring prefers-reduced-motion).
  *
- * Cheap by construction: draws only when dirty (one rAF at a time), a
- * continuous loop runs only while following/animating and the element is
- * visible, and idle animation is paced adaptively — full rate while
+ * Cheap by construction: draws only when dirty (one rAF at a time), and a
+ * rAF loop runs only while something on screen actually moves — follow-now
+ * scroll, visible ongoing bars, tweens/gestures — and the element is
+ * visible; a parked static chart schedules nothing and draws nothing.
+ * While animating, frames are paced adaptively — full rate while
  * interacting (plus a short grace window), ~30fps idle, ~10fps idle on
  * battery (feature-detected via navigator.getBattery), paused while the
- * document is hidden; culled to the viewport; DPR-aware (capped at 2).
+ * document is hidden. Those tier rates are the CEILING; when the only
+ * motion is clock-driven (the follow scroll, ongoing-bar growth) the
+ * effective rate is min(tier fps, device px per second) — the loop keeps
+ * running and skips frames that would be pixel-identical, on an even
+ * frame-aligned cadence (clockDrawBudgetMs; never timer wakes, so motion
+ * stays smooth at every zoom); culled to the viewport (per-lane
+ * lower-bound binary search — a drawn frame costs O(visible), never
+ * O(all data)); clustering/track-assignment memoized (position-
+ * independent clustering re-derives only on data/zoom/width changes;
+ * assignment additionally on window-start quanta); the minimap's density
+ * marks served from a pixel-shifted offscreen texture (one blit per
+ * frame; merges paint only their sliver; full rebuilds run async in
+ * slices); DPR-aware (capped
+ * at 3), on
+ * an OPAQUE canvas (subpixel text AA; keep --timeline-bg opaque).
  * Theme via --timeline-* custom properties (see THEME_DEFAULTS); the DOM
  * chrome (tooltip, live pill, empty hint) is styled by timeline-view.css.
  * The pure math lives in ui/timeline-view-math.ts (node-tested) and is
@@ -93,20 +132,34 @@ import {
   STALE_AFTER_DEFAULT_MS,
   feedIsStale,
   snapViewToDevicePixels,
+  snapTextOrigin,
+  nowLineX,
   MIN_SPAN_MS,
   MAX_SPAN_MS,
+  DEFAULT_SPAN_REF_MS,
+  defaultSpanForAspect,
   timeTicks,
   timeTickStep,
   formatTimeTick,
   formatTimeFull,
   formatDuration,
-  packVisibleTracks,
+  TrackAllocator,
   layoutLanes,
   trackTop,
   computeAutoFit,
   fitText,
   isInstantWidth,
   durationWidthPx,
+  edgeContinuation,
+  clusterInstants,
+  clusterMarkerTime,
+  clusterZoomView,
+  minimapExtent,
+  minimapWindowRect,
+  minimapHitZone,
+  minimapPan,
+  minimapResize,
+  minimapCenter,
   MIN_BAR_PX,
   expandHitRect,
   hitTestPolyline,
@@ -114,11 +167,14 @@ import {
   categoryHue,
   categoryJitter,
   categoryColor,
+  dimColor,
+  labelHaloColor,
   DEFAULT_STYLES,
   CoverageTracker,
   historyProbe,
   frameBudgetMs,
   shouldRender,
+  clockDrawBudgetMs,
   INTERACT_GRACE_MS,
   type RenderTier,
   type TimelineLane,
@@ -131,6 +187,7 @@ import {
   type StyleMap,
   type LaneLayout,
   type HitRect,
+  type PackItem,
 } from './timeline-view-math.ts';
 
 import TIMELINE_CSS from './timeline-view.css';
@@ -201,9 +258,16 @@ export interface TimelineData {
  */
 export type LoadRangeFn = (start: number, end: number) => Promise<{ exhausted?: boolean } | void>;
 
-/** What the pointer is over — handed to tooltipFor and hover/click events. */
+/**
+ * What the pointer is over — handed to tooltipFor and hover/click events.
+ * 'cluster' (a stacked group of visually-overlapping instant markers) is the
+ * one hit type NEVER handed to tooltipFor: its summary tooltip is
+ * component-built, and clicking it zooms to the member extent instead of
+ * dispatching intervalclick.
+ */
 export type TimelineHit =
   | { type: 'interval'; interval: TimelineInterval; lane: TimelineLane }
+  | { type: 'cluster'; intervals: TimelineInterval[]; lane: TimelineLane }
   | { type: 'connector'; connector: TimelineConnector; missingEndpoint?: 'from' | 'to' }
   | { type: 'marker'; marker: TimelineMarker }
   | { type: 'lane'; lane: TimelineLane };
@@ -233,6 +297,29 @@ interface NInterval {
   state: string;
   segs: NSeg[] | null;
   track: number;
+  /** True while a cluster marker represents this instant (it is not drawn/hit itself). */
+  clustered: boolean;
+}
+
+/**
+ * A cluster of instant markers (drawn as a fixed 3-stack of pips),
+ * re-derived per layout pass at the
+ * current scale (clusterInstants). Occupies ONE packing slot spanning its
+ * member extent — coincident instants can never blow up the lane height.
+ */
+interface NCluster {
+  /** 'cluster:' + the FIRST member's id — the sticky packing identity (stable while membership is; see packLane). */
+  id: string;
+  laneIdx: number;
+  /** Member start-time extent — the marker anchor and the click-to-zoom target. */
+  extent: TimeRange;
+  /** Members in (start, id) order. */
+  members: NInterval[];
+  /** Uniform member category, else the lane default (see clusterKeys). */
+  catKey: string;
+  /** Uniform member state, else '' — the neutral treatment for mixed clusters. */
+  state: string;
+  track: number;
 }
 
 interface ResolvedStyle {
@@ -242,10 +329,14 @@ interface ResolvedStyle {
   dash: number[] | null;
   pattern: 'solid' | 'hatch' | 'stipple' | 'outline';
   glyph: 'none' | 'bang' | 'dot';
-  labelColor: string;
 }
+// Deliberately NO label color here: a dimmed style dims its GEOMETRY
+// (fill, border, hatching) only, while label text always renders at the
+// full-contrast theme foreground through labelText()'s halo — deriving
+// the text color from the span's style is exactly what made labels go
+// grey (unreadable) over dimmed/hatched sections, flipping with zoom as
+// the anchor crossed segment boundaries.
 
-const DEFAULT_SPAN_MS = 15 * 60_000;
 const LAYOUT_TWEEN_MS = 150; // lane-height ease on visible-track-count AND fit-height change
 const AXIS_H = 22;
 const LANE_LABEL_MIN_PX = 10; // below this lane height the gutter label is tooltip-only
@@ -254,6 +345,94 @@ const CONNECTOR_TOL = 4;
 const CLICK_SLOP = 4;
 const EMPTY_DASH: number[] = [];
 const MARKER_DASH = [4, 3];
+// Label-halo stroke width (CSS px): centered on the glyph outline, so the
+// visible rim is half this — thin enough to read as edge contrast, not a box.
+const LABEL_HALO_PX = 3;
+// A terminal-cut ('outline'-kind) segment never renders narrower than this
+// many DEVICE pixels — a kill tail is typically sub-second (docker-kill
+// latency), which at a 10-min window maps under half a CSS px and used to
+// vanish entirely, leaving a cancelled bar pixel-identical to a success.
+const TERMINAL_SEG_MIN_DEVICE_PX = 3;
+// The kill-point cut line draws only when the terminal-cut tail is at
+// least this wide (CSS px). Narrower tails render scrim-only: their cut
+// point is within a couple of pixels of the span's end border, where a
+// lone vertical line reads as a stray rendering artifact — and the scrim
+// + the dashed cancelled border already carry the state at that size.
+const CUT_LINE_MIN_TAIL_PX = 4;
+// A dashed border needs room to read as dashes; narrower bars draw it
+// solid (the hollow body still carries the state on a tiny bar).
+const BORDER_DASH_MIN_PX = 12;
+// Width (CSS px) of the edge-continuation shadow on a span the viewport
+// clips: the clipped end darkens toward the edge — the span reads as
+// sliding UNDER the window edge, which casts a shadow on it (see
+// edgeContinuation for the exemptions).
+const EDGE_FADE_PX = 12;
+// Shadow strength at the window edge itself: black at this alpha over
+// any span body (or background sliver) lands clearly DARKER than the
+// page background, so the end reads covered-up, never dissolved.
+const EDGE_SHADOW_ALPHA = 0.85;
+// Backing-store cap: 3 keeps >2-DPR displays (150% 4K scaling, many
+// laptops/mobiles) sharp instead of compositor-upscaled soft, without the
+// fully-uncapped perf cliff on 4k+ screens.
+const MAX_DPR = 3;
+// The minimap strip's height (CSS px) — the plot canvas cedes this band
+// at the bottom while the strip is visible. One source of truth: the
+// element sets the strip canvas' CSS height from it too.
+const MINIMAP_H = 32;
+// Hosts shorter than this hide the strip: below ~140px the band would eat
+// a third of an already-cramped plot.
+const MINIMAP_MIN_HOST_PX = 140;
+// Side length (CSS px) of the repeating hatch/stipple pattern tile —
+// shared by tile generation (patternFor) and phase anchoring
+// (anchorPattern), where translating by whole tiles must be identity.
+const PATTERN_TILE_PX = 7;
+// Fraction of the span the window START may drift before track assignment
+// re-runs (the visible-layout memo's quantum). Small enough that an item
+// entering the window rides a stale row only for a blink; large enough
+// that follow-mode's per-device-pixel drift amortizes ~dozens of frames
+// per assignment.
+const ASSIGN_QUANTUM_FRAC = 0.02;
+// Span buckets for the clustering memo: ~0.14% span change per bucket —
+// float noise from the follow pin's per-frame end±span arithmetic (sub-µs
+// on epoch-ms magnitudes) can never re-bucket, while any real zoom step
+// crosses buckets immediately (scale-aware clustering stays "re-clusters
+// as you zoom").
+function spanBucket(span: number): number {
+  return Math.round(Math.log2(span) * 512);
+}
+
+// -- Legend ------------------------------------------------------------------------
+
+/**
+ * A consumer-supplied legend row (`legendEntries`): a short glyph sample —
+ * rendered verbatim in the swatch column — plus its plain-language
+ * meaning. This is how a consumer teaches the glyphs IT composes into
+ * labels (e.g. an adapter's '⧗ group · 3rd' queue badge or '⏳N' holder
+ * count) alongside the component's own vocabulary.
+ */
+export interface TimelineLegendEntry {
+  /** The glyph/badge sample (e.g. '⧗', '⏳3'). */
+  glyph: string;
+  /** What it means. */
+  text: string;
+}
+
+// The component-OWNED glyph vocabulary shown by the "?" legend pill: each
+// row pairs a CSS-drawn swatch (timeline-view.css .lg-*) with its meaning.
+// Swatches use a neutral hue on purpose — they teach shape and pattern,
+// never a specific category color. Consumer rows append after these.
+// Entries name a GLYPH and what it means — nothing meta, no styling-policy
+// notes — and only glyphs that are actually cryptic: self-explanatory
+// chrome (the minimap strip, edge treatments) stays out.
+const LEGEND_ROWS: readonly { swatch: string; text: string }[] = [
+  { swatch: 'lg-instant', text: 'instant — a zero-duration event (filled pip)' },
+  { swatch: 'lg-cancelled-pip', text: 'cancelled instant (hollow, dashed pip)' },
+  { swatch: 'lg-cluster', text: 'stacked pips — several instants clustered at this zoom; zoom in or click to split' },
+  { swatch: 'lg-bar lg-failed', text: 'failed — stippled body, red border, corner bang' },
+  { swatch: 'lg-bar lg-hatch', text: 'hatched phase — a declared wait (lock, group slot, sleep) or queued time' },
+  { swatch: 'lg-bar lg-dim', text: 'dim — queued / de-emphasized' },
+  { swatch: 'lg-bar lg-killed', text: 'cancelled span — hollow, dashed; the darkened tail marks the kill point' },
+];
 
 // -- The custom element ----------------------------------------------------------------
 
@@ -264,7 +443,12 @@ const MARKER_DASH = [4, 3];
  * setMarkers — never attributes; the only attributes are scalar toggles:
  * `no-live-pill` (hide the jump-to-now pill), `no-auto-fit` (disable
  * compact-lane auto-fit), `history-end-text` (boundary label), `empty-text`
- * (empty-state hint).
+ * (empty-state hint), `fullscreen` (reflected viewport-fill mode — see the
+ * `fullscreen` property), `no-fullscreen-button` (hide the corner toggle;
+ * the property/attribute still work programmatically), `no-minimap` (hide
+ * the bottom overview strip), `no-legend` (hide the "?" legend pill —
+ * the in-place glyph dictionary; consumers append their own rows via the
+ * `legendEntries` property).
  *
  * Auto-fit (default ON): each layout pass compares the natural lane stack
  * (every lane at --timeline-track-height) against the host's plot height;
@@ -280,15 +464,103 @@ const MARKER_DASH = [4, 3];
  */
 export class TimelineViewElement extends HTMLElement {
   static get observedAttributes(): string[] {
-    return ['no-live-pill', 'no-auto-fit', 'history-end-text', 'empty-text'];
+    return ['no-live-pill', 'no-auto-fit', 'history-end-text', 'empty-text', 'fullscreen', 'no-fullscreen-button', 'no-minimap', 'no-legend'];
   }
 
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D | null = null;
   private tooltipEl: HTMLDivElement;
   private pillEl: HTMLButtonElement;
+  private fsEl: HTMLButtonElement;
   private emptyEl: HTMLDivElement;
   private staleEl: HTMLDivElement;
+
+  // -- Legend --
+  private legendEl: HTMLButtonElement;
+  private legendPanelEl: HTMLDivElement;
+  private legendOpen = false;
+  private userLegend: TimelineLegendEntry[] = [];
+
+  // -- Minimap strip --
+  private mmCanvas: HTMLCanvasElement;
+  private mmCtx: CanvasRenderingContext2D | null = null;
+  private mmVisible = false;
+  private mmDrag: { mode: 'left' | 'right' | 'middle'; lastX: number } | null = null;
+  private hadData = false; // data-emptiness edge → re-evaluate strip visibility
+
+  // -- Data extent / cull metadata (recomputed exactly in rebuild(); grown
+  // incrementally in ingestInterval so it is never stale-small between) --
+  /** Max terminated end across ALL intervals (-Infinity with none) — the minimap extent's data end, O(1) per frame. */
+  private mmLatestEnd = -Infinity;
+  /** Ongoing (end = null) intervals, flat — live-drawn on the minimap every frame, never baked into the density texture. */
+  private mmOngoing: NInterval[] = [];
+  /** Per lane: max TERMINATED duration (ms; 0 when none) — the drawIntervals lower-bound cull radius. */
+  private laneMaxDur: number[] = [];
+  /** Per lane: earliest ONGOING start (Infinity when none) — ongoing bars block the cull down to here. */
+  private laneOngoingStart: number[] = [];
+
+  // -- Minimap density texture (the pixel-shifted offscreen cache) --
+  // The strip's per-lane density marks live in an offscreen texture that
+  // the frame path BLITS (one drawImage) instead of refilling O(N) rects:
+  // the texture's time→x mapping is FROZEN at mmTexExtent and only steps
+  // when the live extent has drifted a whole strip pixel (then ONE
+  // scale-blit re-maps the existing pixels — the "pixel shift" for this
+  // compressing geometry); merges paint only their new right-edge marks;
+  // everything else (geometry/theme/lane-count/extent-start changes,
+  // accumulated resample drift) rebuilds ASYNCHRONOUSLY in budgeted
+  // slices into a second texture that swaps in atomically while the old
+  // one keeps serving. The now tick and the viewport window rect are
+  // live overdraws every frame — never baked in.
+  private mmTex: HTMLCanvasElement | null = null;
+  private mmTexCtx: CanvasRenderingContext2D | null = null;
+  /** Double-buffer partner for extent steps (self-blit needs snapshot semantics). */
+  private mmTexB: HTMLCanvasElement | null = null;
+  private mmTexBCtx: CanvasRenderingContext2D | null = null;
+  private mmTexExtent: TimeView = { start: 0, end: 1 };
+  private mmTexEpoch = -1; // packEpoch the texture content reflects
+  private mmTexW = 0; // device px
+  private mmTexH = 0;
+  private mmTexDpr = 1;
+  private mmTexLaneN = -1;
+  private mmTexTheme = -1; // mmThemeGen stamp
+  private mmThemeGen = 0; // bumped by readTheme() — colors baked into the texture went stale
+  private mmTexScaleAcc = 1; // cumulative shrink since the last full build (resample-blur budget)
+  private mmTexSteps = 0; // extent steps since the last full build
+  private mmTexDirty = false; // a baked mark was rewritten in place → full rebuild required
+  /** Terminated intervals ingested since the texture's epoch — the incremental right-edge paints. */
+  private mmPendingNew: NInterval[] = [];
+  private mmRebuild: {
+    tex: HTMLCanvasElement;
+    ctx: CanvasRenderingContext2D;
+    extent: TimeView;
+    epoch: number;
+    themeGen: number;
+    laneN: number;
+    w: number; // device px
+    h: number;
+    dpr: number;
+    laneIdx: number;
+    itemIdx: number;
+  } | null = null;
+  private mmRebuildTimer: ReturnType<typeof setTimeout> | null = null;
+  /** catKey → the 0.55-alpha density fill (cleared with the theme). */
+  private mmDimCache = new Map<string, string>();
+
+  // -- Fullscreen (viewport-fill) --
+  // While the host carries the `fullscreen` attribute it is position:fixed
+  // over the whole viewport and the PAGE scroll is locked (html overflow
+  // hidden, previous inline value restored on exit) — so the page behind
+  // can neither scroll nor scroll-chain, and the page's scroll offset is
+  // exactly where the user left it when fullscreen exits.
+  private fsLocked = false;
+  private fsPrevOverflow = '';
+  // The page scroll offset as last seen BEFORE the lock. Snapshotted by a
+  // passive window scroll listener (frozen while locked) because reading
+  // scrollY inside the attribute callback is too late: the fixed host has
+  // already left the flow, the page shrank, and the browser clamped the
+  // offset — the direct read would save the clamped 0, not the user's spot.
+  private fsSeenScrollX = 0;
+  private fsSeenScrollY = 0;
 
   // -- Data (normalized) --
   private lanes: TimelineLane[] = [];
@@ -301,8 +573,16 @@ export class TimelineViewElement extends HTMLElement {
   private styleMap: StyleMap = { ...DEFAULT_STYLES };
 
   // -- Viewport --
-  private view: TimeView = { start: 0, end: 1 }; // set on connect/first data
+  private view: TimeView = { start: 0, end: 1 }; // seeded in the constructor; aspect-derived on first layout
   private following = true;
+  // Latched by the FIRST user gesture or programmatic setViewport (every
+  // window-changing path funnels through applyUserView; setViewport latches
+  // explicitly too). While false, resizeBackingStore keeps (re)deriving the
+  // DEFAULT span from the host's aspect ratio (defaultSpanForAspect) — a
+  // chosen window must always beat the default. followNow / jumpToNow /
+  // the per-frame pin move POSITION only and deliberately do NOT latch:
+  // the default governs the SPAN alone.
+  private viewTouched = false;
   private laneScroll = 0;
   // The ONE scalar behind every follow transition: the current lead of the
   // view's end over "now", as a fraction of the span. Steady follow pins
@@ -342,6 +622,7 @@ export class TimelineViewElement extends HTMLElement {
   private downHit: TimelineHit | null = null;
   private hover: TimelineHit | null = null;
   private hoverIntervalId: string | null = null;
+  private hoverClusterId: string | null = null; // first-member id of the hovered cluster
   private glidePx = 0; // pending discrete-wheel zoom, in wheel px
   private glideX = 0; // zoom anchor (canvas x) for the glide
   private lastFrame = 0;
@@ -351,10 +632,41 @@ export class TimelineViewElement extends HTMLElement {
   private batteryOff: (() => void) | null = null;
 
   // -- Visible-window lane layout + auto-fit --
+  // The old single memo keyed (epoch, rv.start, rv.end, plotW) re-ran the
+  // WHOLE pack pipeline every frame in follow mode (the pin moves rv.start
+  // each drawn frame). Decomposed: CLUSTERING is position-independent
+  // (clusterInstants reads the view only as span — pinned by the "pure
+  // pans never change membership" test), so it memoizes on
+  // (epoch, span bucket, plotW); TRACK ASSIGNMENT additionally re-runs
+  // when the window START has moved a quantum (ASSIGN_QUANTUM_FRAC of the
+  // span) since the last pass — items only ENTER the data via merges
+  // (epoch bump), and an item sliding in over a stale row for under a
+  // quantum is invisible in practice. layoutLanes/auto-fit stay per-frame
+  // (O(lanes), the tweens need them).
   private packEpoch = 0; // bumped on data changes; forces a re-pack
-  private packedEpoch = -1;
-  private packedStart = NaN;
-  private packedEnd = NaN;
+  private clusteredEpoch = -1;
+  private clusteredSpanKey = NaN; // log-quantized span bucket (spanBucket)
+  private clusteredPlotW = NaN; // clustering is scale-aware: a resize re-derives it
+  private assignedEpoch = -1;
+  private assignedSpanKey = NaN;
+  private assignedPlotW = NaN;
+  private assignedStart = NaN;
+  // Per-lane clusters for the current window (rebuilt with the clustering pass).
+  private laneClusters: NCluster[][] = [];
+  // Per-lane pack inputs (unclustered items + one slot per cluster), cached
+  // between clustering passes and re-fed to the allocator on assignment.
+  private lanePackItems: PackItem[][] = [];
+  private lanePackTargets: { track: number }[][] = [];
+  // The unclustered items alone, per lane, in (start, id) order — the draw
+  // loop iterates THIS instead of skipping clustered members one by one
+  // (at busy zooms most visible instants are clustered: iterating the full
+  // lane burned thousands of skip-checks per frame).
+  private laneUnclustered: NInterval[][] = [];
+  // Sticky row state, one allocator per lane ID (not index — lane
+  // insertions must never hand one lane's row memory to another). The
+  // state deliberately survives setData: a full resync must not reshuffle
+  // the rows on screen.
+  private allocators = new Map<string, TrackAllocator>();
   private targetCounts: number[] = []; // visible track count per lane
   private displayCounts: number[] = []; // animated (float) counts driving layout
   private targetHeights: number[] = []; // per-lane track height target (normal or compact)
@@ -372,6 +684,7 @@ export class TimelineViewElement extends HTMLElement {
   private theme: Theme = { ...THEME_DEFAULTS };
   private fontAxis = '';
   private fontBar = '';
+  private labelHalo = labelHaloColor(THEME_DEFAULTS.fg);
   private charW = 6;
   private gutterW = 90;
   private oklch = true;
@@ -381,6 +694,11 @@ export class TimelineViewElement extends HTMLElement {
 
   private raf = 0;
   private dirty = false;
+  // Due timestamp of the next clock-paced draw — the even-spacing grid
+  // used while the only motion is clock-driven and slower than the tier
+  // rate (0 = grid unarmed). See onFrame: advanced by whole budgets from
+  // its own previous value, never re-anchored to the actual draw time.
+  private clockDrawDue = 0;
   private connected = false;
   private inView = true;
   private ro: ResizeObserver | null = null;
@@ -400,6 +718,10 @@ export class TimelineViewElement extends HTMLElement {
       shadow.append(style);
     }
     this.canvas = document.createElement('canvas');
+    this.mmCanvas = document.createElement('canvas');
+    this.mmCanvas.className = 'minimap';
+    this.mmCanvas.style.height = `${MINIMAP_H}px`; // sized here so MINIMAP_H stays the one source of truth
+    this.mmCanvas.hidden = true;
     this.tooltipEl = document.createElement('div');
     this.tooltipEl.className = 'tooltip';
     this.pillEl = document.createElement('button');
@@ -408,16 +730,46 @@ export class TimelineViewElement extends HTMLElement {
     this.pillEl.textContent = '▸ now';
     this.pillEl.hidden = true;
     this.pillEl.addEventListener('click', () => this.jumpToNow());
+    // The fullscreen toggle sits in the corner the pill slides in next to,
+    // and — unlike the pill — is visible in BOTH follow and parked modes.
+    this.fsEl = document.createElement('button');
+    this.fsEl.className = 'fs-pill';
+    this.fsEl.type = 'button';
+    this.fsEl.addEventListener('click', () => {
+      this.fullscreen = !this.fullscreen;
+    });
+    // The "?" legend pill — stacked above the fullscreen toggle, visible in
+    // both follow and parked modes (and in fullscreen: shadow chrome rides
+    // the host wherever it goes) — opens the glyph-vocabulary panel. Pure
+    // DOM chrome: nothing legend-related runs on the canvas hot path; the
+    // panel's rows are (re)built only when it opens.
+    this.legendEl = document.createElement('button');
+    this.legendEl.className = 'legend-pill';
+    this.legendEl.type = 'button';
+    this.legendEl.textContent = '?';
+    this.legendEl.title = 'legend — what the glyphs mean';
+    this.legendEl.setAttribute('aria-label', 'chart legend');
+    this.legendEl.setAttribute('aria-expanded', 'false');
+    this.legendEl.addEventListener('click', () => this.toggleLegend());
+    this.legendPanelEl = document.createElement('div');
+    this.legendPanelEl.className = 'legend-panel';
+    this.legendPanelEl.hidden = true;
     this.emptyEl = document.createElement('div');
     this.emptyEl.className = 'empty-hint';
     this.emptyEl.hidden = true;
     this.staleEl = document.createElement('div');
     this.staleEl.className = 'stale-note';
     this.staleEl.hidden = true;
-    shadow.append(this.canvas, this.tooltipEl, this.pillEl, this.emptyEl, this.staleEl);
+    // fsEl precedes pillEl so `.fs-pill[hidden] ~ .live-pill` can reclaim
+    // the corner when the toggle is opted out.
+    shadow.append(this.canvas, this.mmCanvas, this.tooltipEl, this.fsEl, this.pillEl, this.emptyEl, this.staleEl, this.legendEl, this.legendPanelEl);
 
+    // Seed end = now with the 3-min reference span as the never-sized
+    // fallback; the first resizeBackingStore with a real host box
+    // re-derives the span from the container's aspect ratio (end stays
+    // anchored) while the view is still untouched.
     const now = this.nowMs();
-    this.view = { start: now - DEFAULT_SPAN_MS, end: now };
+    this.view = { start: now - DEFAULT_SPAN_REF_MS, end: now };
   }
 
   // -- Lifecycle -------------------------------------------------------------
@@ -444,6 +796,13 @@ export class TimelineViewElement extends HTMLElement {
       this.motionMq.addEventListener?.('change', this.onMotionPref);
     }
     document.addEventListener('visibilitychange', this.onVisibility);
+    // Escape exits fullscreen from anywhere (focus may sit on the toggle
+    // button, the page body, …). Document-level on purpose; the handler
+    // acts ONLY while fullscreen — Escape is never swallowed otherwise.
+    document.addEventListener('keydown', this.onDocKeyDown);
+    this.fsSeenScrollX = window.scrollX;
+    this.fsSeenScrollY = window.scrollY;
+    window.addEventListener('scroll', this.onWinScroll, { passive: true });
     this.watchBattery();
     // Staleness watchdog: rAF stops when nothing animates, so a dead feed
     // on a parked chart would never be NOTICED without an independent
@@ -453,15 +812,25 @@ export class TimelineViewElement extends HTMLElement {
 
     // {passive: false} so preventDefault stays AVAILABLE — onWheel calls it
     // only for consumed gestures (an unconsumed vertical wheel must reach
-    // the page).
-    this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
+    // the page). On the HOST, not the canvas: horizontal trackpad deltas
+    // over the DOM chrome floating above the plot (live pill, fullscreen
+    // toggle, stale note) must be consumed too, or a back-swipe at the pan
+    // boundary leaks to the browser as history navigation the moment the
+    // cursor crosses a button.
+    this.addEventListener('wheel', this.onWheel, { passive: false });
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.canvas.addEventListener('pointermove', this.onPointerMove);
     this.canvas.addEventListener('pointerup', this.onPointerUp);
     this.canvas.addEventListener('pointercancel', this.onPointerUp);
     this.canvas.addEventListener('pointerleave', this.onPointerLeave);
+    this.mmCanvas.addEventListener('pointerdown', this.onMMPointerDown);
+    this.mmCanvas.addEventListener('pointermove', this.onMMPointerMove);
+    this.mmCanvas.addEventListener('pointerup', this.onMMPointerUp);
+    this.mmCanvas.addEventListener('pointercancel', this.onMMPointerUp);
+    this.mmCanvas.addEventListener('pointerleave', this.onMMPointerLeave);
     this.addEventListener('keydown', this.onKeyDown);
 
+    this.syncScrollLock(); // an already-fullscreen element locks on (re)connect
     this.resizeBackingStore();
     this.syncChrome();
     this.invalidate();
@@ -476,28 +845,194 @@ export class TimelineViewElement extends HTMLElement {
     this.motionMq?.removeEventListener?.('change', this.onMotionPref);
     this.motionMq = null;
     document.removeEventListener('visibilitychange', this.onVisibility);
+    document.removeEventListener('keydown', this.onDocKeyDown);
+    window.removeEventListener('scroll', this.onWinScroll);
+    this.syncScrollLock(); // never leave a removed element's page scroll-locked
     this.batteryOff?.();
     this.batteryOff = null;
     if (this.staleTimer !== null) {
       clearInterval(this.staleTimer);
       this.staleTimer = null;
     }
-    this.canvas.removeEventListener('wheel', this.onWheel);
+    this.removeEventListener('wheel', this.onWheel);
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
     this.canvas.removeEventListener('pointerup', this.onPointerUp);
     this.canvas.removeEventListener('pointercancel', this.onPointerUp);
     this.canvas.removeEventListener('pointerleave', this.onPointerLeave);
+    this.mmCanvas.removeEventListener('pointerdown', this.onMMPointerDown);
+    this.mmCanvas.removeEventListener('pointermove', this.onMMPointerMove);
+    this.mmCanvas.removeEventListener('pointerup', this.onMMPointerUp);
+    this.mmCanvas.removeEventListener('pointercancel', this.onMMPointerUp);
+    this.mmCanvas.removeEventListener('pointerleave', this.onMMPointerLeave);
     this.removeEventListener('keydown', this.onKeyDown);
     if (this.raf !== 0) {
       cancelAnimationFrame(this.raf);
       this.raf = 0;
     }
+    this.clockDrawDue = 0;
+    // Park any in-flight minimap rebuild; a reconnect's first frame
+    // re-arms the slice chain (mmKickRebuild re-schedules idempotently).
+    if (this.mmRebuildTimer !== null) {
+      clearTimeout(this.mmRebuildTimer);
+      this.mmRebuildTimer = null;
+    }
   }
 
-  attributeChangedCallback(): void {
+  attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null): void {
+    if (name === 'fullscreen' && oldValue !== newValue) this.applyFullscreen(newValue !== null);
+    if (name === 'no-minimap' && oldValue !== newValue) this.resizeBackingStore(); // strip visibility re-evaluates there
     this.syncChrome();
     this.invalidate();
+  }
+
+  // -- Fullscreen (viewport-fill) ---------------------------------------------------
+
+  /**
+   * Viewport-fill mode (NOT the Fullscreen API — deliberately: no
+   * permission prompt, no browser chrome transition, plain CSS): the host
+   * gets the reflected boolean `fullscreen` attribute and
+   * :host([fullscreen]) pins it position:fixed over the whole viewport;
+   * the existing ResizeObserver → resizeBackingStore path re-derives
+   * everything (layout, clustering, DPR backing store — which stays
+   * capped at MAX_DPR: fullscreen must not step off the perf cliff the
+   * cap exists for). Toggled by the corner button, this property, or the
+   * attribute; Escape exits; 'fullscreenchange' fires on every change.
+   */
+  get fullscreen(): boolean {
+    return this.hasAttribute('fullscreen');
+  }
+  set fullscreen(v: boolean) {
+    this.toggleAttribute('fullscreen', v === true);
+  }
+
+  /** The fullscreen side effects (scroll lock, resize, focus, event) — attribute-change driven. */
+  private applyFullscreen(on: boolean): void {
+    this.syncScrollLock();
+    if (this.connected) {
+      // Synchronous re-back: the fixed/inset styles apply on the next
+      // layout read, so resizing here avoids a one-frame stale-size flash
+      // (the ResizeObserver still confirms asynchronously).
+      this.resizeBackingStore();
+      this.focus({ preventScroll: true }); // keyboard nav (arrows, Esc) works immediately
+    }
+    this.dispatchEvent(new CustomEvent('fullscreenchange', { detail: { fullscreen: on } }));
+  }
+
+  /**
+   * Page scroll lock: held exactly while CONNECTED && fullscreen. The
+   * page behind a viewport-filling chart must not scroll (or scroll-chain
+   * from unconsumed wheel deltas). Entering fullscreen collapses the
+   * host's slot in the page AND hides the root's overflow — both of which
+   * reset/clamp the viewport scroll offset — so the pre-lock offset (the
+   * scroll listener's snapshot) is restored on unlock: the page is
+   * exactly where the user left it when fullscreen exits.
+   */
+  private syncScrollLock(): void {
+    const want = this.isConnected && this.hasAttribute('fullscreen');
+    if (want === this.fsLocked) return;
+    const root = document.documentElement;
+    if (want) {
+      this.fsPrevOverflow = root.style.overflow;
+      root.style.overflow = 'hidden';
+      this.fsLocked = true; // before any clamp-induced scroll event, so the snapshot stays pre-lock
+    } else {
+      root.style.overflow = this.fsPrevOverflow;
+      this.fsPrevOverflow = '';
+      this.fsLocked = false;
+      window.scrollTo(this.fsSeenScrollX, this.fsSeenScrollY);
+    }
+  }
+
+  /** Passive pre-lock scroll snapshot (see fsSeenScrollX) — frozen while locked. */
+  private onWinScroll = (): void => {
+    if (!this.fsLocked) {
+      this.fsSeenScrollX = window.scrollX;
+      this.fsSeenScrollY = window.scrollY;
+    }
+  };
+
+  private onDocKeyDown = (e: KeyboardEvent): void => {
+    // Legend first: Escape with the panel open closes the PANEL — inside
+    // fullscreen a second Escape then exits the mode.
+    if (e.key === 'Escape' && this.legendOpen) {
+      e.preventDefault();
+      this.closeLegend();
+      return;
+    }
+    if (e.key === 'Escape' && this.fullscreen) {
+      e.preventDefault();
+      this.fullscreen = false;
+    }
+  };
+
+  // -- Legend ------------------------------------------------------------------------
+
+  /**
+   * Consumer-supplied legend rows, appended under the component-owned
+   * vocabulary in the "?" panel — the additive hook for glyphs a consumer
+   * composes into its LABELS (queue-position badges, holder counts, …),
+   * which the component draws but cannot explain. Entries are copied on
+   * set; malformed values are dropped; an open panel re-renders at once.
+   */
+  get legendEntries(): TimelineLegendEntry[] {
+    return this.userLegend.map((e) => ({ ...e }));
+  }
+  set legendEntries(v: TimelineLegendEntry[]) {
+    this.userLegend = Array.isArray(v)
+      ? v
+          .filter((e) => e !== null && typeof e === 'object' && typeof e.glyph === 'string' && typeof e.text === 'string')
+          .map((e) => ({ glyph: e.glyph, text: e.text }))
+      : [];
+    if (this.legendOpen) this.buildLegendPanel();
+  }
+
+  private toggleLegend(): void {
+    if (this.legendOpen) {
+      this.closeLegend();
+      return;
+    }
+    this.buildLegendPanel();
+    this.legendOpen = true;
+    this.legendPanelEl.hidden = false;
+    this.legendEl.setAttribute('aria-expanded', 'true');
+  }
+
+  private closeLegend(): void {
+    if (!this.legendOpen) return;
+    this.legendOpen = false;
+    this.legendPanelEl.hidden = true;
+    this.legendEl.setAttribute('aria-expanded', 'false');
+  }
+
+  /** (Re)build the panel rows — only ever runs on open / live entry swap. */
+  private buildLegendPanel(): void {
+    const p = this.legendPanelEl;
+    p.textContent = '';
+    const title = document.createElement('div');
+    title.className = 'lg-title';
+    title.textContent = 'legend';
+    p.append(title);
+    for (const row of LEGEND_ROWS) p.append(this.legendRow(row.swatch, null, row.text));
+    if (this.userLegend.length > 0) {
+      const sep = document.createElement('div');
+      sep.className = 'lg-sep';
+      p.append(sep);
+      for (const e of this.userLegend) p.append(this.legendRow('lg-glyph', e.glyph, e.text));
+    }
+  }
+
+  private legendRow(swatchClass: string, glyph: string | null, text: string): HTMLDivElement {
+    const row = document.createElement('div');
+    row.className = 'lg-row';
+    const sw = document.createElement('span');
+    sw.className = `lg-swatch ${swatchClass}`;
+    if (glyph !== null) sw.textContent = glyph; // textContent only — glyphs can't inject markup
+    const tx = document.createElement('span');
+    tx.className = 'lg-text';
+    tx.textContent = text;
+    row.append(sw, tx);
+    return row;
   }
 
   // -- Public API: data --------------------------------------------------------
@@ -512,6 +1047,10 @@ export class TimelineViewElement extends HTMLElement {
     this.markers = [];
     this.coverage = new CoverageTracker();
     this.loadTick++;
+    // A full replace invalidates every mark the minimap density texture
+    // baked — the incremental queue only covers additions.
+    this.mmTexDirty = true;
+    this.mmPendingNew.length = 0;
     this.mergeData(data);
   }
 
@@ -615,12 +1154,18 @@ export class TimelineViewElement extends HTMLElement {
     this.perLane = [];
     this.connectors = [];
     this.markers = markers;
+    // Lane replacement can renumber every row — the baked marks are stale.
+    this.mmTexDirty = true;
+    this.mmPendingNew.length = 0;
     this.mergeData({ lanes, intervals: kept, connectors });
   }
 
   setIntervals(intervals: TimelineInterval[]): void {
     this.byId.clear();
     this.perLane = this.lanes.map(() => []);
+    // Full interval replace — the baked density marks are all stale.
+    this.mmTexDirty = true;
+    this.mmPendingNew.length = 0;
     for (const iv of intervals) this.ingestInterval(iv);
     this.rebuild();
   }
@@ -712,6 +1257,10 @@ export class TimelineViewElement extends HTMLElement {
     const s = toMs(start);
     const e = toMs(end);
     if (!Number.isFinite(s) || !Number.isFinite(e) || !(e > s)) return;
+    // A consumer-chosen window beats the aspect default from here on
+    // (applyUserView latches too — this is the explicit belt for the one
+    // programmatic path consumers call directly).
+    this.viewTouched = true;
     const span = Math.min(Math.max(e - s, MIN_SPAN_MS), MAX_SPAN_MS);
     this.applyUserView({ start: s, end: s + span }, { jump: true });
   }
@@ -781,14 +1330,41 @@ export class TimelineViewElement extends HTMLElement {
         ? iv.segments.map((s) => ({ start: toMs(s.start), end: s.end == null ? null : toMs(s.end), kind: s.kind }))
         : null,
       track: 0,
+      clustered: false,
     };
     const prev = this.byId.get(iv.id);
     if (prev) {
       const arr = this.perLane[prev.laneIdx];
       arr.splice(arr.indexOf(prev), 1);
+      // Replacing an already-TERMINATED interval can rewrite a mark the
+      // minimap density texture already baked — stale pixels only a full
+      // repaint can clear. (An ongoing→terminated transition is the
+      // normal live flow and is NOT dirtying: the ongoing version was
+      // never baked, the terminated one queues below.)
+      if (prev.end !== null) this.mmTexDirty = true;
     }
     this.byId.set(iv.id, n);
     this.perLane[laneIdx].push(n);
+    // Incremental cull/extent metadata (grow-only here — rebuild() runs
+    // right after every ingest batch and recomputes exactly, shrinking
+    // included; a transiently too-large bound only costs a few loop
+    // iterations, never correctness).
+    if (n.end !== null) {
+      if (n.end > this.mmLatestEnd) this.mmLatestEnd = n.end;
+      const dur = n.end - n.start;
+      if (!(this.laneMaxDur[laneIdx] >= dur)) this.laneMaxDur[laneIdx] = dur;
+      // Right-edge sliver for the density texture. Bounded: past the cap
+      // (a hidden strip never drains the queue, or a giant setData) the
+      // queue folds into one full-rebuild flag instead of growing.
+      if (this.mmPendingNew.length >= 4096) {
+        this.mmPendingNew.length = 0;
+        this.mmTexDirty = true;
+      } else {
+        this.mmPendingNew.push(n);
+      }
+    } else if (!(this.laneOngoingStart[laneIdx] <= n.start)) {
+      this.laneOngoingStart[laneIdx] = n.start;
+    }
   }
 
   /**
@@ -797,13 +1373,73 @@ export class TimelineViewElement extends HTMLElement {
    * historical parallelism burst stops padding its lane once off-screen.
    */
   private rebuild(): void {
+    // Re-sort only lanes that actually fell out of (start, id) order: a
+    // live merge APPENDS near-now intervals, leaving most lanes already
+    // sorted — the O(n) plain-compare check replaces an O(n log n)
+    // comparator sort per lane per merge (the 5s merge spike).
     for (const per of this.perLane) {
-      per.sort((a, b) => a.start - b.start || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      let sorted = true;
+      for (let i = 1; i < per.length; i++) {
+        const a = per[i - 1];
+        const b = per[i];
+        if (a.start > b.start || (a.start === b.start && a.id > b.id)) {
+          sorted = false;
+          break;
+        }
+      }
+      if (!sorted) per.sort((a, b) => a.start - b.start || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    }
+    // Exact recompute of the cull/extent metadata the ingest path grew
+    // incrementally (this pass also SHRINKS after replaces): per-lane max
+    // terminated duration + earliest ongoing start (the drawIntervals
+    // lower-bound cull), the global latest end (the minimap extent's data
+    // end — the retired per-frame O(N) mmExtent scan), and the flat
+    // ongoing list the minimap live-draws over its density texture. One
+    // O(N) pass per DATA CHANGE, next to the O(N log N) re-sort that
+    // already runs here — never per frame.
+    {
+      const laneN = this.perLane.length;
+      this.laneMaxDur.length = laneN;
+      this.laneOngoingStart.length = laneN;
+      this.mmOngoing.length = 0;
+      let latest = -Infinity;
+      for (let li = 0; li < laneN; li++) {
+        const per = this.perLane[li];
+        let maxDur = 0;
+        let ongoing = Infinity;
+        for (let i = 0; i < per.length; i++) {
+          const n = per[i];
+          if (n.end === null) {
+            if (n.start < ongoing) ongoing = n.start;
+            this.mmOngoing.push(n);
+          } else {
+            const dur = n.end - n.start;
+            if (dur > maxDur) maxDur = dur;
+            if (n.end > latest) latest = n.end;
+          }
+        }
+        this.laneMaxDur[li] = maxDur;
+        this.laneOngoingStart[li] = ongoing;
+      }
+      this.mmLatestEnd = latest;
+    }
+    // Row memory follows its lane's lifetime: allocators for lanes that
+    // no longer exist are dropped; surviving lanes keep theirs (so a full
+    // setData resync leaves on-screen rows exactly where they were).
+    for (const key of [...this.allocators.keys()]) {
+      if (!this.laneIdxById.has(key)) this.allocators.delete(key);
     }
     this.packEpoch++;
     this.updateVisibleLayout();
     this.autoGutter();
     this.clampLaneScroll();
+    // The minimap shows iff data exists; only the emptiness EDGE re-runs
+    // the (layout-forcing) resize — steady-state merges never touch it.
+    const hasData = this.byId.size > 0;
+    if (hasData !== this.hadData) {
+      this.hadData = hasData;
+      this.resizeBackingStore();
+    }
     this.syncChrome();
     this.invalidate();
   }
@@ -811,38 +1447,66 @@ export class TimelineViewElement extends HTMLElement {
   /**
    * Track assignment + lane heights from the intervals intersecting the
    * CURRENT viewport (partial overlap counts; a lane with nothing visible
-   * collapses to one track). Deterministic given the visible data — a
-   * merely-translating viewport over unchanged overlap recomputes to the
-   * identical result, so nothing jitters frame to frame. Auto-fit then
-   * demotes lanes to the compact track height until the stack fits the
-   * host (computeAutoFit — tallest lanes first, hysteretic promotion, a
-   * pure function of the visible counts + host height, so it shares the
-   * same stability guarantee). Count AND height CHANGES ease over
-   * LAYOUT_TWEEN_MS (snapped under prefers-reduced-motion). this.layout
-   * always reflects the CURRENT (possibly animating) heights, and
-   * hit-testing shares it (rectFor reads displayHeights), so hovers stay
-   * aligned mid-tween.
+   * collapses to one track). Rows are STICKY (TrackAllocator, one per
+   * lane): a visible interval keeps its track while it stays on screen —
+   * visible-membership churn during pans/live updates never reflows the
+   * rows being watched — a returning interval remembers its old track,
+   * and new arrivals take the lowest conflict-free one, so lane height
+   * recovers from the bottom once a tall burst scrolls away. Auto-fit
+   * then demotes lanes to the compact track height until the stack fits
+   * the host (computeAutoFit — tallest lanes first, hysteretic promotion,
+   * a pure function of the visible counts + host height). Count AND
+   * height CHANGES ease over LAYOUT_TWEEN_MS (snapped under
+   * prefers-reduced-motion). this.layout always reflects the CURRENT
+   * (possibly animating) heights, and hit-testing shares it (rectFor
+   * reads displayHeights), so hovers stay aligned mid-tween.
    */
   private updateVisibleLayout(): void {
     const rv = this.renderView();
     const m = this.metrics();
+    const plotW = this.plotWidth();
+    const span = rv.end - rv.start;
+    const spanKey = spanBucket(span);
     const structure = this.targetCounts.length !== this.perLane.length;
     let changed = false;
-    if (this.packedEpoch !== this.packEpoch || this.packedStart !== rv.start || this.packedEnd !== rv.end || structure) {
-      this.packedEpoch = this.packEpoch;
-      this.packedStart = rv.start;
-      this.packedEnd = rv.end;
+    // CLUSTERING — position-independent (proven: membership is a function
+    // of (data, span, plotW) only), so pure pans and the follow pin never
+    // re-cluster. Zooming crosses span buckets and re-clusters at once.
+    const needCluster =
+      this.clusteredEpoch !== this.packEpoch || this.clusteredSpanKey !== spanKey || this.clusteredPlotW !== plotW || structure;
+    if (needCluster) {
+      // A pure zoom/resize re-cluster sees the exact objects of the last
+      // pass — clusterLane's membership-identical fast path may reuse its
+      // derived structures. A data change (epoch moved) always rebuilds.
+      const sameData = this.clusteredEpoch === this.packEpoch && !structure;
+      this.clusteredEpoch = this.packEpoch;
+      this.clusteredSpanKey = spanKey;
+      this.clusteredPlotW = plotW;
+      this.laneClusters.length = this.perLane.length;
+      this.lanePackItems.length = this.perLane.length;
+      this.lanePackTargets.length = this.perLane.length;
+      this.laneUnclustered.length = this.perLane.length;
+      for (let i = 0; i < this.perLane.length; i++) this.clusterLane(i, rv, plotW, sameData);
+    }
+    // TRACK ASSIGNMENT — re-runs with the clustering, and additionally
+    // once the window start has drifted a quantum since the last pass.
+    const needAssign =
+      needCluster ||
+      this.assignedEpoch !== this.packEpoch ||
+      this.assignedSpanKey !== spanKey ||
+      this.assignedPlotW !== plotW ||
+      !(Math.abs(rv.start - this.assignedStart) < span * ASSIGN_QUANTUM_FRAC);
+    if (needAssign) {
+      this.assignedEpoch = this.packEpoch;
+      this.assignedSpanKey = spanKey;
+      this.assignedPlotW = plotW;
+      this.assignedStart = rv.start;
       const prev = this.targetCounts;
       const next = new Array<number>(this.perLane.length);
       changed = structure;
       for (let i = 0; i < this.perLane.length; i++) {
-        const per = this.perLane[i];
-        const { tracks, trackCount } = packVisibleTracks(per, rv);
-        for (let j = 0; j < per.length; j++) {
-          if (tracks[j] >= 0) per[j].track = tracks[j];
-        }
-        next[i] = trackCount;
-        if (!changed && prev[i] !== trackCount) changed = true;
+        next[i] = this.assignLane(i, rv);
+        if (!changed && prev[i] !== next[i]) changed = true;
       }
       this.targetCounts = next;
     }
@@ -905,8 +1569,136 @@ export class TimelineViewElement extends HTMLElement {
     this.layout = layoutLanes(this.displayCounts, m, this.displayHeights);
   }
 
+  /** The lane's sticky row allocator (created on first use; pruned with its lane in rebuild). */
+  private allocatorFor(laneId: string): TrackAllocator {
+    let alloc = this.allocators.get(laneId);
+    if (!alloc) {
+      alloc = new TrackAllocator();
+      this.allocators.set(laneId, alloc);
+    }
+    return alloc;
+  }
+
+  /**
+   * Cluster one lane at the current scale (the position-independent half
+   * of the old packLane). Instant markers that visually overlap at this
+   * scale merge into clusters (clusterInstants — component-native and
+   * scale-aware, so zooming in splits them); each cluster becomes ONE
+   * pack slot spanning its member extent, which is what keeps a burst of
+   * coincident instants from blowing up the lane height. The lane's pack
+   * inputs (items + write-back targets) are cached for the assignment
+   * passes that run between re-clusterings.
+   */
+  private clusterLane(laneIdx: number, rv: TimeView, plotW: number, sameData: boolean): void {
+    const per = this.perLane[laneIdx];
+    const lane = this.lanes[laneIdx];
+    const { clusters, memberOf } = clusterInstants(per, rv, plotW);
+    // Membership-identical fast path — pure ZOOM/RESIZE re-clusters only
+    // (`sameData`: the pack epoch is unchanged, so `per` holds exactly the
+    // objects the previous pass saw; a data change always rebuilds). Most
+    // zoom bucket steps change NO lane's membership, and a cluster is a
+    // CONTIGUOUS run of the sorted instant order, so (count, first, last)
+    // member-reference identity proves the whole membership matches — then
+    // every derived structure (NCluster objects, pack items/targets, the
+    // unclustered list, per-item clustered flags) is already exactly
+    // right and the rebuild below is skipped wholesale.
+    if (sameData) {
+      const prev = this.laneClusters[laneIdx];
+      if (prev !== undefined && prev.length === clusters.length && this.lanePackItems[laneIdx] !== undefined && this.laneUnclustered[laneIdx] !== undefined) {
+        let same = true;
+        for (let k = 0; k < clusters.length; k++) {
+          const idx = clusters[k].indices;
+          const pm = prev[k].members;
+          if (pm.length !== idx.length || pm[0] !== per[idx[0]] || pm[pm.length - 1] !== per[idx[idx.length - 1]]) {
+            same = false;
+            break;
+          }
+        }
+        if (same) return;
+      }
+    }
+    const ncs: NCluster[] = new Array(clusters.length);
+    for (let ci = 0; ci < clusters.length; ci++) {
+      const c = clusters[ci];
+      const members = new Array<NInterval>(c.indices.length);
+      for (let k = 0; k < c.indices.length; k++) members[k] = per[c.indices[k]];
+      const keys = this.clusterKeys(members, lane);
+      ncs[ci] = { id: `cluster:${members[0].id}`, laneIdx, extent: c.extent, members, catKey: keys.catKey, state: keys.state, track: -1 };
+    }
+    const items: PackItem[] = [];
+    const targets: { track: number }[] = [];
+    const unclustered: NInterval[] = [];
+    for (let j = 0; j < per.length; j++) {
+      per[j].clustered = memberOf[j] >= 0;
+      if (memberOf[j] >= 0) continue;
+      items.push(per[j]);
+      targets.push(per[j]);
+      unclustered.push(per[j]);
+    }
+    for (let k = 0; k < ncs.length; k++) {
+      const nc = ncs[k];
+      items.push({ id: nc.id, start: nc.extent.start, end: nc.extent.end });
+      targets.push(nc);
+    }
+    this.laneClusters[laneIdx] = ncs;
+    this.lanePackItems[laneIdx] = items;
+    this.lanePackTargets[laneIdx] = targets;
+    this.laneUnclustered[laneIdx] = unclustered;
+  }
+
+  /**
+   * Row one lane for the current window from its cached pack inputs;
+   * returns its visible track count. Rows come from the lane's sticky
+   * TrackAllocator; a cluster's packing identity is its FIRST member's
+   * id, stable while membership is (pure pans never change membership),
+   * so a cluster's row doesn't hop frame to frame. Members ride their
+   * cluster's row — hit rects and connector endpoints anchored on a
+   * member resolve to the cluster's position.
+   */
+  private assignLane(laneIdx: number, rv: TimeView): number {
+    const lane = this.lanes[laneIdx];
+    const items = this.lanePackItems[laneIdx];
+    const targets = this.lanePackTargets[laneIdx];
+    const { tracks, trackCount } = this.allocatorFor(lane.id).assign(items, rv);
+    for (let k = 0; k < tracks.length; k++) {
+      if (tracks[k] >= 0) targets[k].track = tracks[k];
+    }
+    const ncs = this.laneClusters[laneIdx];
+    for (let k = 0; k < ncs.length; k++) {
+      const nc = ncs[k];
+      if (nc.track >= 0) {
+        const members = nc.members;
+        for (let mi = 0; mi < members.length; mi++) members[mi].track = nc.track;
+      }
+    }
+    return trackCount;
+  }
+
+  /**
+   * A cluster's styling keys: the members' shared state/category where
+   * uniform (an all-skipped cluster stays skip-flavored), else the
+   * neutral fallbacks — '' (the default treatment) for mixed states, the
+   * lane's own color for mixed categories.
+   */
+  private clusterKeys(members: readonly NInterval[], lane: TimelineLane): { catKey: string; state: string } {
+    const laneCat = lane.group ?? lane.id;
+    let state = members[0]?.state ?? '';
+    let catKey = members[0]?.catKey ?? laneCat;
+    for (let i = 0; i < members.length; i++) {
+      const member = members[i];
+      if (member.state !== state) state = '';
+      if (member.catKey !== catKey) catKey = laneCat;
+    }
+    return { catKey, state };
+  }
+
+  // Cached — theme-derived constants, refreshed by readTheme(). metrics()
+  // sits inside rectForInto on the per-bar draw path: allocating a fresh
+  // object per call was ~thousands of allocations per drawn frame.
+  private metricsCache = { trackHeight: THEME_DEFAULTS.trackHeight, trackGap: 2, lanePad: 3 };
+
   private metrics(): { trackHeight: number; trackGap: number; lanePad: number } {
-    return { trackHeight: this.theme.trackHeight, trackGap: 2, lanePad: 3 };
+    return this.metricsCache;
   }
 
   /** Effective compact track height: the themed value, never above the normal height. */
@@ -988,7 +1780,14 @@ export class TimelineViewElement extends HTMLElement {
 
   /** Current pacing tier: any live gesture/tween = full rate; else idle (AC/battery). */
   private renderTier(): RenderTier {
-    if (this.pointers.size > 0 || this.glidePx !== 0 || this.layoutAnim !== null || this.leadAnim !== null || this.edgeAnim !== null)
+    if (
+      this.pointers.size > 0 ||
+      this.mmDrag !== null ||
+      this.glidePx !== 0 ||
+      this.layoutAnim !== null ||
+      this.leadAnim !== null ||
+      this.edgeAnim !== null
+    )
       return 'interactive';
     if (this.perfNow() - this.lastInputTs < INTERACT_GRACE_MS) return 'interactive';
     return this.batteryDischarging ? 'idle-battery' : 'idle';
@@ -1135,10 +1934,20 @@ export class TimelineViewElement extends HTMLElement {
    * count as "at the stop"); the view actually applied hard-stops at now
    * (clampViewToNow), so every input path — wheel, drag, pinch, keyboard,
    * setViewport — parks exactly at the end stop, which is what makes the
-   * tiny re-engage zone reliably hittable. Interactive gestures keep the
-   * pin while following (zooming at the live edge stays live); a
-   * programmatic setViewport (`jump`) is exempt from that — it lands
-   * where it says, engaging follow only inside the snap zone.
+   * tiny re-engage zone reliably hittable. Non-zoom interactive gestures
+   * keep the pin while following (a forward pan at the stop stays live);
+   * ZOOMS (`zoom`) and programmatic setViewport (`jump`) are exempt.
+   * Zooms because the ANCHOR must win during the gesture: while pinned,
+   * the pin used to rebuild the view from `now` keeping only the zoomed
+   * SPAN, so wheel/pinch zoom anchored at the now marker instead of the
+   * cursor — a zoom instead re-earns follow like a fresh gesture (it
+   * keeps following only when its right edge stays inside the snap zone,
+   * so zooming AT the live edge stays live; anywhere else it parks with
+   * the timestamp under the cursor still under the cursor, and follow
+   * may re-dock magnetically on a later gesture). One asymmetry is
+   * deliberate: a zoom-OUT at the live edge still can't show the future —
+   * the end stop caps it right-anchored, exactly like a parked zoom-out
+   * at the stop.
    *
    * The FOLLOW LEAD is eased, never assigned: engaging keeps the view
    * exactly where the gesture parked it and the per-tick pin glides end
@@ -1148,12 +1957,16 @@ export class TimelineViewElement extends HTMLElement {
    * end to now in the same frame — the two single-frame ~2%-of-plot-width
    * teleports this replaced. Reduced motion snaps both.
    */
-  private applyUserView(next: TimeView, opts?: { pan?: boolean; jump?: boolean }): void {
+  private applyUserView(next: TimeView, opts?: { pan?: boolean; jump?: boolean; zoom?: boolean }): void {
+    // Every user gesture (wheel, glide, drag, pinch, keyboard, minimap)
+    // and programmatic setViewport funnels through here — the window is
+    // now CHOSEN, so the aspect-derived default span stops applying.
+    this.viewTouched = true;
     const span = next.end - next.start;
     const now = this.liveEdge(); // stale mode: gestures clamp/dock at the FROZEN edge
     const wasFollowing = this.following;
     const msPerDevPx = span / (this.plotWidth() * this.dpr);
-    const stayPinned = wasFollowing && opts?.jump !== true;
+    const stayPinned = wasFollowing && opts?.jump !== true && opts?.zoom !== true;
     this.following = followAfterGesture(stayPinned, this.view.end, next, now, opts?.pan === true, msPerDevPx);
     if (this.following) {
       // ENGAGE (or a jump landing in the snap zone) seeds the lead ease
@@ -1230,6 +2043,14 @@ export class TimelineViewElement extends HTMLElement {
 
   private syncChrome(): void {
     this.pillEl.hidden = this.following || this.hasAttribute('no-live-pill');
+    this.legendEl.hidden = this.hasAttribute('no-legend');
+    if (this.legendEl.hidden) this.closeLegend();
+    const fs = this.fullscreen;
+    this.fsEl.hidden = this.hasAttribute('no-fullscreen-button');
+    this.fsEl.textContent = fs ? '⤡' : '⤢';
+    this.fsEl.title = fs ? 'exit fullscreen (Esc)' : 'fullscreen';
+    this.fsEl.setAttribute('aria-pressed', fs ? 'true' : 'false');
+    this.fsEl.setAttribute('aria-label', fs ? 'exit fullscreen' : 'fullscreen');
     const empty = this.lanes.length === 0 && this.byId.size === 0;
     this.emptyEl.hidden = !empty;
     if (empty) {
@@ -1244,20 +2065,45 @@ export class TimelineViewElement extends HTMLElement {
     this.schedule();
   }
 
-  /** True while something time-based needs continuous frames. */
+  /**
+   * True while something time-based needs frames at all (tween- or
+   * clock-driven). ALL motion renders on the ONE rAF loop — while this
+   * holds, the loop stays armed; when it returns false the loop disarms
+   * and the chart draws nothing until the next invalidate().
+   */
   private animating(): boolean {
+    return this.tweening() || this.clockAnimating();
+  }
+
+  /**
+   * Short-lived eased transitions (zoom glide, layout/lead/edge tweens)
+   * plus async-history churn — rendered at the plain tier rate, exactly
+   * the pre-existing pacing.
+   */
+  private tweening(): boolean {
     if (this.glidePx !== 0 || this.layoutAnim !== null || this.leadAnim !== null || this.edgeAnim !== null) return true;
-    // While STALE the followed view is frozen at the dead feed's edge —
-    // nothing moves, so no continuous frames (the watchdog interval keeps
-    // the note's counter alive and notices recovery).
-    if (this.following && !this.feedStale) return true;
     // In-flight history loads AND failed ones waiting out the fixed retry
     // cadence both need frames — without the latter, a rejected loadRange in
     // a paused historical view would park silently until the next input
     // instead of retrying every ~2s.
-    if (this.loadRangeFn && (this.coverage.pending() || this.coverage.waitingRetry(this.nowMs()))) return true;
+    return this.loadRangeFn !== null && Boolean(this.coverage.pending() || this.coverage.waitingRetry(this.nowMs()));
+  }
+
+  /**
+   * CLOCK-driven animation: the follow-now scroll and visible ongoing-bar
+   * growth/pulse. These advance with the wall clock — one device pixel
+   * per span/(plotW*dpr) ms — so while they are the ONLY motion, the rAF
+   * loop keeps running but skips down to that per-pixel rate: effective
+   * fps = min(tier fps, device px per second), delivered as evenly spaced
+   * rAF frames (see onFrame's clockDrawDue grid), never timer wakes.
+   */
+  private clockAnimating(): boolean {
+    // While STALE the followed view is frozen at the dead feed's edge —
+    // nothing moves, so no frames (the watchdog interval keeps the note's
+    // counter alive and notices recovery).
+    if (this.following && !this.feedStale) return true;
     if (this.reducedMotion || this.feedStale) return false; // frozen stale bars don't pulse
-    // Ongoing intervals pulse only while their live edge is in view.
+    // Ongoing intervals grow/pulse only while their live edge is in view.
     const now = this.nowMs();
     if (now < this.view.start || this.byId.size === 0) return false;
     for (const per of this.perLane) {
@@ -1279,13 +2125,53 @@ export class TimelineViewElement extends HTMLElement {
   private onFrame = (t: number): void => {
     this.raf = 0;
     // Adaptive pacing: a pure animation frame (nothing dirty) renders only
-    // when the current tier's budget has elapsed — full rate while
-    // interacting, ~30fps idle, ~10fps idle on battery. Dirty frames
-    // (fresh data, hover changes) always render immediately.
-    if (!this.dirty && !shouldRender(t, this.lastRenderTs, frameBudgetMs(this.renderTier()))) {
-      if (this.animating()) this.schedule();
-      else this.lastFrame = 0;
-      return;
+    // when its draw budget has elapsed. The budget is the tier's — full
+    // rate while interacting, ~30fps idle, ~10fps idle on battery — and,
+    // while the ONLY motion is clock-driven (follow scroll, ongoing
+    // bars), it widens to the view's per-device-pixel period
+    // (clockDrawBudgetMs): effective fps = min(tier fps, device px/sec),
+    // skipping only frames that would be pixel-identical. All delivery is
+    // ON the rAF loop by skipping ticks — never a timer, so motion stays
+    // frame-aligned and smooth. Dirty frames (fresh data, hover changes)
+    // always render immediately.
+    if (!this.dirty) {
+      const tierBudget = frameBudgetMs(this.renderTier());
+      const budget = this.tweening() ? tierBudget : clockDrawBudgetMs(this.view, this.plotWidth(), this.dpr, tierBudget);
+      if (budget > tierBudget) {
+        // Clock-only motion slower than the tier rate: gate on the even
+        // due-time grid. The due advances by whole budgets from its own
+        // previous value (remainder carried, never re-anchored to the
+        // actual draw time), so intervals stay even frame-aligned
+        // multiples of the budget instead of jittering or drifting.
+        if (this.clockDrawDue === 0) this.clockDrawDue = this.lastRenderTs > 0 ? this.lastRenderTs + budget : t;
+        // Budget shrank mid-grid (zoom-in without a tween): a stale due
+        // must never park the chart more than one current period out.
+        if (this.clockDrawDue > t + budget) this.clockDrawDue = t + budget;
+        // Draw on the first rAF at/past the due point (same half-tick
+        // slack as the tier gate, via shouldRender's aliasing rule).
+        if (!shouldRender(t, this.clockDrawDue - budget, budget)) {
+          if (this.animating()) this.schedule();
+          else {
+            this.lastFrame = 0;
+            this.clockDrawDue = 0;
+          }
+          return;
+        }
+        this.clockDrawDue += budget;
+        // Stalled past a whole period (hidden tab, long main-thread
+        // block): re-anchor forward — one fresh frame now, no burst of
+        // catch-up draws.
+        if (this.clockDrawDue <= t) this.clockDrawDue = t + budget;
+      } else {
+        // Tier-paced (tweens/interaction, or the px rate meets the tier
+        // rate): the pre-existing pacing, unchanged.
+        this.clockDrawDue = 0;
+        if (!shouldRender(t, this.lastRenderTs, budget)) {
+          if (this.animating()) this.schedule();
+          else this.lastFrame = 0;
+          return;
+        }
+      }
     }
     const dt = this.lastFrame > 0 ? Math.min(100, t - this.lastFrame) : 16;
     this.lastFrame = t;
@@ -1301,7 +2187,10 @@ export class TimelineViewElement extends HTMLElement {
       this.draw();
     }
     if (this.animating()) this.schedule();
-    else this.lastFrame = 0;
+    else {
+      this.lastFrame = 0;
+      this.clockDrawDue = 0;
+    }
   };
 
   private onVisibility = (): void => {
@@ -1348,18 +2237,76 @@ export class TimelineViewElement extends HTMLElement {
 
   private resizeBackingStore(): void {
     const raw = typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1;
-    const dpr = Math.min(2, raw);
+    const dpr = Math.min(MAX_DPR, raw);
+    const hostH = this.clientHeight;
+    // Minimap visibility is decided here — the one place that already
+    // owns geometry: data must exist, the host must not be opted out or
+    // too short. While visible, the PLOT canvas cedes the strip's band
+    // (cssW/cssH describe the plot canvas only, so every downstream
+    // computation — lane packing, auto-fit, tooltip clamps, hit tests —
+    // stays consistent without knowing the strip exists). The corner
+    // chrome (fullscreen toggle, live pill, "?" legend pill + panel)
+    // rides up above the band via the stylesheet's
+    // `canvas.minimap:not([hidden]) ~ …` lift rules — ALL of it together,
+    // never from here: a partial inline lift once parked the ⤢ toggle
+    // under the statically-positioned legend pill.
+    const wantMM = !this.hasAttribute('no-minimap') && this.byId.size > 0 && hostH >= MINIMAP_MIN_HOST_PX;
+    if (wantMM !== this.mmVisible) {
+      this.mmVisible = wantMM;
+      this.mmCanvas.hidden = !wantMM;
+      this.canvas.style.height = wantMM ? `calc(100% - ${MINIMAP_H}px)` : '';
+    }
     const bw = Math.max(1, Math.round(this.clientWidth * dpr));
-    const bh = Math.max(1, Math.round(this.clientHeight * dpr));
-    if (bw === this.canvas.width && bh === this.canvas.height && dpr === this.dpr) return;
+    const bh = Math.max(1, Math.round(Math.max(1, hostH - (wantMM ? MINIMAP_H : 0)) * dpr));
+    const mmBh = Math.max(1, Math.round(MINIMAP_H * dpr));
+    const mmStale = wantMM && (this.mmCanvas.width !== bw || this.mmCanvas.height !== mmBh);
+    if (bw === this.canvas.width && bh === this.canvas.height && dpr === this.dpr && !mmStale) return;
     this.canvas.width = bw;
     this.canvas.height = bh;
+    if (wantMM) {
+      this.mmCanvas.width = bw;
+      this.mmCanvas.height = mmBh;
+    }
     this.dpr = dpr;
     this.cssW = bw / dpr;
     this.cssH = bh / dpr;
+    // Aspect-scaled DEFAULT zoom: until the first user gesture or
+    // programmatic setViewport (viewTouched), the visible span derives
+    // from the HOST box's aspect ratio — 3 min at 16:9, scaled linearly
+    // (defaultSpanForAspect, clamped) — re-derived on every real resize
+    // with the view END anchored. The host box (container aspect) on
+    // purpose, not the plot box: the default must not couple to gutter
+    // auto-sizing or minimap visibility. A chosen window is never
+    // overridden — this block stops running forever once touched.
+    if (!this.viewTouched) {
+      const hostW = this.clientWidth;
+      if (hostW > 0 && hostH > 0) {
+        const span = defaultSpanForAspect(hostW, hostH);
+        if (span !== this.view.end - this.view.start) {
+          this.view = { start: this.view.end - span, end: this.view.end };
+        }
+      }
+    }
     this.readTheme();
     this.clampLaneScroll();
     this.invalidate();
+  }
+
+  /**
+   * The 2d context — OPAQUE (alpha: false) on purpose: the chart paints
+   * its own background every frame, and an opaque canvas lets the engine
+   * use subpixel text antialiasing (alpha canvases get grayscale-only) — a
+   * real legibility win at 10-11px. Consequence: --timeline-bg must be an
+   * opaque color (a translucent bg would composite on black, not on the
+   * host).
+   */
+  private ctx2d(): CanvasRenderingContext2D | null {
+    return (this.ctx ??= this.canvas.getContext('2d', { alpha: false }));
+  }
+
+  /** The minimap strip's 2d context — OPAQUE for the same reasons as ctx2d. */
+  private mmCtx2d(): CanvasRenderingContext2D | null {
+    return (this.mmCtx ??= this.mmCanvas.getContext('2d', { alpha: false }));
   }
 
   private readTheme(): void {
@@ -1382,8 +2329,10 @@ export class TimelineViewElement extends HTMLElement {
     t.gutterWidth = readNum(cs, '--timeline-gutter-width', THEME_DEFAULTS.gutterWidth, 0, 400);
     this.fontAxis = `${t.fontSize - 1}px ${t.font}`;
     this.fontBar = `${t.fontSize}px ${t.font}`;
+    this.metricsCache.trackHeight = t.trackHeight;
+    this.labelHalo = labelHaloColor(t.fg);
     this.oklch = typeof CSS !== 'undefined' && !!CSS.supports && CSS.supports('color', 'oklch(0.6 0.1 120)');
-    const ctx = (this.ctx ??= this.canvas.getContext('2d'));
+    const ctx = this.ctx2d();
     if (ctx) {
       ctx.font = this.fontBar;
       const probe = 'abcdefghijklmnop0123456789';
@@ -1391,6 +2340,10 @@ export class TimelineViewElement extends HTMLElement {
     }
     this.colorCache.clear();
     this.patternCache.clear();
+    // Theme colors are baked into the minimap density texture — stamp it
+    // stale (an async rebuild repaints it) and drop the cached fills.
+    this.mmThemeGen++;
+    this.mmDimCache.clear();
     this.layout = layoutLanes(this.displayCounts, this.metrics(), this.displayHeights);
     this.autoGutter();
   }
@@ -1423,24 +2376,52 @@ export class TimelineViewElement extends HTMLElement {
       border = categoryColor(hue, { mode, lightness: clamp(l + 0.14, 0, 0.96), chroma: c, alpha: clamp(alpha + 0.1, 0, 1) });
     }
     const emphasisBorder = st.border?.emphasis === true;
+    const dimmed = st.dimmed === true;
+    const finalBorder = emphasisBorder ? t.emphasis : border;
     const out: ResolvedStyle = {
-      fill,
-      border: emphasisBorder ? t.emphasis : border,
+      // A dimmed region is "one filter over its GEOMETRY": fill and
+      // border through the same dimColor transform. Label text is
+      // deliberately exempt — see labelText().
+      fill: dimmed ? dimColor(fill) : fill,
+      border: dimmed ? dimColor(finalBorder) : finalBorder,
       borderWidth: st.border?.width ?? 1,
       dash: st.border?.dash ?? null,
       pattern: st.pattern ?? 'solid',
       glyph: st.glyph ?? 'none',
-      labelColor: (st.alphaScale ?? 1) < 0.7 ? t.muted : t.fg,
     };
     this.colorCache.set(cacheKey, out);
     return out;
+  }
+
+  /**
+   * Draw label text at GUARANTEED contrast: the full-contrast theme
+   * foreground over a thin counter-color halo (strokeText under the
+   * fill; labelHaloColor picks dark-under-light-fg / light-under-dark-fg
+   * at theme read). Every span-surface label goes through here so
+   * legibility never depends on what happens to be underneath — solid
+   * fill, dimmed section, hatch stripes, a scrim — or on the zoom level
+   * that decides which of those the text lands on. (Labels used to take
+   * a dimmed section's dimColor(fg) — mid-grey — which was unreadable
+   * over the equally-dim fill and flipped with zoom as the anchor
+   * crossed segment boundaries.) Callers set font/textAlign/textBaseline;
+   * lineJoin is restored to the canvas default so border/connector
+   * strokes are untouched.
+   */
+  private labelText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number): void {
+    ctx.strokeStyle = this.labelHalo;
+    ctx.lineWidth = LABEL_HALO_PX;
+    ctx.lineJoin = 'round';
+    ctx.strokeText(text, x, y);
+    ctx.lineJoin = 'miter';
+    ctx.fillStyle = this.theme.fg;
+    ctx.fillText(text, x, y);
   }
 
   private patternFor(kind: 'hatch' | 'stipple', color: string): CanvasPattern | null {
     const key = `${kind}\u0000${color}`;
     const hit = this.patternCache.get(key);
     if (hit) return hit;
-    const size = 7;
+    const size = PATTERN_TILE_PX;
     const dpr = this.dpr;
     const tile = document.createElement('canvas');
     tile.width = size * dpr;
@@ -1476,6 +2457,43 @@ export class TimelineViewElement extends HTMLElement {
     return pattern;
   }
 
+  /**
+   * Phase-anchor a cached pattern to a CONTENT origin — a span's
+   * unclamped start x / track top y, a coverage gap's start — so the tile
+   * grid travels 1:1 with what it fills. createPattern tiles are pinned
+   * to the CANVAS origin by default: under a scrolling/panning viewport
+   * that read as spans sliding over a static hatch behind a stencil
+   * instead of carrying their own texture. Anchoring to the (unclamped)
+   * content origin keeps the phase stable while a span is partially
+   * clipped off-screen AND rides lane scrolling/height changes in y. The
+   * origin folds mod the tile size — identical rendering (a whole-tile
+   * translate is identity), numerically tame for far-off-screen origins —
+   * and non-finite origins fall back to the canvas-anchored default.
+   * setTransform REPLACES the creation-time matrix, so the 1/dpr tile
+   * scale is re-applied here; call before every patterned fill — the
+   * cache shares one CanvasPattern per (kind, color) and the transform is
+   * read at fill time.
+   */
+  /** Reused by anchorPattern — setTransform reads the matrix synchronously, so one mutable instance is safe (and kills a per-patterned-fill allocation). */
+  private patternMatrix = typeof DOMMatrix !== 'undefined' ? new DOMMatrix() : null;
+
+  private anchorPattern(pat: CanvasPattern, ox: number, oy: number): CanvasPattern {
+    const px = ((ox % PATTERN_TILE_PX) + PATTERN_TILE_PX) % PATTERN_TILE_PX;
+    const py = ((oy % PATTERN_TILE_PX) + PATTERN_TILE_PX) % PATTERN_TILE_PX;
+    const m = this.patternMatrix;
+    if (m && Number.isFinite(px) && Number.isFinite(py)) {
+      const s = 1 / this.dpr;
+      m.a = s;
+      m.b = 0;
+      m.c = 0;
+      m.d = s;
+      m.e = px;
+      m.f = py;
+      pat.setTransform?.(m);
+    }
+    return pat;
+  }
+
   // -- Geometry ----------------------------------------------------------------
 
   /**
@@ -1485,15 +2503,26 @@ export class TimelineViewElement extends HTMLElement {
    * hold exact relative offsets while the viewport translates.
    */
   private rectFor(n: NInterval, now: number): HitRect {
+    return this.rectForInto(n, now, { x: 0, y: 0, w: 0, h: 0 });
+  }
+
+  /** rectFor into a caller-owned rect — the draw loop's per-frame path reuses one scratch rect instead of allocating per bar. */
+  private rectForInto(n: NInterval, now: number, out: HitRect): HitRect {
     const w = this.plotWidth();
     const m = this.metrics();
     const rv = this.renderView();
     const th = this.laneTrackHeight(n.laneIdx); // per-lane: compact lanes (and tweens) shrink rect + hit target together
     const xs = this.gutterW + timeToX(n.start, rv, w);
     const xe = this.gutterW + timeToX(n.end ?? now, rv, w);
-    const y = AXIS_H + this.layout.tops[n.laneIdx] - this.laneScroll + trackTop(n.track, m, th);
-    return { x: xs, y, w: Math.max(0, xe - xs), h: th };
+    out.x = xs;
+    out.y = AXIS_H + this.layout.tops[n.laneIdx] - this.laneScroll + trackTop(n.track, m, th);
+    out.w = Math.max(0, xe - xs);
+    out.h = th;
+    return out;
   }
+
+  /** The draw loop's reused rect (drawInterval only — hit tests and connectors keep their own). */
+  private rectScratch: HitRect = { x: 0, y: 0, w: 0, h: 0 };
 
   // -- Hit testing ---------------------------------------------------------------
 
@@ -1522,12 +2551,25 @@ export class TimelineViewElement extends HTMLElement {
         }
       }
     }
-    // Intervals: topmost = last in draw order within the lane.
+    // Intervals: topmost = last in draw order within the lane — which
+    // puts the lane's cluster stack markers (drawn after its bars) first.
     const laneIdx = this.laneAtY(y);
     if (laneIdx >= 0) {
+      const ncs = this.laneClusters[laneIdx];
+      if (ncs) {
+        for (let i = ncs.length - 1; i >= 0; i--) {
+          const p = this.clusterPos(ncs[i]);
+          if (!p) continue;
+          const r = expandHitRect({ x: p.cx - (p.r + 2), y: p.y, w: (p.r + 2) * 2, h: p.th }, HIT_MIN_W);
+          if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+            return { type: 'cluster', intervals: ncs[i].members.map((member) => member.src), lane: this.lanes[laneIdx] };
+          }
+        }
+      }
       const per = this.perLane[laneIdx];
       for (let i = per.length - 1; i >= 0; i--) {
         const n = per[i];
+        if (n.clustered) continue; // represented by its cluster's marker
         if (n.start > this.renderView().end) continue;
         const r = expandHitRect(this.rectFor(n, now), HIT_MIN_W);
         if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
@@ -1570,9 +2612,10 @@ export class TimelineViewElement extends HTMLElement {
   private onWheel = (e: WheelEvent): void => {
     const route = routeWheel(e, this.maxLaneScroll() > 0);
     // Consume (preventDefault) ONLY when some axis actually routed to the
-    // chart. A plain vertical wheel while the lanes don't overflow routes
-    // nowhere — it must reach the page and scroll it normally, never pan
-    // the chart sideways. (The listener stays {passive: false} so
+    // chart. A plain VERTICAL-dominant wheel routes nowhere — regardless
+    // of lane overflow — so it must reach the page and scroll it
+    // normally; ctrl/meta zooms, shift and horizontal-dominant deltas pan
+    // (see routeWheel). (The listener stays {passive: false} so
     // preventDefault remains available for the consumed cases.)
     if (!route.consumed) return;
     e.preventDefault();
@@ -1582,7 +2625,7 @@ export class TimelineViewElement extends HTMLElement {
       if (e.deltaMode === 0) {
         // Pixel-precise trackpad pinch: apply 1:1, no smoothing, no lag.
         const anchor = xToTime(p.x - this.gutterW, this.view, this.plotWidth());
-        this.applyUserView(zoomView(this.view, anchor, zoomFactorForWheel(route.zoomPx)));
+        this.applyUserView(zoomView(this.view, anchor, zoomFactorForWheel(route.zoomPx)), { zoom: true });
         this.glidePx = 0;
       } else {
         // Discrete wheel steps: glide over ~130ms so they feel smooth.
@@ -1611,12 +2654,13 @@ export class TimelineViewElement extends HTMLElement {
     if (Math.abs(this.glidePx - apply) < 0.5) apply = this.glidePx;
     this.glidePx -= apply;
     const anchor = xToTime(this.glideX - this.gutterW, this.view, this.plotWidth());
-    this.applyUserView(zoomView(this.view, anchor, zoomFactorForWheel(apply)));
+    this.applyUserView(zoomView(this.view, anchor, zoomFactorForWheel(apply)), { zoom: true });
   }
 
   private onPointerDown = (e: PointerEvent): void => {
     if (e.button !== 0 && e.pointerType === 'mouse') return;
     this.noteInput();
+    this.closeLegend(); // a chart gesture dismisses the legend panel
     this.canvas.setPointerCapture(e.pointerId);
     const p = this.toLocal(e);
     this.pointers.set(e.pointerId, p);
@@ -1648,7 +2692,7 @@ export class TimelineViewElement extends HTMLElement {
         const anchor = xToTime(midX - this.gutterW, next, this.plotWidth());
         next = zoomView(next, anchor, distNow / distPrev);
       }
-      this.applyUserView(next, { pan: !zoomed });
+      this.applyUserView(next, { pan: !zoomed, zoom: zoomed });
       return;
     }
     const dx = p.x - prev.x;
@@ -1677,6 +2721,22 @@ export class TimelineViewElement extends HTMLElement {
       const hit = this.downHit;
       if (hit.type === 'interval') {
         this.dispatchEvent(new CustomEvent('intervalclick', { detail: { interval: hit.interval, lane: hit.lane } }));
+      } else if (hit.type === 'cluster') {
+        // A cluster click ZOOMS to the member extent so the group splits
+        // into its true timestamps — never an intervalclick (there is no
+        // single interval to open). Coincident members re-cluster at the
+        // minimum span; their tooltip lists them.
+        let s = Infinity;
+        let e = -Infinity;
+        for (const iv of hit.intervals) {
+          const ms = toMs(iv.start);
+          if (ms < s) s = ms;
+          if (ms > e) e = ms;
+        }
+        if (Number.isFinite(s)) {
+          const v = clusterZoomView({ start: s, end: e });
+          this.setViewport(v.start, v.end);
+        }
       } else if (hit.type === 'connector') {
         this.dispatchEvent(new CustomEvent('connectorclick', { detail: { connector: hit.connector } }));
       } else if (hit.type === 'lane') {
@@ -1716,11 +2776,11 @@ export class TimelineViewElement extends HTMLElement {
         break;
       case '+':
       case '=':
-        this.applyUserView(zoomView(this.view, center, 1.5));
+        this.applyUserView(zoomView(this.view, center, 1.5), { zoom: true });
         break;
       case '-':
       case '_':
-        this.applyUserView(zoomView(this.view, center, 1 / 1.5));
+        this.applyUserView(zoomView(this.view, center, 1 / 1.5), { zoom: true });
         break;
       case 'End':
         this.jumpToNow();
@@ -1739,6 +2799,100 @@ export class TimelineViewElement extends HTMLElement {
         return;
     }
     e.preventDefault();
+  };
+
+  // -- Minimap strip ---------------------------------------------------------------
+
+  /**
+   * The strip's data extent: earliest loaded interval start — widened by
+   * coverage knowledge (the first covered time, the exhausted-history
+   * boundary) — through max(live edge, latest interval end). Null while
+   * nothing is loaded (the strip is hidden then anyway). O(lanes) now:
+   * `earliest` reads each lane's sorted head, `latest` is the
+   * incrementally-maintained mmLatestEnd (recomputed exactly in
+   * rebuild()) — the old per-frame O(N) full scan is gone.
+   */
+  private mmExtent(): TimeView | null {
+    let earliest = Infinity;
+    for (let li = 0; li < this.perLane.length; li++) {
+      const per = this.perLane[li];
+      if (per.length > 0 && per[0].start < earliest) earliest = per[0].start;
+    }
+    const cov = this.coverage.coveredRanges();
+    return minimapExtent(
+      Number.isFinite(earliest) ? earliest : null,
+      Number.isFinite(this.mmLatestEnd) ? this.mmLatestEnd : null,
+      this.liveEdge(),
+      this.coverage.exhaustedBefore,
+      cov.length > 0 ? cov[0].start : null,
+    );
+  }
+
+  private mmLocalX(e: PointerEvent): { x: number; w: number } {
+    const b = this.mmCanvas.getBoundingClientRect();
+    return { x: e.clientX - b.left, w: Math.max(1, b.width) };
+  }
+
+  private onMMPointerDown = (e: PointerEvent): void => {
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    const ext = this.mmExtent();
+    if (!ext) return;
+    this.noteInput();
+    this.mmCanvas.setPointerCapture(e.pointerId);
+    const { x, w } = this.mmLocalX(e);
+    const zone = minimapHitZone(x, minimapWindowRect(this.view, ext, w));
+    if (zone === 'before' || zone === 'after') {
+      // Click outside the window: center it there (a jump, so follow only
+      // re-engages inside the now snap zone), then drag as a grab.
+      this.applyUserView(minimapCenter(this.view, x, ext, w), { jump: true });
+      this.mmDrag = { mode: 'middle', lastX: x };
+    } else if (zone === 'inside') {
+      this.mmDrag = { mode: 'middle', lastX: x };
+    } else {
+      this.mmDrag = { mode: zone === 'left-handle' ? 'left' : 'right', lastX: x };
+    }
+    this.mmCanvas.style.cursor = this.mmDrag.mode === 'middle' ? 'grabbing' : 'ew-resize';
+    this.focus({ preventScroll: true });
+  };
+
+  private onMMPointerMove = (e: PointerEvent): void => {
+    const { x, w } = this.mmLocalX(e);
+    const ext = this.mmExtent();
+    const d = this.mmDrag;
+    if (!d) {
+      if (ext) {
+        const zone = minimapHitZone(x, minimapWindowRect(this.view, ext, w));
+        this.mmCanvas.style.cursor =
+          zone === 'left-handle' || zone === 'right-handle' ? 'ew-resize' : zone === 'inside' ? 'grab' : 'pointer';
+      }
+      return;
+    }
+    if (!ext) return;
+    this.noteInput();
+    if (d.mode === 'middle') {
+      // Grab-the-middle: constant-width pan, 1:1 under the pointer. The
+      // SAME code path as a canvas pan ({pan: true}), so a backward drag
+      // disengages follow and docking at the live edge re-engages it.
+      const dx = x - d.lastX;
+      d.lastX = x;
+      if (dx !== 0) this.applyUserView(minimapPan(this.view, dx, ext, w), { pan: true });
+    } else {
+      // Handles: the left edge is zoom-like (a pinned live edge stays
+      // pinned — dragging it only changes the span); the right edge is
+      // pan-like, so pulling the window's end backward disengages follow
+      // instead of fighting the per-frame pin.
+      this.applyUserView(minimapResize(this.view, d.mode, x, ext, w), { pan: d.mode === 'right' });
+    }
+  };
+
+  private onMMPointerUp = (e: PointerEvent): void => {
+    if (this.mmDrag !== null && this.mmCanvas.hasPointerCapture(e.pointerId)) this.mmCanvas.releasePointerCapture(e.pointerId);
+    this.mmDrag = null;
+    this.mmCanvas.style.cursor = '';
+  };
+
+  private onMMPointerLeave = (): void => {
+    if (this.mmDrag === null) this.mmCanvas.style.cursor = '';
   };
 
   // -- Hover / tooltip -----------------------------------------------------------
@@ -1763,6 +2917,13 @@ export class TimelineViewElement extends HTMLElement {
       );
       this.invalidate();
     }
+    // Cluster hover ring (keyed by the first member — the cluster's
+    // identity). No intervalhover: a cluster is not a single interval.
+    const nextCluster = hit?.type === 'cluster' ? (hit.intervals[0]?.id ?? null) : null;
+    if (nextCluster !== this.hoverClusterId) {
+      this.hoverClusterId = nextCluster;
+      this.invalidate();
+    }
     if (hit) this.showTooltip(hit, clientX, clientY);
     else this.hideTooltip();
   }
@@ -1782,7 +2943,10 @@ export class TimelineViewElement extends HTMLElement {
     const tt = this.tooltipEl;
     tt.textContent = '';
     let content: string | Node | null | undefined;
-    if (this.tooltipForFn) {
+    // Clusters never consult tooltipFor: consumers describe INTERVALS,
+    // and the ×N summary (count, extent, member labels) is the
+    // component's own — old adapters keep working untouched.
+    if (this.tooltipForFn && hit.type !== 'cluster') {
       content = this.tooltipForFn(hit);
       if (content == null) {
         this.hideTooltip();
@@ -1798,6 +2962,11 @@ export class TimelineViewElement extends HTMLElement {
     if (typeof content === 'string') tt.textContent = content;
     else tt.append(content);
     tt.classList.add('visible');
+    // Measure at a neutral position: a stale left/top from the previous
+    // show could squeeze the box against the host edge and mis-measure
+    // the wrapped size the flip-to-fit math is about to use.
+    tt.style.left = '0px';
+    tt.style.top = '0px';
     // Position near the cursor, flipped to stay inside the host.
     const host = this.getBoundingClientRect();
     let x = clientX - host.left + 14;
@@ -1854,6 +3023,49 @@ export class TimelineViewElement extends HTMLElement {
           row(s.kind, `${formatDuration((s.end ?? end) - s.start)}`);
         }
       }
+    } else if (hit.type === 'cluster') {
+      // The component-built ×N summary: count, member time extent, up to
+      // 8 member labels, and the zoom affordance.
+      const ivs = hit.intervals;
+      const members: NInterval[] = [];
+      for (const iv of ivs) {
+        const n = this.byId.get(iv.id);
+        if (n) members.push(n);
+      }
+      let s = Infinity;
+      let e = -Infinity;
+      for (const iv of ivs) {
+        const ms = toMs(iv.start);
+        if (ms < s) s = ms;
+        if (ms > e) e = ms;
+      }
+      const keys = this.clusterKeys(members, hit.lane);
+      const title = document.createElement('div');
+      title.className = 'tt-title';
+      const swatch = document.createElement('span');
+      swatch.className = 'tt-swatch';
+      swatch.style.background = this.resolved(keys.catKey, keys.state, null).fill;
+      title.append(swatch, document.createTextNode(`×${ivs.length} events`));
+      frag.append(title);
+      row('lane', hit.lane.label);
+      if (keys.state) row('state', keys.state);
+      const fine = e - s < 10_000;
+      if (e > s) {
+        row('from', formatTimeFull(s, tz, fine));
+        row('to', formatTimeFull(e, tz, fine));
+      } else if (Number.isFinite(s)) {
+        row('time', formatTimeFull(s, tz, true));
+      }
+      const shown = Math.min(ivs.length, 8);
+      for (let i = 0; i < shown; i++) {
+        const n = this.byId.get(ivs[i].id);
+        row('·', n ? n.label || n.id : ivs[i].id);
+      }
+      if (ivs.length > shown) row('·', `+${ivs.length - shown} more`);
+      const hint = document.createElement('div');
+      hint.className = 'tt-k';
+      hint.textContent = 'click to zoom in';
+      frag.append(hint);
     } else if (hit.type === 'connector') {
       const c = hit.connector;
       const title = document.createElement('div');
@@ -1892,8 +3104,8 @@ export class TimelineViewElement extends HTMLElement {
 
   private draw(): void {
     const raw = typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1;
-    if (Math.min(2, raw) !== this.dpr) this.resizeBackingStore();
-    const ctx = (this.ctx ??= this.canvas.getContext('2d'));
+    if (Math.min(MAX_DPR, raw) !== this.dpr) this.resizeBackingStore();
+    const ctx = this.ctx2d();
     if (!ctx || this.cssW < 4 || this.cssH < 4) return;
     const t = this.theme;
     const dpr = this.dpr;
@@ -1932,6 +3144,408 @@ export class TimelineViewElement extends HTMLElement {
     ctx.moveTo(0, yAxis);
     ctx.lineTo(w, yAxis);
     ctx.stroke();
+
+    this.drawMinimap();
+  }
+
+  /**
+   * The minimap strip: the FULL loaded extent (mmExtent) as per-lane
+   * collapsed density marks in category hues at low alpha (no text), the
+   * live edge as a now tick, and the current viewport as a brighter
+   * window rect with grabbable edge handles. Rendered only from draw() —
+   * the strip repaints exactly when the main chart does (same rAF loop,
+   * same dirty flag, same idle pacing), never on its own schedule.
+   *
+   * The density marks are served from an offscreen TEXTURE (one blit per
+   * frame) instead of the old O(all-intervals) per-frame refill — see the
+   * mmTex field block: frozen quantized extent mapping + whole-pixel
+   * steps (a single scale-blit), incremental right-edge paints on merge,
+   * async sliced full rebuilds, atomic swap. Only the now tick, the
+   * window rect, and the handful of ONGOING interval marks (their ends
+   * track the live clock) draw per frame.
+   */
+  private drawMinimap(): void {
+    if (!this.mmVisible) return;
+    const ctx = this.mmCtx2d();
+    if (!ctx || this.cssW < 4) return;
+    const t = this.theme;
+    const dpr = this.dpr;
+    const w = this.cssW;
+    const h = MINIMAP_H;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = t.bg;
+    ctx.fillRect(0, 0, w, h);
+    // A faint band tint + top hairline set the strip off from the plot.
+    ctx.fillStyle = 'rgba(128, 138, 158, 0.05)';
+    ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = t.hairline;
+    ctx.lineWidth = 1 / dpr;
+    ctx.beginPath();
+    const yTop = snap(0, dpr);
+    ctx.moveTo(0, yTop);
+    ctx.lineTo(w, yTop);
+    ctx.stroke();
+    const ext = this.mmExtent();
+    if (!ext) return;
+    const now = this.liveEdge();
+    // Keep the density texture current (steps/increments/rebuild kicks),
+    // then blit it mapped from its frozen extent onto the live one — an
+    // identity blit between steps (sub-strip-pixel drift is invisible),
+    // and the same general mapping stretches a stale-geometry texture
+    // while an async rebuild is in flight.
+    this.mmSyncTexture(ext, w, h);
+    const tex = this.mmTex;
+    if (tex) {
+      const dx0 = timeToX(this.mmTexExtent.start, ext, w);
+      const dx1 = timeToX(this.mmTexExtent.end, ext, w);
+      if (dx1 > dx0) ctx.drawImage(tex, 0, 0, tex.width, tex.height, dx0, 0, dx1 - dx0, h);
+    }
+    // ONGOING intervals are never baked (their right edge is the live
+    // clock) — draw their marks over the texture every frame; there are
+    // only ever a handful at once.
+    const laneN = this.perLane.length;
+    const ongoing = this.mmOngoing;
+    if (ongoing.length > 0 && laneN > 0) {
+      const padY = 3;
+      const rowH = (h - padY * 2) / laneN;
+      const markH = Math.max(1, Math.min(rowH * 0.75, 6));
+      const x1 = timeToX(now, ext, w);
+      for (let i = 0; i < ongoing.length; i++) {
+        const n = ongoing[i];
+        const x0 = timeToX(n.start, ext, w);
+        if (x0 > w || x1 < 0) continue;
+        const y = padY + n.laneIdx * rowH + (rowH - markH) / 2;
+        ctx.fillStyle = this.mmDimFill(n.catKey);
+        ctx.fillRect(x0, y, Math.max(x1 - x0, 1), markH);
+      }
+    }
+    // The live edge, frozen + muted while the feed is stale (the main
+    // now line's language). Live overdraw — never baked into the texture.
+    const nx = timeToX(now, ext, w);
+    if (nx >= 0 && nx <= w) {
+      ctx.fillStyle = this.feedStale ? t.muted : withAlpha(t.now, 0.8);
+      ctx.fillRect(nx - 0.5, 0, 1, h);
+    }
+    // The visible window: brighter rect + edge handle bars. Live overdraw.
+    const rect = minimapWindowRect(this.view, ext, w);
+    ctx.fillStyle = withAlpha(t.fg, 0.1);
+    ctx.fillRect(rect.x0, 0, rect.x1 - rect.x0, h);
+    ctx.strokeStyle = withAlpha(t.fg, 0.35);
+    ctx.lineWidth = 1;
+    ctx.strokeRect(rect.x0, 0.5, rect.x1 - rect.x0, h - 1);
+    ctx.fillStyle = withAlpha(t.fg, 0.75);
+    ctx.fillRect(rect.x0 - 1.5, 1, 3, h - 2);
+    ctx.fillRect(rect.x1 - 1.5, 1, 3, h - 2);
+  }
+
+  /** catKey → the 0.55-alpha density fill (cached; cleared with the theme). */
+  private mmDimFill(catKey: string): string {
+    let fill = this.mmDimCache.get(catKey);
+    if (fill === undefined) {
+      fill = withAlpha(this.resolved(catKey, '', null).fill, 0.55);
+      this.mmDimCache.set(catKey, fill);
+    }
+    return fill;
+  }
+
+  /**
+   * Keep the density texture serving the current strip: decide between a
+   * synchronous FIRST build (nothing exists to serve meanwhile — one-time,
+   * equal to a single frame of the old per-frame cost), an ASYNC sliced
+   * rebuild (geometry/theme/lane-count/extent-start changes, in-place mark
+   * rewrites, accumulated resample drift — the old texture keeps serving,
+   * stretched by the frame blit's general mapping, until the swap), or
+   * INCREMENTAL maintenance (merge slivers painted at the frozen mapping;
+   * whole-strip-pixel extent steps via one scale-blit).
+   */
+  private mmSyncTexture(ext: TimeView, w: number, h: number): void {
+    const dpr = this.dpr;
+    const bw = Math.max(1, Math.round(w * dpr));
+    const bh = Math.max(1, Math.round(h * dpr));
+    const laneN = this.perLane.length;
+    if (this.mmTex === null) {
+      const built = this.mmPaintFull(ext, bw, bh, dpr, laneN);
+      if (built) this.mmAdoptTexture(built);
+      return;
+    }
+    const geomOk =
+      this.mmTexW === bw && this.mmTexH === bh && this.mmTexDpr === dpr && this.mmTexLaneN === laneN && this.mmTexTheme === this.mmThemeGen;
+    const contentOk =
+      geomOk && !this.mmTexDirty && this.mmTexExtent.start === ext.start && this.mmTexScaleAcc > 0.92 && this.mmTexSteps < 96;
+    if (!contentOk) {
+      this.mmKickRebuild(ext, bw, bh, dpr, laneN);
+      return;
+    }
+    // Incremental: paint marks merged since the last bake (stepping the
+    // frozen extent first if any lands beyond its end — painting INTO the
+    // texture at its own extent is exact by definition), then step the
+    // mapping once pure clock growth has drifted it a whole strip pixel.
+    if (this.mmPendingNew.length > 0) {
+      const pend = this.mmPendingNew;
+      let needEnd = this.mmTexExtent.end;
+      for (let i = 0; i < pend.length; i++) {
+        const e = pend[i].end;
+        if (e !== null && e > needEnd) needEnd = e;
+      }
+      if (needEnd > this.mmTexExtent.end) this.mmStepExtent(ext, w);
+      this.mmPaintPending(w, h, laneN);
+      this.mmTexEpoch = this.packEpoch;
+    }
+    const errStart = Math.abs(timeToX(this.mmTexExtent.start, ext, w));
+    const errEnd = Math.abs(timeToX(this.mmTexExtent.end, ext, w) - w);
+    if (errStart >= 1 || errEnd >= 1) this.mmStepExtent(ext, w);
+  }
+
+  /**
+   * Step the texture's frozen extent to the live one with a single
+   * general scale-blit into the double-buffer partner (self-blit lacks
+   * snapshot semantics), then swap — the "pixel shift" for this
+   * compressing geometry. Handles live-end compression AND the
+   * pad-regime translation (minimapExtent's backward-padded start) in
+   * one primitive. Accumulates the resample-drift budget that
+   * eventually forces a clean async rebuild.
+   */
+  private mmStepExtent(ext: TimeView, w: number): void {
+    const tex = this.mmTex;
+    const b = this.mmTexB;
+    const bc = this.mmTexBCtx;
+    if (!tex || !b || !bc) return;
+    const dpr = this.mmTexDpr;
+    const dx0 = timeToX(this.mmTexExtent.start, ext, w) * dpr;
+    const dx1 = timeToX(this.mmTexExtent.end, ext, w) * dpr;
+    bc.setTransform(1, 0, 0, 1, 0, 0);
+    bc.clearRect(0, 0, b.width, b.height);
+    if (dx1 > dx0) bc.drawImage(tex, 0, 0, tex.width, tex.height, dx0, 0, dx1 - dx0, tex.height);
+    this.mmTexB = tex;
+    this.mmTexBCtx = this.mmTexCtx;
+    this.mmTex = b;
+    this.mmTexCtx = bc;
+    this.mmTexScaleAcc *= Math.max(0.0001, Math.min(1, (dx1 - dx0) / (w * dpr)));
+    this.mmTexSteps++;
+    this.mmTexExtent = { start: ext.start, end: ext.end };
+  }
+
+  /** Paint the merge sliver (mmPendingNew) into the live texture at its frozen extent, then clear the queue. */
+  private mmPaintPending(w: number, h: number, laneN: number): void {
+    const c = this.mmTexCtx;
+    if (!c) return;
+    const dpr = this.mmTexDpr;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const padY = 3;
+    const rowH = laneN > 0 ? (h - padY * 2) / laneN : 0;
+    const markH = Math.max(1, Math.min(rowH * 0.75, 6));
+    const extent = this.mmTexExtent;
+    const pend = this.mmPendingNew;
+    for (let i = 0; i < pend.length; i++) {
+      const n = pend[i];
+      // Skip superseded queue entries (replaced since ingest) and rows
+      // beyond the texture's lane count — both funnels to a full rebuild
+      // via mmTexDirty / the laneN stamp anyway.
+      if (n.end === null || this.byId.get(n.id) !== n || n.laneIdx >= laneN) continue;
+      const x0 = timeToX(n.start, extent, w);
+      const x1 = timeToX(n.end, extent, w);
+      if (x1 < 0 || x0 > w) continue;
+      const y = padY + n.laneIdx * rowH + (rowH - markH) / 2;
+      c.fillStyle = this.mmDimFill(n.catKey);
+      c.fillRect(x0, y, Math.max(x1 - x0, 1), markH);
+    }
+    pend.length = 0;
+  }
+
+  /**
+   * Start (or keep) an async full rebuild toward the current parameters.
+   * An in-flight rebuild already targeting them is left to finish (the
+   * slice chain is re-armed in case a disconnect dropped its timer); one
+   * targeting STALE parameters — a merge/resize/retheme landed mid-build —
+   * restarts from a fresh cursor.
+   */
+  private mmKickRebuild(ext: TimeView, bw: number, bh: number, dpr: number, laneN: number): void {
+    const r = this.mmRebuild;
+    if (
+      r !== null &&
+      r.epoch === this.packEpoch &&
+      r.themeGen === this.mmThemeGen &&
+      r.w === bw &&
+      r.h === bh &&
+      r.dpr === dpr &&
+      r.laneN === laneN &&
+      r.extent.start === ext.start
+    ) {
+      this.mmScheduleSlice();
+      return;
+    }
+    const tex = document.createElement('canvas');
+    tex.width = bw;
+    tex.height = bh;
+    const c = tex.getContext('2d');
+    if (!c) return;
+    this.mmRebuild = {
+      tex,
+      ctx: c,
+      extent: { start: ext.start, end: ext.end },
+      epoch: this.packEpoch,
+      themeGen: this.mmThemeGen,
+      laneN,
+      w: bw,
+      h: bh,
+      dpr,
+      laneIdx: 0,
+      itemIdx: 0,
+    };
+    // The queued sliver is covered by the full repaint about to run.
+    this.mmPendingNew.length = 0;
+    this.mmScheduleSlice();
+  }
+
+  /** Arm the next rebuild slice off the frame path (idempotent). */
+  private mmScheduleSlice(): void {
+    if (this.mmRebuildTimer !== null) return;
+    this.mmRebuildTimer = setTimeout(() => {
+      this.mmRebuildTimer = null;
+      this.mmRebuildSlice();
+    }, 0);
+  }
+
+  /**
+   * One budgeted (~3ms) rebuild slice: resume painting lanes/items into
+   * the pending texture from the (laneIdx, itemIdx) cursor. On
+   * completion the texture swaps in atomically — unless the parameters
+   * went stale mid-build (data/theme moved), in which case the result is
+   * discarded and the next frame re-kicks with fresh ones.
+   */
+  private mmRebuildSlice(): void {
+    const r = this.mmRebuild;
+    if (!r || !this.connected) return;
+    const c = r.ctx;
+    c.setTransform(r.dpr, 0, 0, r.dpr, 0, 0);
+    const w = r.w / r.dpr;
+    const h = r.h / r.dpr;
+    const padY = 3;
+    const rowH = r.laneN > 0 ? (h - padY * 2) / r.laneN : 0;
+    const markH = Math.max(1, Math.min(rowH * 0.75, 6));
+    const t0 = this.perfNow();
+    let count = 0;
+    while (r.laneIdx < r.laneN && r.laneIdx < this.perLane.length) {
+      const per = this.perLane[r.laneIdx];
+      const y = padY + r.laneIdx * rowH + (rowH - markH) / 2;
+      while (r.itemIdx < per.length) {
+        const n = per[r.itemIdx];
+        r.itemIdx++;
+        if (n.end === null) continue; // live-drawn every frame, never baked
+        const x0 = timeToX(n.start, r.extent, w);
+        if (x0 > w) break; // sorted by start — the rest of the lane is past the extent
+        const x1 = timeToX(n.end, r.extent, w);
+        if (x1 < 0) continue;
+        c.fillStyle = this.mmDimFill(n.catKey);
+        c.fillRect(x0, y, Math.max(x1 - x0, 1), markH);
+        if ((++count & 63) === 0 && this.perfNow() - t0 > 3) {
+          this.mmScheduleSlice();
+          return;
+        }
+      }
+      r.laneIdx++;
+      r.itemIdx = 0;
+    }
+    this.mmRebuild = null;
+    if (r.epoch !== this.packEpoch || r.themeGen !== this.mmThemeGen) {
+      // Painted from live arrays that changed mid-build — the content is
+      // unaccountable; drop it and let the next frame re-kick fresh.
+      this.invalidate();
+      return;
+    }
+    this.mmAdoptTexture(r);
+    this.invalidate(); // blit the fresh texture on the next frame
+  }
+
+  /** Synchronous full paint — the FIRST build only (nothing exists to serve while an async build runs). */
+  private mmPaintFull(
+    ext: TimeView,
+    bw: number,
+    bh: number,
+    dpr: number,
+    laneN: number,
+  ): { tex: HTMLCanvasElement; ctx: CanvasRenderingContext2D; extent: TimeView; epoch: number; themeGen: number; laneN: number; w: number; h: number; dpr: number } | null {
+    const tex = document.createElement('canvas');
+    tex.width = bw;
+    tex.height = bh;
+    const c = tex.getContext('2d');
+    if (!c) return null;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const w = bw / dpr;
+    const h = bh / dpr;
+    const padY = 3;
+    const rowH = laneN > 0 ? (h - padY * 2) / laneN : 0;
+    const markH = Math.max(1, Math.min(rowH * 0.75, 6));
+    for (let li = 0; li < laneN && li < this.perLane.length; li++) {
+      const per = this.perLane[li];
+      const y = padY + li * rowH + (rowH - markH) / 2;
+      for (let i = 0; i < per.length; i++) {
+        const n = per[i];
+        if (n.end === null) continue;
+        const x0 = timeToX(n.start, ext, w);
+        if (x0 > w) break; // sorted by start
+        const x1 = timeToX(n.end, ext, w);
+        if (x1 < 0) continue;
+        c.fillStyle = this.mmDimFill(n.catKey);
+        c.fillRect(x0, y, Math.max(x1 - x0, 1), markH);
+      }
+    }
+    return {
+      tex,
+      ctx: c,
+      extent: { start: ext.start, end: ext.end },
+      epoch: this.packEpoch,
+      themeGen: this.mmThemeGen,
+      laneN,
+      w: bw,
+      h: bh,
+      dpr,
+    };
+  }
+
+  /** Swap a completed texture in and reset the drift budgets + queues. */
+  private mmAdoptTexture(r: {
+    tex: HTMLCanvasElement;
+    ctx: CanvasRenderingContext2D;
+    extent: TimeView;
+    epoch: number;
+    themeGen: number;
+    laneN: number;
+    w: number;
+    h: number;
+    dpr: number;
+  }): void {
+    this.mmTex = r.tex;
+    this.mmTexCtx = r.ctx;
+    this.mmTexExtent = { start: r.extent.start, end: r.extent.end };
+    this.mmTexEpoch = r.epoch;
+    this.mmTexW = r.w;
+    this.mmTexH = r.h;
+    this.mmTexDpr = r.dpr;
+    this.mmTexLaneN = r.laneN;
+    this.mmTexTheme = r.themeGen;
+    this.mmTexScaleAcc = 1;
+    this.mmTexSteps = 0;
+    this.mmTexDirty = false;
+    this.mmPendingNew.length = 0;
+    if (!this.mmTexB || this.mmTexB.width !== r.w || this.mmTexB.height !== r.h) {
+      this.mmTexB = document.createElement('canvas');
+      this.mmTexB.width = r.w;
+      this.mmTexB.height = r.h;
+      this.mmTexBCtx = this.mmTexB.getContext('2d');
+    }
+  }
+
+  /**
+   * Snap a TEXT draw origin (x or y) to the device-pixel grid. Applied
+   * per fillText call — text, unlike bar geometry, tolerates per-element
+   * rounding (see snapTextOrigin): a fractional origin — laneScroll
+   * accumulation, height tweens, odd track heights — smears every glyph
+   * stroke across two pixel rows; a snapped one rasterizes crisp, at the
+   * cost of labels stepping in whole device pixels while things move.
+   */
+  private textPx(v: number): number {
+    return snapTextOrigin(v, this.dpr);
   }
 
   private drawAxisAndGrid(ctx: CanvasRenderingContext2D, now: number): void {
@@ -1967,7 +3581,7 @@ export class TimelineViewElement extends HTMLElement {
       // Keep edge labels inside the canvas.
       const half = (label.length * this.charW * 0.92) / 2;
       const lx = Math.min(w - half - 2, Math.max(gx + half + 2, x));
-      ctx.fillText(label, lx, AXIS_H / 2 + 0.5);
+      ctx.fillText(label, this.textPx(lx), this.textPx(AXIS_H / 2 + 0.5));
     }
     // Context date in the gutter corner when the ticks themselves are
     // sub-day (a date-step axis already says the date on every tick).
@@ -1975,7 +3589,7 @@ export class TimelineViewElement extends HTMLElement {
       ctx.fillStyle = t.muted;
       ctx.textAlign = 'left';
       const dateLabel = formatTimeFull(rv.start, tz).split(' ').slice(0, 2).join(' ');
-      ctx.fillText(dateLabel, 4, AXIS_H / 2 + 0.5);
+      ctx.fillText(dateLabel, this.textPx(4), this.textPx(AXIS_H / 2 + 0.5));
     }
     void now;
   }
@@ -2021,7 +3635,7 @@ export class TimelineViewElement extends HTMLElement {
         if (label !== '') {
           ctx.font = full ? this.fontBar : `${fs}px ${t.font}`;
           ctx.fillStyle = full ? t.muted : withAlpha(t.muted, 0.7);
-          ctx.fillText(label, 8, top + lh / 2 + 0.5);
+          ctx.fillText(label, this.textPx(8), this.textPx(top + lh / 2 + 0.5));
         }
       }
     }
@@ -2053,7 +3667,10 @@ export class TimelineViewElement extends HTMLElement {
         if (x1 - x0 < 1) continue;
         const busy = pending !== null && pending.start < gap.end && pending.end > gap.start;
         const pat = this.patternFor('hatch', busy ? withAlpha(t.muted, 0.35) : withAlpha(t.muted, 0.18));
-        ctx.fillStyle = pat ?? withAlpha(t.muted, 0.08);
+        // Anchored to the gap's own start so the hatch scrolls WITH the
+        // uncovered region (the busy-crawl translate below still animates
+        // relative to it — pattern transforms compose with the CTM).
+        ctx.fillStyle = pat ? this.anchorPattern(pat, x0, AXIS_H) : withAlpha(t.muted, 0.08);
         ctx.save();
         if (busy && !this.reducedMotion) ctx.translate((now / 40) % 7, 0);
         ctx.fillRect(x0 - 7, AXIS_H, x1 - x0 + 7, h - AXIS_H);
@@ -2063,7 +3680,7 @@ export class TimelineViewElement extends HTMLElement {
           ctx.font = this.fontAxis;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText('loading…', (x0 + x1) / 2, AXIS_H + 14);
+          ctx.fillText('loading…', this.textPx((x0 + x1) / 2), this.textPx(AXIS_H + 14));
         }
       }
     }
@@ -2088,7 +3705,7 @@ export class TimelineViewElement extends HTMLElement {
       ctx.font = this.fontAxis;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(this.getAttribute('history-end-text') ?? 'history ends here', x + 6, h - 12);
+      ctx.fillText(this.getAttribute('history-end-text') ?? 'history ends here', this.textPx(x + 6), this.textPx(h - 12));
     }
   }
 
@@ -2104,13 +3721,38 @@ export class TimelineViewElement extends HTMLElement {
     for (let laneIdx = 0; laneIdx < this.perLane.length; laneIdx++) {
       const laneTop = AXIS_H + tops[laneIdx] - this.laneScroll;
       if (laneTop + heights[laneIdx] < AXIS_H || laneTop > h) continue;
-      const per = this.perLane[laneIdx];
-      for (let i = 0; i < per.length; i++) {
+      // Iterate only the UNCLUSTERED items (built at cluster time, same
+      // (start, id) order — clustered members draw as their cluster's
+      // stack marker below, and skipping them one by one used to burn
+      // thousands of no-op iterations per frame on busy zooms).
+      const per = this.laneUnclustered[laneIdx] ?? this.perLane[laneIdx];
+      // Lower-bound cull: a TERMINATED item starting before
+      // rv.start − maxDur necessarily ended before the window; ongoing
+      // items (end = null, growing to now) block the bound only down to
+      // the lane's earliest ongoing start. Binary-search the first
+      // possibly-visible index (arrays are (start, id)-sorted) instead of
+      // scanning every frame from 0 — the loop is O(visible + log N),
+      // with the existing sorted `break` as the upper bound.
+      let cullFrom = rv.start - (this.laneMaxDur[laneIdx] ?? 0);
+      const ongoingStart = this.laneOngoingStart[laneIdx];
+      if (ongoingStart !== undefined && ongoingStart < cullFrom) cullFrom = ongoingStart;
+      let lo = 0;
+      let hi = per.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (per[mid].start < cullFrom) lo = mid + 1;
+        else hi = mid;
+      }
+      for (let i = lo; i < per.length; i++) {
         const n = per[i];
         if (n.start > rv.end) break; // sorted by start
         if ((n.end ?? now) < rv.start && n.end !== null) continue;
+        if (n.clustered) continue; // belt — membership changed since the last cluster pass
         this.drawInterval(ctx, n, now);
       }
+      // The lane's cluster stack markers, over its bars.
+      const ncs = this.laneClusters[laneIdx];
+      if (ncs) for (const c of ncs) this.drawCluster(ctx, c);
     }
     void dpr;
     void t;
@@ -2119,7 +3761,9 @@ export class TimelineViewElement extends HTMLElement {
   private drawInterval(ctx: CanvasRenderingContext2D, n: NInterval, now: number): void {
     const t = this.theme;
     const dpr = this.dpr;
-    const r = this.rectFor(n, now);
+    const rv = this.renderView();
+    const plotW = this.plotWidth();
+    const r = this.rectForInto(n, now, this.rectScratch);
     const bh = r.h; // per-lane track height: compact lanes render slivers
     const style = this.resolved(n.catKey, n.state, this.overrideColor(n));
     const hovered = this.hoverIntervalId === n.id;
@@ -2130,11 +3774,16 @@ export class TimelineViewElement extends HTMLElement {
     // subpixel phase). Zero/near-zero-duration events are pips; anything
     // wider draws as a bar, clamped to MIN_BAR_PX so a real duration is
     // never demoted to a pip by rounding.
-    const trueW = durationWidthPx(n.start, n.end ?? now, this.renderView(), this.plotWidth());
+    const trueW = durationWidthPx(n.start, n.end ?? now, rv, plotW);
     if (isInstantWidth(trueW)) {
-      this.drawInstant(ctx, n, style, r.x + r.w / 2, r.y + bh / 2, bh, hovered);
+      this.drawInstant(ctx, style, r.x + r.w / 2, r.y + bh / 2, bh, hovered);
       return;
     }
+
+    // Which ends the viewport clips (the span truly continues off-screen
+    // past them) — those ends get the edge-continuation shadow, painted
+    // last so it applies over every treatment.
+    const fade = edgeContinuation(n.start, n.end ?? now, rv, plotW, EDGE_FADE_PX);
 
     // Unrounded coordinates on purpose: renderView is the single global
     // rounding step; rounding again per bar would jiggle neighbors
@@ -2158,7 +3807,7 @@ export class TimelineViewElement extends HTMLElement {
       if (pat) {
         ctx.save();
         ctx.clip(path);
-        ctx.fillStyle = pat;
+        ctx.fillStyle = this.anchorPattern(pat, x0, y); // phase rides the bar, not the canvas
         ctx.fillRect(x0, y, bw, bh);
         ctx.restore();
       }
@@ -2167,27 +3816,56 @@ export class TimelineViewElement extends HTMLElement {
       ctx.fill(path);
     }
 
+    // Where the label anchors: the bar start, sticking to the plot's
+    // left edge (past any continuation shadow) while the start is
+    // scrolled off-screen.
+    const labelPad = 5;
+    const labelX = Math.max(x0, this.gutterW + (fade.left ? EDGE_FADE_PX : 0)) + labelPad;
+
     // Phase segments, clipped to the bar.
     if (n.segs) {
       ctx.save();
       ctx.clip(path);
-      const w = this.plotWidth();
-      const rv = this.renderView();
       for (const s of n.segs) {
-        const sx0 = Math.max(x0, this.gutterW + timeToX(s.start, rv, w));
-        const sx1 = Math.min(x1, this.gutterW + timeToX(s.end ?? (n.end ?? now), rv, w));
-        if (sx1 - sx0 < 0.5) continue;
+        let sx0 = Math.max(x0, this.gutterW + timeToX(s.start, rv, plotW));
+        const sx1 = Math.min(x1, this.gutterW + timeToX(s.end ?? (n.end ?? now), rv, plotW));
         const ss = this.resolved(n.catKey, s.kind, null);
+        if (ss.pattern === 'outline') {
+          // A terminal cut (e.g. a kill tail: cancel requested → finished).
+          // Unlike decorative phases it must NEVER vanish: it keeps a
+          // minimum device-pixel footprint (grown backward from its end —
+          // the tail sits at the bar end) instead of the sub-half-px skip,
+          // and renders visibly as a dark scrim over the dead tail. Once
+          // the tail is wide enough for a line to mark a point INSIDE the
+          // span, a cut line in the segment's own hue (the same color
+          // family as the cancelled border) marks the kill point. Never a
+          // foreground-bright line: on a hairline tail that sat flush
+          // against the end border and read as a stray white artifact.
+          const minW = TERMINAL_SEG_MIN_DEVICE_PX / dpr;
+          if (sx1 - sx0 < minW) sx0 = Math.max(x0, sx1 - minW);
+          const segW = sx1 - sx0;
+          ctx.fillStyle = withAlpha('#000000', 0.45);
+          ctx.fillRect(sx0, y, segW, bh);
+          if (segW >= CUT_LINE_MIN_TAIL_PX) {
+            ctx.fillStyle = ss.border;
+            ctx.fillRect(sx0, y, Math.min(1, segW), bh);
+          }
+          continue;
+        }
+        if (sx1 - sx0 < 0.5) continue;
         if (ss.pattern === 'hatch' || ss.pattern === 'stipple') {
           ctx.fillStyle = withAlpha(ss.fill, 0.2);
           ctx.fillRect(sx0, y, sx1 - sx0, bh);
           const pat = this.patternFor(ss.pattern, ss.fill);
           if (pat) {
-            ctx.fillStyle = pat;
+            // Anchored to the BAR's unclamped origin (one phase per bar):
+            // stable while the bar's start is clipped off-screen — the
+            // clamped sx0 would phase-jump at the clip boundary.
+            ctx.fillStyle = this.anchorPattern(pat, x0, y);
             ctx.fillRect(sx0, y, sx1 - sx0, bh);
           }
         } else {
-          ctx.fillStyle = ss.pattern === 'outline' ? withAlpha(ss.fill, 0.12) : ss.fill;
+          ctx.fillStyle = ss.fill;
           ctx.fillRect(sx0, y, sx1 - sx0, bh);
         }
         // Hairline phase boundary.
@@ -2209,7 +3887,7 @@ export class TimelineViewElement extends HTMLElement {
         ctx.fillRect(x0, y, bw, bh);
         const pat = this.patternFor('hatch', withAlpha(t.muted, 0.5));
         if (pat) {
-          ctx.fillStyle = pat;
+          ctx.fillStyle = this.anchorPattern(pat, x0, y); // phase rides the bar
           ctx.fillRect(x0, y, bw, bh);
         }
         ctx.restore();
@@ -2228,12 +3906,15 @@ export class TimelineViewElement extends HTMLElement {
     }
 
     // Border — width capped for sliver bars so a 2px emphasis border can't
-    // swallow a 4px compact track.
+    // swallow a 4px compact track. Dashes (the cancelled treatment) fall
+    // back to solid below BORDER_DASH_MIN_PX, where a dash pattern reads
+    // as broken corners rather than a dashed edge.
     ctx.strokeStyle = style.border;
     ctx.lineWidth = Math.min(style.borderWidth, Math.max(1, bh / 4));
-    if (style.dash) ctx.setLineDash(style.dash);
+    const dash = style.dash && bw >= BORDER_DASH_MIN_PX ? style.dash : null;
+    if (dash) ctx.setLineDash(dash);
     ctx.stroke(path);
-    if (style.dash) ctx.setLineDash(EMPTY_DASH);
+    if (dash) ctx.setLineDash(EMPTY_DASH);
 
     // Corner glyph (emphasis): a filled notch triangle, top-right.
     if (style.glyph === 'bang' && bw >= 8) {
@@ -2255,15 +3936,15 @@ export class TimelineViewElement extends HTMLElement {
     // Label — suppressed entirely below fit height (a compact sliver has
     // no room for text); otherwise never allowed to spill out of the bar,
     // sticking to the plot's left edge while the bar's start is scrolled
-    // off-screen.
+    // off-screen — just past the continuation shadow when one is active,
+    // so the sticky label never sits inside the darkened zone.
     if (bh >= t.fontSize + 3) {
-      const pad = 5;
       const glyphPad = style.glyph === 'bang' ? 8 : 0;
-      const labelX = Math.max(x0, this.gutterW) + pad;
-      const label = fitText(n.label, x1 - labelX - pad - glyphPad, this.charW);
+      const label = fitText(n.label, x1 - labelX - labelPad - glyphPad, this.charW);
       if (label !== '') {
-        ctx.fillStyle = style.labelColor;
-        ctx.fillText(label, labelX, y + bh / 2 + 0.5);
+        // Full-contrast text + halo regardless of the surface — the
+        // span's own state/segments must never grey the label out.
+        this.labelText(ctx, label, this.textPx(labelX), this.textPx(y + bh / 2 + 0.5));
       }
     }
 
@@ -2272,16 +3953,52 @@ export class TimelineViewElement extends HTMLElement {
       ctx.lineWidth = 1.25;
       ctx.stroke(path);
     }
+
+    // Edge-continuation shadow: the clipped end darkens over the last
+    // EDGE_FADE_PX toward the viewport edge — the span reads as sliding
+    // UNDER the window edge, which casts a shadow on it. NEVER a fade to
+    // the background color: dissolving the span made it look like it
+    // evaporates there instead of continuing. Painted OVER the finished
+    // bar (fill, segments, border, hover ring) as a black gradient —
+    // full EDGE_SHADOW_ALPHA at the edge (clearly darker than the page
+    // background over any body), eased via a mid stop, clear at the
+    // inner side — plus a 1px near-black line at the boundary itself to
+    // strengthen the occluding-edge read. Reads identically over solid,
+    // hollow, hatched, and scrimmed treatments and stays correct on an
+    // opaque canvas. The rect overshoots the bar by 1px vertically to
+    // catch the border's outer half (still inside the 2px track gap).
+    if (fade.left) {
+      const gx = this.gutterW;
+      const grad = ctx.createLinearGradient(gx, 0, gx + EDGE_FADE_PX, 0);
+      grad.addColorStop(0, withAlpha('#000000', EDGE_SHADOW_ALPHA));
+      grad.addColorStop(0.55, withAlpha('#000000', EDGE_SHADOW_ALPHA * 0.35));
+      grad.addColorStop(1, withAlpha('#000000', 0));
+      ctx.fillStyle = grad;
+      ctx.fillRect(gx, y - 1, EDGE_FADE_PX, bh + 2);
+      ctx.fillStyle = withAlpha('#000000', 0.9);
+      ctx.fillRect(gx, y - 1, 1, bh + 2);
+    }
+    if (fade.right) {
+      const ex = this.gutterW + plotW;
+      const grad = ctx.createLinearGradient(ex - EDGE_FADE_PX, 0, ex, 0);
+      grad.addColorStop(0, withAlpha('#000000', 0));
+      grad.addColorStop(0.45, withAlpha('#000000', EDGE_SHADOW_ALPHA * 0.35));
+      grad.addColorStop(1, withAlpha('#000000', EDGE_SHADOW_ALPHA));
+      ctx.fillStyle = grad;
+      ctx.fillRect(ex - EDGE_FADE_PX, y - 1, EDGE_FADE_PX, bh + 2);
+      ctx.fillStyle = withAlpha('#000000', 0.9);
+      ctx.fillRect(ex - 1, y - 1, 1, bh + 2);
+    }
   }
 
   private drawInstant(
     ctx: CanvasRenderingContext2D,
-    n: NInterval,
     style: ResolvedStyle,
     cx: number,
     cy: number,
     trackH: number,
     hovered: boolean,
+    ghost = false,
   ): void {
     const t = this.theme;
     // Pips shrink with the track but never below a visible 4px diamond
@@ -2299,8 +4016,28 @@ export class TimelineViewElement extends HTMLElement {
     const emphasis = style.glyph === 'bang' || style.border === t.emphasis;
     ctx.strokeStyle = style.border;
     ctx.lineWidth = emphasis ? 2 : 1;
+    // A dashed state (cancelled) reads dashed at pip size too: the declared
+    // pattern is rescaled so a whole number of dash+gap cycles (3-5) closes
+    // around the diamond's perimeter. Pips deliberately skip the bars'
+    // below-12px dash-to-solid fallback — a closed diamond outline has no
+    // broken-corner failure mode, and a cancelled INSTANT must carry the
+    // same dashed signature as a cancelled span.
+    const dashSum = style.dash ? style.dash.reduce((a, b) => a + b, 0) : 0;
+    if (style.dash && dashSum > 0) {
+      const perim = Math.hypot(rx, r) * 4;
+      const cycles = Math.max(3, Math.min(5, Math.round(perim / 10)));
+      const unit = perim / cycles / (dashSum * (style.dash.length % 2 === 1 ? 2 : 1));
+      ctx.setLineDash(style.dash.map((d) => d * unit));
+    }
     ctx.stroke();
-    if (emphasis) {
+    if (style.dash) ctx.setLineDash(EMPTY_DASH);
+    // Ghost copies (the back layers of a cluster's 3-stack) draw fill +
+    // border only: no emphasis stem (an emphasis cluster shows ONE stem on
+    // its front copy, never a comb) and no hover ring (callers pass
+    // hovered=false for ghosts). The dashed-cancelled outline deliberately
+    // stays on ghosts — a cancelled cluster reads as a stack of dashed
+    // hollow diamonds, matching the per-state language.
+    if (emphasis && !ghost) {
       // Unmissable: a stem above the diamond, like an exclamation.
       ctx.strokeStyle = t.emphasis;
       ctx.lineWidth = 2;
@@ -2320,6 +4057,55 @@ export class TimelineViewElement extends HTMLElement {
       ctx.closePath();
       ctx.stroke();
     }
+  }
+
+  /**
+   * Screen geometry of a cluster's marker — shared by drawing and hit
+   * testing so the two can never disagree. Null while the cluster is
+   * unplaced (outside the window) or no part of its extent is visible.
+   */
+  private clusterPos(c: NCluster): { cx: number; cy: number; y: number; th: number; r: number } | null {
+    if (c.track < 0) return null;
+    const rv = this.renderView();
+    const plotW = this.plotWidth();
+    const th = this.laneTrackHeight(c.laneIdx);
+    const r = Math.max(2, Math.min(th * 0.42, 8));
+    const marginMs = ((r + 2) * (rv.end - rv.start)) / plotW;
+    const mt = clusterMarkerTime(c.extent, rv, marginMs);
+    if (mt === null) return null;
+    const m = this.metrics();
+    const y = AXIS_H + this.layout.tops[c.laneIdx] - this.laneScroll + trackTop(c.track, m, th);
+    return { cx: this.gutterW + timeToX(mt, rv, plotW), cy: y + th / 2, y, th, r };
+  }
+
+  /**
+   * A cluster marker: the SAME diamond pip as a single instant, drawn as
+   * a STACK of exactly THREE copies (two ghost copies offset up-right
+   * behind the true pip) — the stack silhouette alone carries "several
+   * instants live here at this zoom". Always three, never scaled by the
+   * member count: the glyph says "a stack", the tooltip carries the real
+   * count. There is no count text on the canvas. Styled by the members'
+   * shared state exactly like singles (all-skipped = dim-filled diamonds,
+   * all-cancelled = hollow dashed diamonds, mixed = the neutral default);
+   * the FRONT copy sits at the true anchor — the extent midpoint, sliding
+   * along the visible slice at a window edge (clusterMarkerTime) — so hit
+   * rects, hover ring, and tooltip anchoring are unchanged. Ghost copies
+   * skip the hover ring and emphasis stem (see drawInstant's `ghost`).
+   * Like pips, clusters get no edge-continuation treatment — a point
+   * marker has no clipped extent.
+   */
+  private drawCluster(ctx: CanvasRenderingContext2D, c: NCluster): void {
+    const p = this.clusterPos(c);
+    if (!p) return;
+    const style = this.resolved(c.catKey, c.state, null);
+    // Stack step: diagonal up-right offsets read as a card/coin stack. At
+    // the max pip radius (8) the step is 2px (total spread 4px); on
+    // compact 4px tracks it degrades to a 1px step — a slightly thickened
+    // pip instead of a smear.
+    const s = Math.max(1, Math.min(2, p.r * 0.35));
+    this.drawInstant(ctx, style, p.cx + 2 * s, p.cy - 2 * s, p.th, false, true);
+    this.drawInstant(ctx, style, p.cx + s, p.cy - s, p.th, false, true);
+    this.drawInstant(ctx, style, p.cx, p.cy, p.th, this.hoverClusterId === c.members[0].id);
   }
 
   private drawConnectors(ctx: CanvasRenderingContext2D, now: number): void {
@@ -2400,16 +4186,22 @@ export class TimelineViewElement extends HTMLElement {
       ctx.setLineDash(EMPTY_DASH);
       if (m.label) {
         ctx.fillStyle = color;
-        ctx.fillText(m.label, x + 5, AXIS_H + 9);
+        ctx.fillText(m.label, this.textPx(x + 5), this.textPx(AXIS_H + 9));
       }
     }
   }
 
   private drawNowLine(ctx: CanvasRenderingContext2D, now: number): void {
-    const rv = this.renderView();
-    if (now < rv.start || now > rv.end) return;
+    // The RAW view, not renderView(): the now line is VIEWPORT-anchored —
+    // while follow-now pins the view, `now` sits at a fixed span fraction
+    // and this x must be frame-to-frame constant. The snapped render view
+    // carries a per-frame quantization error that used to flip the
+    // rounded x between adjacent device pixels — a visible wiggle in the
+    // one state where the line must hold perfectly still (see nowLineX).
+    const view = this.view;
+    if (now < view.start || now > view.end) return;
     const t = this.theme;
-    const x = snap(this.gutterW + timeToX(now, rv, this.plotWidth()), this.dpr);
+    const x = nowLineX(now, view, this.gutterW, this.plotWidth(), this.dpr);
     // Stale: the line is parked at the last vouched timestamp, not ticking —
     // muted + dashed so it can't be mistaken for a live edge.
     const stale = this.feedStale;

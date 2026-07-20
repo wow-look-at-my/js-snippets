@@ -2,9 +2,9 @@
 
 ## What This Repo Is
 
-A library of reusable ES modules. Source is TypeScript (`.ts`) plus WGSL/GLSL shaders (`.wgsl`/`.glsl`) under `src/`. [ts0](https://github.com/wow-look-at-my/ts0) compiles them to JavaScript, which deploys to GitHub Pages. **Only `.ts` and `.wgsl` files are committed — `.js` output is never checked in.**
+A library of reusable ES modules. Source is TypeScript (`.ts`) plus WGSL/GLSL shaders (`.wgsl`/`.glsl`) under `src/`. [ts0](https://github.com/wow-look-at-my/ts0) compiles them to JavaScript, which deploys to [buildhost](https://github.com/wow-look-at-my/buildhost) sites. **Only `.ts` and `.wgsl` files are committed — `.js` output is never checked in.**
 
-Base URL: `https://wow-look-at-my.github.io/js-snippets`
+Base URL: `https://sites.pazer.build/js-snippets/branch/library` (the legacy GitHub Pages site at `https://wow-look-at-my.github.io/js-snippets` serves frozen 2026-07-15 content — the org Actions artifact quota killed its deploys; see "Deploy")
 
 ## Directory Layout
 
@@ -84,6 +84,13 @@ src/
 │   ├── *.test.ts          ← colocated node:test tests (program / mesh / fbo)
 │   └── shaders/
 │       └── fullscreen.vert.glsl
+showcase/                  ← timeline-view demo page (its own nested ts0 project — NOT part of the library build; see "Showcase")
+├── ts0.json               ← single-HTML-file target (entry index.html → dist/index.html; esbuild loader override for the .css text import)
+├── index.html             ← page shell (title bar + two <timeline-view>s)
+├── main.ts                ← wiring: styles/legend/tooltip + the live feed
+├── fake-data.ts           ← deterministic fake-run generator (pure fn of absolute time)
+├── page.css               ← page chrome (adopted from main.ts as a text import)
+└── assets.d.ts            ← ambient *.css/*.wgsl/*.glsl decls for the nested project's own type-check
 llms-header.txt            ← preamble for combined llms.txt
 ts0.json                   ← ts0 config (js library target, .wgsl/.glsl text loaders)
 scripts/build-llms.mjs     ← assembles dist/llms.txt after the ts0 build
@@ -105,7 +112,7 @@ pnpm build      # ts0 build (type-check + compile src/ -> dist/) + assemble dist
 
 The build is [ts0](https://github.com/wow-look-at-my/ts0)'s **js library target**, selected because `ts0.json`'s `entry` is the `src/` *directory*. ts0 type-checks (`tsc --noEmit`) and then compiles every `.ts` under `src/` to a parallel `.js` under `dist/`, preserving structure (`src/webgpu/sky.ts` → `dist/webgpu/sky.js`). Each file is its own esbuild entry point. Code shared between modules (e.g. `vec3`, imported by `mat4`) is deduplicated into a `dist/chunk-*.js` and imported — never copied into each output; non-shared local imports and `.wgsl`/`.glsl` shaders stay inlined. A consumer still imports a single URL — the browser fetches any shared chunk transitively. Shaders — and component stylesheets — are imported as text via the `loaders: { ".wgsl": "text", ".glsl": "text", ".css": "text" }` field in `ts0.json` (ambient decls in `wgsl.d.ts` / `glsl.d.ts` / `css.d.ts`).
 
-ts0 also emits TypeScript declarations into `dist/` (default-on for the js library target): every compiled module gets a `.d.ts` sibling next to its `.js` (chunks and `*.test.*` excluded), deployed to Pages at the same URL with the extension swapped — nothing new is committed, `dist/` stays gitignored.
+ts0 also emits TypeScript declarations into `dist/` (default-on for the js library target): every compiled module gets a `.d.ts` sibling next to its `.js` (chunks and `*.test.*` excluded), deployed to the site at the same URL with the extension swapped — nothing new is committed, `dist/` stays gitignored.
 
 `pnpm build` then runs `scripts/build-llms.mjs`, which combines `llms-header.txt` + all `src/**/llms.txt` files into `dist/llms.txt`.
 
@@ -132,7 +139,59 @@ Conventions:
 
 ## Deploy
 
-GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` job enables pnpm via corepack, runs `pnpm test` (type-check + `node --test`), then `pnpm build` (ts0 type-checks + compiles, then `dist/llms.txt` is assembled). A failing test fails CI. The `deploy` job (master only) `needs` the `build` job, so tests gate deploy too; it uploads `dist/` to GitHub Pages via `actions/deploy-pages`.
+GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` job enables pnpm via corepack, runs `pnpm test` (type-check + `node --test`), then `pnpm build` (ts0 type-checks + compiles, then `dist/llms.txt` is assembled). A failing test fails CI and gates the publish (same job, later step). The `build` job then publishes `dist/` to buildhost sites via `wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master` (OIDC, project `js-snippets`, `public: 'true'` so consumers keep importing anonymously): `master` → the stable `library` site branch (the canonical base URL), any other branch → `library-<flattened-branch>` so a change is verifiable from a real URL before merge. This replaced the GitHub Pages deploy 2026-07-20 (mirroring webhook-runner#93) after the org's Actions artifact-storage quota froze Pages at its 07-15 content; the `library-` prefix keeps the library sites clear of the showcase previews, which publish under the bare flattened branch name. The `showcase` job publishes the timeline demo page to buildhost per branch (see "Showcase" below); it self-gates on chart/showcase paths and succeeds as a no-op otherwise, so it never blocks the org's all-builds aggregation.
+
+## Showcase (`showcase/`)
+
+A live demo page for `<timeline-view>`: ONE self-contained HTML file whose
+fake, local, infinite feed keeps every visual treatment of the chart on
+screen — queued lead-ins, declared-wait hatching with ⧗/⏳ labels, failures,
+timeouts (a consumer style-map key), cancelled runs with kill tails of
+cycling sizes, instant-pip bursts, a viewport-crossing long span, packing
+bursts, markers, connectors, lazy backward history with an end-of-history
+boundary, plus a second compact instance demoing `--timeline-*` retheming and
+auto-fit. No network: data is generated deterministically as a pure function
+of absolute time (`fake-data.ts`), so live ticks, lazy history, and resyncs
+always agree, and the demo never runs dry.
+
+- **Build**: `pnpm build:showcase` → `showcase/dist/index.html` (gitignored via
+  the root `dist/` pattern). `showcase/ts0.json` selects ts0's single-HTML
+  target (`entry: index.html`); the component and page code are bundled and
+  inlined from THIS branch's `../src/ui/`, so every branch previews its own
+  chart. The `esbuild.loader` override (not `loaders`) is what makes the
+  component's `.css` text import work under the HTML target — and it replaces
+  the loader map of build-html's `<link>` stylesheet pass, which is why
+  `page.css` is imported/adopted from `main.ts` instead of `<link>`ed.
+- **Isolation**: `showcase/ts0.json` makes it a nested ts0 project, so the
+  root build/type-check/test skip it entirely (library `dist/` is
+  byte-identical with or without `showcase/`). Do not add `*.test.ts` here.
+- **CI**: the `showcase` job in deploy.yml publishes `showcase/dist/` to
+  buildhost via the org composite action
+  `wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master`
+  (OIDC — needs job-level `id-token: write`). Branch preview URL:
+  `https://sites.pazer.build/js-snippets/branch/<branch>/` with `/` in
+  branch names flattened to `-` (e.g. `claude/foo` → `claude-foo`). The
+  buildhost project MUST stay `js-snippets` (repo-derived): OIDC
+  auto-provisioning only authorizes the repo's own project name, and the
+  sites router rejects slash-namespaced names — anything else 404s with
+  "project not found".
+- **Path gate**: the job publishes only when the branch's diff vs
+  origin/master touches `src/ui/`, `showcase/`, or deploy.yml itself
+  (master pushes always publish). The gate is in-job (a TypeScript-action
+  step), NEVER a workflow-level paths filter — the same workflow runs the
+  library build.
+- **Access — private by operator decision (2026-07-15)**: the preview is
+  token-gated (`Authorization: Bearer …` or `?token=…`) because the repo is
+  private, so buildhost's OIDC-auto-provisioned `js-snippets` project — and
+  its sites — is private too. The operator has explicitly ruled it stays
+  that way ("do not make it public, i like it the way it is"). Do NOT add
+  `public: 'true'` to the showcase job's buildhost-publish-site step in
+  deploy.yml — that is not a missing fix, it is a rejected option.
+- **Post-#39 note**: the page feature-detects newer component API
+  (`legendEntries`, the built-in `cancelled` style) so it builds against any
+  branch's `src/ui`; rendering-side features (minimap, fullscreen, skip
+  clustering, kill-tail scrims, edge fades) light up automatically once the
+  bundled component has them.
 
 ## llms.txt — CRITICAL
 
