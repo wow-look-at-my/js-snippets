@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src/**/*.ts", "wgsl.d.ts"]
+  "include": ["src/**/*.ts", "wgsl.d.ts", "glsl.d.ts", "css.d.ts"]
 }

@@ -1,5 +1,7 @@
 // Procedural mesh generators.
 // Each returns { positions, normals, indices } as typed arrays.
+// Winding convention: indices are counter-clockwise viewed from outside the
+// surface — front-facing under WebGPU's default frontFace: 'ccw'.
 
 export interface Mesh {
   positions: Float32Array;
@@ -34,7 +36,7 @@ export function createCube(size = 1): Mesh {
   const idx: number[] = [];
   for (let f = 0; f < 6; f++) {
     const o = f * 4;
-    idx.push(o, o+2, o+1, o, o+3, o+2);
+    idx.push(o, o+1, o+2, o, o+2, o+3);
   }
   return {
     positions: new Float32Array(p),
@@ -98,7 +100,7 @@ export function createCylinder(radiusTop = 0.5, radiusBottom = 0.5, height = 1, 
   }
   for (let i = 0; i < segments; i++) {
     const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
-    indices.push(a, b, c, b, d, c);
+    indices.push(a, c, b, b, c, d);
   }
 
   // Top cap
@@ -143,7 +145,7 @@ export function createPlane(width = 20, depth = 20): Mesh {
     normals: new Float32Array([
       0, 1, 0,  0, 1, 0,  0, 1, 0,  0, 1, 0,
     ]),
-    indices: new Uint16Array([0, 1, 2, 0, 2, 3]),
+    indices: new Uint16Array([0, 2, 1, 0, 3, 2]),
   };
 }
 
@@ -199,7 +201,7 @@ export function createTorus(radius = 1, tube = 0.4, radialSegments = 24, tubular
     for (let j = 0; j < radialSegments; j++) {
       const a = i * stride + j;
       const b = a + stride;
-      indices.push(a, b, a + 1, a + 1, b, b + 1);
+      indices.push(a, a + 1, b, a + 1, b + 1, b);
     }
   }
   return {
@@ -207,4 +209,23 @@ export function createTorus(radius = 1, tube = 0.4, radialSegments = 24, tubular
     normals: new Float32Array(normals),
     indices: new Uint16Array(indices),
   };
+}
+
+/**
+ * Returns a new mesh with every triangle's winding reversed: (a, b, c) →
+ * (a, c, b), so front faces become back faces. The input is not mutated —
+ * positions/normals are passed through as the same arrays and only a new
+ * index array is allocated. Use it to render a mesh's interior, or to
+ * pre-flip geometry drawn under a mirror (determinant < 0) transform so
+ * back-face culling keeps working.
+ */
+export function flipWinding(mesh: Mesh): Mesh {
+  const src = mesh.indices;
+  const indices = new Uint16Array(src.length);
+  for (let t = 0; t < src.length; t += 3) {
+    indices[t] = src[t];
+    indices[t + 1] = src[t + 2];
+    indices[t + 2] = src[t + 1];
+  }
+  return { positions: mesh.positions, normals: mesh.normals, indices };
 }

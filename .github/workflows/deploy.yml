@@ -4,15 +4,19 @@ on: push
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
+  id-token: write # buildhost OIDC auth
+  # The buildhost-publish-site action (consumed @master) now front-runs the
+  # org's no-all-builds shadow guard, which scans this run's jobs and the
+  # head commit's check runs — it FAILS CLOSED without these two reads.
+  actions: read
+  checks: read
 
 env:
   COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -31,25 +35,132 @@ jobs:
       # "pnpm.onlyBuiltDependencies".
       - run: pnpm install
 
+      - name: Test
+        # ts0 test type-checks the project (sources + *.test.ts) and runs them
+        # under Node's built-in test runner. A failing test fails CI, and — the
+        # publish step being later in this same job — gates the deploy too.
+        run: pnpm test
+
       - name: Build
         # ts0 build type-checks (tsc --noEmit) and compiles src/ -> dist/;
         # the build script then assembles dist/llms.txt.
         run: pnpm build
 
-      - name: Upload Pages artifact
-        if: github.ref == 'refs/heads/master'
-        uses: actions/upload-pages-artifact@v3
+      # The library used to deploy to GitHub Pages, but GH Pages deploys
+      # ride Actions artifacts and the org's artifact storage quota is
+      # exhausted — the Pages deploy has failed since 2026-07-19
+      # ("Artifact storage quota has been hit"), freezing the published
+      # library at its 07-15 content. Same migration as webhook-runner#93:
+      # buildhost-publish-site PUTs one tar.gz straight to
+      # sites.pazer.build (GitHub OIDC auth) — no Actions artifacts
+      # anywhere. master publishes the stable 'library' site (the
+      # canonical consumption URL); every other branch publishes
+      # 'library-<flattened-branch>' so a change can be verified from a
+      # real URL before merge. The bare flattened branch name is the
+      # showcase preview's site (below) — the 'library-' prefix keeps the
+      # two from overwriting each other. The repo is private, so the
+      # buildhost project is private; `public: 'true'` (the X-Public-Site
+      # mechanism) opens just these library site branches for anonymous
+      # reads — consumers (the webhook-runner dashboard) import the
+      # component at runtime with no credential, exactly like the old
+      # github.io URL. The legacy GitHub Pages site keeps serving its
+      # frozen 2026-07-15 content — nothing is deleted here.
+      - name: Library site name
+        id: sitename
+        uses: wow-look-at-my/actions@typescript#latest
         with:
-          path: dist
+          script: |
+            // buildhost serves sites under a single path segment — flatten
+            // anything outside [A-Za-z0-9._-] out of the branch name.
+            const flat = (github.ref_name || 'branch').replace(/[^A-Za-z0-9._-]/g, '-');
+            const site = github.ref_name === 'master' ? 'library' : `library-${flat}`;
+            core.setOutput('branch', site);
+            core.info(`library site branch: ${site}`);
 
-  deploy:
-    needs: build
-    if: github.ref == 'refs/heads/master'
+      - name: Publish library to buildhost sites
+        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master
+        with:
+          server: https://pazer.build
+          project: js-snippets # repo-derived: the only site project OIDC authorizes
+          branch: ${{ steps.sitename.outputs.branch }}
+          source_dir: dist
+          public: 'true' # the library must stay anonymously importable
+
+  # Publish the timeline showcase — showcase/'s single self-contained HTML
+  # demo of <timeline-view> on fake local data — to buildhost as a per-branch
+  # static site: https://sites.pazer.build/js-snippets/branch/<branch>/.
+  # The project MUST be "js-snippets": buildhost's OIDC auto-provisioning
+  # authorizes a repo's identity only for the project named after the repo
+  # (or its slash-namespace), and the sites router takes single-segment
+  # project names only — any other name 404s ("project not found").
+  # Publishes only when the BRANCH touches the chart or the showcase (always
+  # on master); otherwise the steps no-op and the job still succeeds, so the
+  # org's all-builds aggregation never trips over it.
+  showcase:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      id-token: write # buildhost OIDC auth
+      contents: read
+      # Job-level permissions REPLACE the workflow-level block, so the
+      # publish guard's two reads (see the workflow-level comment) must be
+      # re-granted here too.
+      actions: read
+      checks: read
     steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the gate diffs against the merge-base with origin/master
+
+      - name: Gate on chart/showcase paths
+        id: gate
+        uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            // The preview reflects BRANCH state, so the gate is branch-level:
+            // publish when the branch's diff vs origin/master touches the
+            // chart or the showcase (any later push to such a branch
+            // refreshes its preview). Master itself always publishes.
+            const watched = /^(src\/ui\/|showcase\/|\.github\/workflows\/deploy\.yml$)/;
+            // buildhost serves sites under a single path segment — flatten
+            // anything outside [A-Za-z0-9._-] out of the branch name.
+            const branch = (github.ref_name || 'preview').replace(/[^A-Za-z0-9._-]/g, '-');
+            core.setOutput('branch', branch);
+            if (github.ref_name === 'master') {
+              core.setOutput('publish', 'true');
+              core.info('push to master — always publish');
+              return;
+            }
+            const mb = (await exec.getExecOutput('git', ['merge-base', 'origin/master', 'HEAD'])).stdout.trim();
+            const diff = (await exec.getExecOutput('git', ['diff', '--name-only', `${mb}..HEAD`])).stdout;
+            const files = diff.split('\n').filter(Boolean);
+            const hit = files.filter((f) => watched.test(f));
+            core.setOutput('publish', String(hit.length > 0));
+            core.info(hit.length > 0
+              ? `chart/showcase paths touched:\n  ${hit.join('\n  ')}`
+              : `no chart/showcase paths among ${files.length} changed file(s) — skipping publish`);
+
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.publish == 'true'
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        if: steps.gate.outputs.publish == 'true'
+        run: corepack enable
+
+      - run: pnpm install
+        if: steps.gate.outputs.publish == 'true'
+
+      # ts0's single-HTML target: type-checks, bundles the branch's own
+      # src/ui/timeline-view.ts (CSS inlined), emits showcase/dist/index.html.
+      - run: pnpm build:showcase
+        if: steps.gate.outputs.publish == 'true'
+
+      - name: Publish preview to buildhost
+        if: steps.gate.outputs.publish == 'true'
+        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master
+        with:
+          server: https://pazer.build
+          project: js-snippets # repo-derived: the only site project OIDC authorizes
+          branch: ${{ steps.gate.outputs.branch }}
+          source_dir: ./showcase/dist

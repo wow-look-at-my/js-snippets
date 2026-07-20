@@ -1,0 +1,98 @@
+### webgl2/program.js
+WebGL2 shader compile + program link with readable, source-annotated errors,
+plus GLSL chunk injection. annotateShaderLog and injectChunk are pure string
+processing (unit-tested); the rest needs a WebGL2RenderingContext.
+
+Types: ProgramOptions = { label?: string; attribLocations?: Record<string, number> }
+Exports:
+  annotateShaderLog(source, infoLog, contextLines? = 1) → string
+    Interleaves "ERROR: 0:<line>:" style log lines with the referenced source
+    lines (marker on the offending line, contextLines around it); log lines
+    without a line reference pass through verbatim.
+  injectChunk(source, chunk) → string
+    Splice a shared GLSL chunk (helper functions used by several shaders —
+    GLSL's missing #include) immediately after the first-line #version
+    directive, or prepend it when there is none. Exactly one newline follows
+    the chunk whether or not it ends with one; no-op when the chunk already
+    appears verbatim in the source (idempotent). The chunk lands before the
+    host's precision statements, so it should declare its own default
+    precision (repeat precision declarations are legal GLSL).
+  compileShader(gl, type, source, label?) → WebGLShader
+    Throws an Error containing the annotated info log on compile failure.
+  createProgram(gl, vertexSource, fragmentSource, options?) → WebGLProgram
+    Compile + link; binds attribLocations before linking (pin locations so VAOs
+    need no program query); detaches/deletes shaders; throws annotated errors.
+  getUniformLocations(gl, program, names) → Record<name, WebGLUniformLocation | null>
+    Batch getUniformLocation; optimized-away/typo'd names map to null.
+
+### webgl2/mesh.js
+VAO construction from typed arrays: one ARRAY_BUFFER per attribute (packed
+floats), optional index buffer with automatic 16/32-bit sizing.
+chooseIndexArray is pure (unit-tested); createMesh needs a context.
+
+Types: MeshAttribute = { location: number; data: Float32Array; size: number };
+  MeshOptions = { mode? (default gl.TRIANGLES); indices?: ArrayLike<number> | Uint16Array | Uint32Array };
+  Mesh = { vao, count, indexType (0 when non-indexed), mode, draw(): void, dispose(): void }.
+Exports:
+  chooseIndexArray(indices, vertexCount) → Uint16Array | Uint32Array
+    Uint16 while vertexCount ≤ 65536, else Uint32; typed inputs pass through.
+  createMesh(gl, attributes, options?) → Mesh
+    Vertex count from the first attribute (data.length / size); draw() binds
+    the VAO and issues drawElements/drawArrays, then unbinds.
+
+### webgl2/fbo.js
+Float-color framebuffer (RGBA16F default) for additive/HDR accumulation
+without 8-bit clamping, plus a ping-pong pair of them for iterative feedback
+passes. Performs the EXT_color_buffer_float availability check and the
+completeness check, throwing informative errors. makePingPong is pure
+(unit-tested); FBO creation needs a GL context.
+
+Types: FloatFboOptions = { internalFormat?: 'rgba16f' | 'rgba32f'; filter? (default gl.LINEAR) };
+  FloatFbo = { framebuffer, texture, width, height, resize(w, h): void, dispose(): void };
+  PingPongTarget = { resize(w, h): void; dispose(): void };
+  PingPong<T extends PingPongTarget = FloatFbo> = { read: T, write: T, swap(): void,
+    resize(w, h): void, dispose(): void }.
+Exports:
+  createFloatFbo(gl, width, height, options?) → FloatFbo
+    No depth attachment; resize() reallocates the backing texture;
+    readPixels(..., gl.FLOAT, ...) works while the FBO is bound.
+  createPingPong(gl, width, height, options?) → PingPong<FloatFbo>
+    Two equal createFloatFbo targets for iterative accumulation: bind
+    write.framebuffer, sample read.texture, then swap(). Float storage is the
+    point — 8-bit quantizes away small per-step feedback changes (a ×0.999
+    alpha decay never fades). Both targets start empty/transparent (WebGL2
+    zero-initializes textures); resize() reallocates — and clears — both;
+    swap() reassigns read/write, so access targets through the pair rather
+    than caching them across swaps.
+  makePingPong(a, b) → PingPong<T>
+    Pure pairing logic over any two resize/dispose targets (what createPingPong
+    wraps around two FloatFbos); read starts as a, write as b.
+
+### webgl2/video-texture.js
+Texture tracking an HTMLVideoElement (three.js VideoTexture equivalent).
+Uses requestVideoFrameCallback when available to skip redundant uploads;
+otherwise uploads on every update() with data. No node unit tests (needs
+DOM + GL).
+
+Types: VideoTextureOptions = { srgb? = true (SRGB8_ALPHA8 → linear samples;
+  false = raw RGBA8 for data video); flipY? = true };
+  VideoTexture = { texture, video, update(): boolean, dispose(): void }.
+Exports:
+  createVideoTexture(gl, video, options?) → VideoTexture
+    LINEAR/CLAMP_TO_EDGE; allocates on first update() with data
+    (readyState ≥ HAVE_CURRENT_DATA), texSubImage2D afterwards, reallocating
+    if the video dimensions change; update() returns true when it uploaded.
+
+### webgl2/fullscreen.js
+Fullscreen triangle pass generated from gl_VertexID — no vertex buffer. The
+GLSL lives in webgl2/shaders/fullscreen.vert.glsl and is embedded at build
+time. No node unit tests (needs a GL context; the .glsl import needs the
+build's text loader).
+
+Exports:
+  FULLSCREEN_VERTEX_SHADER: string
+    #version 300 es vertex shader; emits `out vec2 vUv` in [0,1]² with v=0 at
+    the bottom of the screen (pairs with flipY-uploaded textures).
+  createFullscreenPass(gl) → { draw(): void, dispose(): void }
+    draw() binds a dedicated empty VAO and drawArrays 3 vertices; bind your
+    program/uniforms/blend state first.

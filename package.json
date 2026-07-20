@@ -4,9 +4,12 @@
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "build": "ts0 build && node scripts/build-llms.mjs"
+    "build": "ts0 build && node scripts/build-llms.mjs",
+    "build:showcase": "cd showcase && ts0 build",
+    "test": "ts0 test"
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
     "@webgpu/types": "^0.1.60",
     "ts0": "git+https://github.com/wow-look-at-my/ts0.git#master"
   },

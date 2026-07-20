@@ -2,5 +2,5 @@
   "entry": "src",
   "target": "browser",
   "sourcemap": false,
-  "loaders": { ".wgsl": "text" }
+  "loaders": { ".wgsl": "text", ".glsl": "text", ".css": "text" }
 }
