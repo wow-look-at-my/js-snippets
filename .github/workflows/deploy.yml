@@ -101,6 +101,11 @@ jobs:
     permissions:
       id-token: write # buildhost OIDC auth
       contents: read
+      # Job-level permissions REPLACE the workflow-level block, so the
+      # publish guard's two reads (see the workflow-level comment) must be
+      # re-granted here too.
+      actions: read
+      checks: read
     steps:
       - uses: actions/checkout@v4
         with:
