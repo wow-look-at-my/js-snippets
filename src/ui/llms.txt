@@ -220,7 +220,7 @@ over the region's GEOMETRY: fill, hatching, and border all get the same
 dimColor transform (50% saturation, 50% value — hue and alpha
 untouched), so the section reads quieter than a running span. Label and
 badge text is deliberately EXEMPT from that filter: every span-surface
-label (bar labels, the cluster ×N badge, adapter-composed badge strings
+label (bar labels, adapter-composed badge strings
 like queue ordinals) always renders at the full-contrast foreground
 (--timeline-fg) over a thin counter-color halo (labelHaloColor: dark
 rim under a light fg, light rim under a dark one), so text stays
@@ -244,11 +244,14 @@ the timeline scrolls — and a real-duration bar is clamped to MIN_BAR_PX
 Instant markers CLUSTER at scale: pips whose centers would visually
 overlap in the current window (within ~12px of a neighbor — a greedy
 transitive sweep, re-derived per layout pass) merge into ONE point-like
-×N marker — the SAME diamond pip as a single instant, with a ×N count
-badge beside it: the badge alone carries the group meaning (membership
-is exactly "would visually overlap", so a badged pip can only ever BE a
-cluster) — never a duration bar: an instantaneous event has no length,
-and neither does a pile of them. The cluster packs
+STACKED marker — the SAME diamond pip as a single instant, drawn as a
+stack of exactly THREE copies (two ghost copies offset up-right behind
+the true front pip; always three, NEVER scaled by the member count —
+the stack silhouette alone says "several live here", and there is no
+count text on the canvas: the tooltip carries the real ×N count;
+membership is exactly "would visually overlap", so a stacked pip can
+only ever BE a cluster) — never a duration bar: an instantaneous event
+has no length, and neither does a pile of them. The cluster packs
 as ONE row slot spanning its member extent, so a burst of coincident
 instants can't blow up the lane height; membership depends only on time
 deltas and the scale, so panning never re-clusters (no jitter — the
@@ -379,7 +382,7 @@ Element <timeline-view> — data API (properties/methods, never attributes):
                       content are honored), and pathological content clips
                       at a max height instead of outgrowing the host —
                       nothing ever spills past the tooltip border. NEVER
-                      called for ×N cluster hits — their summary tooltip
+                      called for cluster hits — their summary tooltip
                       is component-built (see instant clustering above).
   loadRange         — (start, end) => Promise<{exhausted?: boolean} | void>.
                       Invoked (one request at a time, min-chunk widened;
@@ -483,7 +486,7 @@ Viewport / follow:
                       no-fullscreen-button attribute (the property and
                       attribute keep working programmatically).
   Events: 'viewportchange' {start, end, followNow} on user-driven changes,
-  'intervalclick' {interval, lane} (single intervals only — a ×N cluster
+  'intervalclick' {interval, lane} (single intervals only — a cluster
   click zooms to its member extent instead), 'intervalhover'
   {interval|null, lane|null}, 'connectorclick' {connector}, 'laneclick'
   {lane} (a click on a gutter label — lets consumers make lanes
@@ -496,7 +499,7 @@ Viewport / follow:
 
 Legend (the "?" pill): a small button stacked above the fullscreen
   toggle opens an in-place glyph dictionary — the component-owned
-  vocabulary (filled/hollow instant pips, the ×N cluster badge, the
+  vocabulary (filled/hollow instant pips, the stacked cluster pip, the
   failed stipple + bang, hatched wait/queued phases, dim de-emphasis,
   the cancelled span's dashed hollow + terminal kill cut) followed by
   any consumer `legendEntries`. Rows name a GLYPH and its meaning —
@@ -722,7 +725,8 @@ Exports:
     ongoing intervals — drives the element's edge shadow).
   Instant clustering: clusterInstants(items, view, plotWidth, joinPx?,
     instantPx?) → {clusters: InstantCluster[], memberOf: number[]} (the
-    scale-aware greedy transitive sweep behind the element's ×N markers:
+    scale-aware greedy transitive sweep behind the element's stacked
+    cluster markers:
     terminal items whose duration maps under instantPx merge while their
     starts sit within joinPx (CLUSTER_JOIN_PX = 12) of a neighbor at
     this scale; clusters have >= 2 members, everything else gets

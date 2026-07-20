@@ -428,7 +428,8 @@ canvas.minimap[hidden] {
 }
 
 /* Instant pips: filled diamond = event, hollow diamond = cancelled. A
-   cluster is the SAME diamond — the ×N badge alone marks the group. */
+   cluster is the SAME diamond drawn as a fixed 3-stack — always three
+   copies, never scaled by the member count. */
 .lg-instant::before,
 .lg-cancelled-pip::before,
 .lg-cluster::before {
@@ -446,11 +447,14 @@ canvas.minimap[hidden] {
   border-style: dashed;
 }
 
-/* Cluster: the ×N count badge beside the ordinary pip diamond. */
-.lg-cluster::after {
-  content: '×N';
-  margin-left: 6px;
-  font-size: 10px;
+/* Cluster: the same diamond as a stack of exactly three copies. The two
+   back copies are box-shadows on the rotated element — the offsets are in
+   the ROTATED frame, so local (0, -2.8px)/(0, -5.7px) renders as the
+   canvas glyph's screen-space up-right (2,-2)/(4,-4) steps. */
+.lg-cluster::before {
+  box-shadow:
+    0 -2.8px 0 -0.5px rgba(122, 148, 183, 0.8),
+    0 -5.7px 0 -1px rgba(122, 148, 183, 0.55);
 }
 
 /* -- Minimap lift for the corner chrome ------------------------------------------ */

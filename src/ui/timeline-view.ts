@@ -249,7 +249,7 @@ export type LoadRangeFn = (start: number, end: number) => Promise<{ exhausted?: 
 
 /**
  * What the pointer is over — handed to tooltipFor and hover/click events.
- * 'cluster' (a ×N group of visually-overlapping instant markers) is the
+ * 'cluster' (a stacked group of visually-overlapping instant markers) is the
  * one hit type NEVER handed to tooltipFor: its summary tooltip is
  * component-built, and clicking it zooms to the member extent instead of
  * dispatching intervalclick.
@@ -286,12 +286,13 @@ interface NInterval {
   state: string;
   segs: NSeg[] | null;
   track: number;
-  /** True while a ×N cluster represents this instant (it is not drawn/hit itself). */
+  /** True while a cluster marker represents this instant (it is not drawn/hit itself). */
   clustered: boolean;
 }
 
 /**
- * A ×N cluster of instant markers, re-derived per layout pass at the
+ * A cluster of instant markers (drawn as a fixed 3-stack of pips),
+ * re-derived per layout pass at the
  * current scale (clusterInstants). Occupies ONE packing slot spanning its
  * member extent — coincident instants can never blow up the lane height.
  */
@@ -402,7 +403,7 @@ export interface TimelineLegendEntry {
 const LEGEND_ROWS: readonly { swatch: string; text: string }[] = [
   { swatch: 'lg-instant', text: 'instant — a zero-duration event (filled pip)' },
   { swatch: 'lg-cancelled-pip', text: 'cancelled instant (hollow, dashed pip)' },
-  { swatch: 'lg-cluster', text: '×N — several instants clustered at this zoom; zoom in or click to split' },
+  { swatch: 'lg-cluster', text: 'stacked pips — several instants clustered at this zoom; zoom in or click to split' },
   { swatch: 'lg-bar lg-failed', text: 'failed — stippled body, red border, corner bang' },
   { swatch: 'lg-bar lg-hatch', text: 'hatched phase — a declared wait (lock, group slot, sleep) or queued time' },
   { swatch: 'lg-bar lg-dim', text: 'dim — queued / de-emphasized' },
@@ -531,7 +532,7 @@ export class TimelineViewElement extends HTMLElement {
   private downHit: TimelineHit | null = null;
   private hover: TimelineHit | null = null;
   private hoverIntervalId: string | null = null;
-  private hoverClusterId: string | null = null; // first-member id of the hovered ×N cluster
+  private hoverClusterId: string | null = null; // first-member id of the hovered cluster
   private glidePx = 0; // pending discrete-wheel zoom, in wheel px
   private glideX = 0; // zoom anchor (canvas x) for the glide
   private lastFrame = 0;
@@ -546,7 +547,7 @@ export class TimelineViewElement extends HTMLElement {
   private packedStart = NaN;
   private packedEnd = NaN;
   private packedPlotW = NaN; // clustering is scale-aware: a resize re-derives it
-  // Per-lane ×N clusters for the current window (rebuilt with the pack).
+  // Per-lane clusters for the current window (rebuilt with the pack).
   private laneClusters: NCluster[][] = [];
   // Sticky row state, one allocator per lane ID (not index — lane
   // insertions must never hand one lane's row memory to another). The
@@ -1349,7 +1350,7 @@ export class TimelineViewElement extends HTMLElement {
   /**
    * Cluster + row one lane for the current window; returns its visible
    * track count. Instant markers that visually overlap at this scale
-   * merge into ×N clusters (clusterInstants — component-native and
+   * merge into clusters (clusterInstants — component-native and
    * scale-aware, so zooming in splits them); each cluster then packs as
    * ONE item spanning its member extent, which is what keeps a burst of
    * coincident instants from blowing up the lane height. Rows come from
@@ -2215,7 +2216,7 @@ export class TimelineViewElement extends HTMLElement {
       }
     }
     // Intervals: topmost = last in draw order within the lane — which
-    // puts the lane's ×N cluster markers (drawn after its bars) first.
+    // puts the lane's cluster stack markers (drawn after its bars) first.
     const laneIdx = this.laneAtY(y);
     if (laneIdx >= 0) {
       const ncs = this.laneClusters[laneIdx];
@@ -2583,7 +2584,7 @@ export class TimelineViewElement extends HTMLElement {
       this.invalidate();
     }
     // Cluster hover ring (keyed by the first member — the cluster's
-    // identity). No intervalhover: a ×N group is not a single interval.
+    // identity). No intervalhover: a cluster is not a single interval.
     const nextCluster = hit?.type === 'cluster' ? (hit.intervals[0]?.id ?? null) : null;
     if (nextCluster !== this.hoverClusterId) {
       this.hoverClusterId = nextCluster;
@@ -3078,10 +3079,10 @@ export class TimelineViewElement extends HTMLElement {
         const n = per[i];
         if (n.start > rv.end) break; // sorted by start
         if ((n.end ?? now) < rv.start && n.end !== null) continue;
-        if (n.clustered) continue; // drawn as its cluster's ×N marker below
+        if (n.clustered) continue; // drawn as its cluster's stack marker below
         this.drawInterval(ctx, n, now);
       }
-      // The lane's ×N cluster markers, over its bars.
+      // The lane's cluster stack markers, over its bars.
       const ncs = this.laneClusters[laneIdx];
       if (ncs) for (const c of ncs) this.drawCluster(ctx, c);
     }
@@ -3329,6 +3330,7 @@ export class TimelineViewElement extends HTMLElement {
     cy: number,
     trackH: number,
     hovered: boolean,
+    ghost = false,
   ): void {
     const t = this.theme;
     // Pips shrink with the track but never below a visible 4px diamond
@@ -3361,7 +3363,13 @@ export class TimelineViewElement extends HTMLElement {
     }
     ctx.stroke();
     if (style.dash) ctx.setLineDash(EMPTY_DASH);
-    if (emphasis) {
+    // Ghost copies (the back layers of a cluster's 3-stack) draw fill +
+    // border only: no emphasis stem (an emphasis cluster shows ONE stem on
+    // its front copy, never a comb) and no hover ring (callers pass
+    // hovered=false for ghosts). The dashed-cancelled outline deliberately
+    // stays on ghosts — a cancelled cluster reads as a stack of dashed
+    // hollow diamonds, matching the per-state language.
+    if (emphasis && !ghost) {
       // Unmissable: a stem above the diamond, like an exclamation.
       ctx.strokeStyle = t.emphasis;
       ctx.lineWidth = 2;
@@ -3403,32 +3411,33 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   /**
-   * A ×N cluster marker: the SAME diamond pip as a single instant — the
-   * ×N count badge alone carries "several instants live here at this
-   * zoom". There is no collision to disambiguate (markers merge exactly
-   * while they'd visually overlap, so a badged pip can only ever BE a
-   * cluster), and a shape switch just made the group look like a foreign
-   * glyph. Styled by the members' shared state exactly like singles
-   * (all-skipped = dim-filled diamond, all-cancelled = hollow dashed
-   * diamond, mixed = the neutral default); sits at the extent midpoint,
-   * sliding along the visible slice at a window edge (clusterMarkerTime).
+   * A cluster marker: the SAME diamond pip as a single instant, drawn as
+   * a STACK of exactly THREE copies (two ghost copies offset up-right
+   * behind the true pip) — the stack silhouette alone carries "several
+   * instants live here at this zoom". Always three, never scaled by the
+   * member count: the glyph says "a stack", the tooltip carries the real
+   * count. There is no count text on the canvas. Styled by the members'
+   * shared state exactly like singles (all-skipped = dim-filled diamonds,
+   * all-cancelled = hollow dashed diamonds, mixed = the neutral default);
+   * the FRONT copy sits at the true anchor — the extent midpoint, sliding
+   * along the visible slice at a window edge (clusterMarkerTime) — so hit
+   * rects, hover ring, and tooltip anchoring are unchanged. Ghost copies
+   * skip the hover ring and emphasis stem (see drawInstant's `ghost`).
    * Like pips, clusters get no edge-continuation treatment — a point
    * marker has no clipped extent.
    */
   private drawCluster(ctx: CanvasRenderingContext2D, c: NCluster): void {
     const p = this.clusterPos(c);
     if (!p) return;
-    const t = this.theme;
     const style = this.resolved(c.catKey, c.state, null);
+    // Stack step: diagonal up-right offsets read as a card/coin stack. At
+    // the max pip radius (8) the step is 2px (total spread 4px); on
+    // compact 4px tracks it degrades to a 1px step — a slightly thickened
+    // pip instead of a smear.
+    const s = Math.max(1, Math.min(2, p.r * 0.35));
+    this.drawInstant(ctx, style, p.cx + 2 * s, p.cy - 2 * s, p.th, false, true);
+    this.drawInstant(ctx, style, p.cx + s, p.cy - s, p.th, false, true);
     this.drawInstant(ctx, style, p.cx, p.cy, p.th, this.hoverClusterId === c.members[0].id);
-    // ×N badge — same fit rule as bar labels (suppressed on slivers),
-    // same guaranteed-contrast treatment (never the member state's dim).
-    if (p.th >= t.fontSize + 3) {
-      ctx.font = this.fontBar;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      this.labelText(ctx, `×${c.members.length}`, this.textPx(p.cx + p.r + 4), this.textPx(p.cy + 0.5));
-    }
   }
 
   private drawConnectors(ctx: CanvasRenderingContext2D, now: number): void {
