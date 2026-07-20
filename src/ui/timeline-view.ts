@@ -161,6 +161,9 @@ import {
   clusterInstants,
   clusterMarkerTime,
   clusterZoomView,
+  fitSpanView,
+  segmentAtTime,
+  type SegmentHit,
   minimapExtent,
   minimapWindowRect,
   minimapHitZone,
@@ -196,6 +199,8 @@ import {
   type HitRect,
   type PackItem,
 } from './timeline-view-math.ts';
+
+import { FADE_TAIL_CHARS, FadeTextPainter, deriveLabelTiers, fitTieredText } from './canvas-text.ts';
 
 import TIMELINE_CSS from './timeline-view.css';
 
@@ -270,10 +275,13 @@ export type LoadRangeFn = (start: number, end: number) => Promise<{ exhausted?: 
  * 'cluster' (a stacked group of visually-overlapping instant markers) is the
  * one hit type NEVER handed to tooltipFor: its summary tooltip is
  * component-built, and clicking it zooms to the member extent instead of
- * dispatching intervalclick.
+ * dispatching intervalclick. An interval hit's `segment` names the phase
+ * segment under the pointer (null over the base bar) — ADDITIVE, so
+ * existing tooltipFor callbacks keep working unchanged and opt in by
+ * reading it.
  */
 export type TimelineHit =
-  | { type: 'interval'; interval: TimelineInterval; lane: TimelineLane }
+  | { type: 'interval'; interval: TimelineInterval; lane: TimelineLane; segment?: SegmentHit | null }
   | { type: 'cluster'; intervals: TimelineInterval[]; lane: TimelineLane }
   | { type: 'connector'; connector: TimelineConnector; missingEndpoint?: 'from' | 'to' }
   | { type: 'marker'; marker: TimelineMarker }
@@ -300,6 +308,8 @@ interface NInterval {
   start: number;
   end: number | null; // null = ongoing
   label: string;
+  /** Label fallbacks, fullest → most compact; null = `label` is the only tier. */
+  tiers: string[] | null;
   catKey: string;
   state: string;
   segs: NSeg[] | null;
@@ -704,6 +714,12 @@ export class TimelineViewElement extends HTMLElement {
   private fontBar = '';
   private labelHalo = labelHaloColor(THEME_DEFAULTS.fg);
   private charW = 6;
+  private labelPainter = new FadeTextPainter();
+  // Width model for label fitting: char-count arithmetic on the mutable
+  // measureCharW (set per call site — bar labels use charW, compact gutter
+  // labels a downscaled one), so no closure is allocated per frame.
+  private measureCharW = 6;
+  private measureLabel = (s: string): number => s.length * this.measureCharW;
   private gutterW = 90;
   private oklch = true;
   private reducedMotion = false;
@@ -1283,6 +1299,23 @@ export class TimelineViewElement extends HTMLElement {
     this.applyUserView({ start: s, end: s + span }, { jump: true });
   }
 
+  /**
+   * Fit the viewport to ONE interval: its span full-width plus
+   * `pad` fraction of it each side (default 0.05) — the run-detail-dialog
+   * convenience (an embedded instance shows just the clicked span, no
+   * viewport math). A thin wrapper over setViewport, so it counts as a
+   * consumer-chosen window (latches viewTouched; span clamps + the now
+   * stop apply; instants center in the ~2s minimum window). False when
+   * the id is unknown — viewport untouched.
+   */
+  fitToInterval(id: string, opts?: { pad?: number }): boolean {
+    const n = this.byId.get(id);
+    if (!n) return false;
+    const v = fitSpanView(n.start, n.end ?? this.liveEdge(), opts?.pad);
+    this.setViewport(v.start, v.end);
+    return true;
+  }
+
   /** Whether the right edge is pinned to live "now" (default true). */
   get followNow(): boolean {
     return this.following;
@@ -1335,13 +1368,15 @@ export class TimelineViewElement extends HTMLElement {
     const lane = this.lanes[laneIdx];
     const start = toMs(iv.start);
     const end = iv.end == null ? null : toMs(iv.end);
+    const label = iv.label ?? iv.labelTiers?.[0] ?? '';
     const n: NInterval = {
       src: iv,
       id: iv.id,
       laneIdx,
       start,
       end,
-      label: iv.label ?? '',
+      label,
+      tiers: intervalLabelTiers(iv.labelTiers, label),
       catKey: iv.category ?? lane.group ?? lane.id,
       state: iv.state ?? '',
       segs: iv.segments?.length
@@ -2358,6 +2393,7 @@ export class TimelineViewElement extends HTMLElement {
     }
     this.colorCache.clear();
     this.patternCache.clear();
+    this.labelPainter.clear();
     // Theme colors are baked into the minimap density texture — stamp it
     // stale (an async rebuild repaints it) and drop the cached fills.
     this.mmThemeGen++;
@@ -2591,7 +2627,11 @@ export class TimelineViewElement extends HTMLElement {
         if (n.start > this.renderView().end) continue;
         const r = expandHitRect(this.rectFor(n, now), HIT_MIN_W);
         if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
-          return { type: 'interval', interval: n.src, lane: this.lanes[n.laneIdx] };
+          // Which phase segment the pointer's TIME falls in (data-space —
+          // the expanded hit halo around instants resolves to none).
+          const t = xToTime(x - this.gutterW, this.renderView(), this.plotWidth());
+          const segment = n.segs ? segmentAtTime(n.segs, n.start, n.end ?? now, t) : null;
+          return { type: 'interval', interval: n.src, lane: this.lanes[n.laneIdx], segment };
         }
       }
     }
@@ -3035,6 +3075,9 @@ export class TimelineViewElement extends HTMLElement {
       row('lane', hit.lane.label);
       row('category', n.catKey);
       if (n.state) row('state', n.state);
+      // The phase under the pointer, named by its style-map kind — the
+      // legend's vocabulary, so no legend round-trip to decode a stripe.
+      if (hit.segment) row('segment', `${hit.segment.kind} · ${formatDuration(hit.segment.end - hit.segment.start)}`);
       const now = this.nowMs();
       const end = n.end ?? now;
       const fine = end - n.start < 10_000;
@@ -3720,11 +3763,19 @@ export class TimelineViewElement extends HTMLElement {
         const full = lh >= t.fontSize + 5;
         const fs = full ? t.fontSize : Math.max(7, Math.min(t.fontSize - 2, Math.floor(lh - 3)));
         const charW = full ? this.charW : (this.charW * fs) / t.fontSize;
-        const label = fitText(this.lanes[i].label, this.gutterW - 16, charW);
-        if (label !== '') {
+        this.measureCharW = charW;
+        const fit = fitTieredText(this.lanes[i].label, this.gutterW - 16, this.measureLabel);
+        if (fit !== null) {
           ctx.font = full ? this.fontBar : `${fs}px ${t.font}`;
-          ctx.fillStyle = full ? t.muted : withAlpha(t.muted, 0.7);
-          ctx.fillText(label, this.textPx(8), this.textPx(top + lh / 2 + 0.5));
+          const color = full ? t.muted : withAlpha(t.muted, 0.7);
+          const lx = this.textPx(8);
+          const ly = this.textPx(top + lh / 2 + 0.5);
+          if (fit.faded) {
+            this.labelPainter.paint(ctx, fit.text, lx, ly, fit.width, FADE_TAIL_CHARS * charW, color);
+          } else {
+            ctx.fillStyle = color;
+            ctx.fillText(fit.text, lx, ly);
+          }
         }
       }
     }
@@ -4029,11 +4080,18 @@ export class TimelineViewElement extends HTMLElement {
     // so the sticky label never sits inside the darkened zone.
     if (bh >= t.fontSize + 3) {
       const glyphPad = style.glyph === 'bang' ? 8 : 0;
-      const label = fitText(n.label, x1 - labelX - labelPad - glyphPad, this.charW);
-      if (label !== '') {
+      this.measureCharW = this.charW;
+      const fit = fitTieredText(n.tiers ?? n.label, x1 - labelX - labelPad - glyphPad, this.measureLabel);
+      if (fit !== null) {
         // Full-contrast text + halo regardless of the surface — the
         // span's own state/segments must never grey the label out.
-        this.labelText(ctx, label, this.textPx(labelX), this.textPx(y + bh / 2 + 0.5));
+        const lx = this.textPx(labelX);
+        const ly = this.textPx(y + bh / 2 + 0.5);
+        if (fit.faded) {
+          this.labelPainter.paint(ctx, fit.text, lx, ly, fit.width, FADE_TAIL_CHARS * this.charW, t.fg, this.labelHalo, LABEL_HALO_PX);
+        } else {
+          this.labelText(ctx, fit.text, lx, ly);
+        }
       }
     }
 
@@ -4335,6 +4393,17 @@ function clamp(v: number, lo: number, hi: number): number {
 /** Snap a CSS-px coordinate to the device-pixel grid + half-pixel (crisp 1px lines). */
 function snap(v: number, dpr: number): number {
   return (Math.round(v * dpr) + 0.5) / dpr;
+}
+
+/** Explicit labelTiers win (sanitized); else derive from the label; null = single tier. */
+function intervalLabelTiers(explicit: string[] | undefined, label: string): string[] | null {
+  if (explicit !== undefined) {
+    const tiers = explicit.filter((s) => typeof s === 'string' && s !== '');
+    if (tiers.length > 0) return tiers;
+  }
+  if (label === '') return null;
+  const derived = deriveLabelTiers(label);
+  return derived.length > 1 ? derived : null;
 }
 
 /**
