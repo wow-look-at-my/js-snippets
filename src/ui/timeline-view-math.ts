@@ -1118,11 +1118,26 @@ export function clusterInstants(
     if (it.end == null || it.end - it.start >= instantMaxMs) continue;
     order.push(i);
   }
-  order.sort((a, b) => {
-    const ia = items[a];
-    const ib = items[b];
-    return ia.start - ib.start || (ia.id < ib.id ? -1 : ia.id > ib.id ? 1 : 0);
-  });
+  // The element feeds (start, id)-sorted lane arrays, making `order`
+  // already sorted — detect that in O(n) plain compares and skip the
+  // comparator sort (whose closure calls dominated re-cluster frames
+  // during zooms). Unsorted input still sorts exactly as before.
+  let sorted = true;
+  for (let k = 1; k < order.length; k++) {
+    const ia = items[order[k - 1]];
+    const ib = items[order[k]];
+    if (ia.start > ib.start || (ia.start === ib.start && ia.id > ib.id)) {
+      sorted = false;
+      break;
+    }
+  }
+  if (!sorted) {
+    order.sort((a, b) => {
+      const ia = items[a];
+      const ib = items[b];
+      return ia.start - ib.start || (ia.id < ib.id ? -1 : ia.id > ib.id ? 1 : 0);
+    });
+  }
   // Greedy transitive sweep over `order` as index ranges (no per-bucket
   // array churn — this runs on the layout hot path): a bucket is
   // order[bucketStart, oi); it flushes when the next instant's gap from

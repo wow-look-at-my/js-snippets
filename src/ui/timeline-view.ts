@@ -657,6 +657,11 @@ export class TimelineViewElement extends HTMLElement {
   // between clustering passes and re-fed to the allocator on assignment.
   private lanePackItems: PackItem[][] = [];
   private lanePackTargets: { track: number }[][] = [];
+  // The unclustered items alone, per lane, in (start, id) order — the draw
+  // loop iterates THIS instead of skipping clustered members one by one
+  // (at busy zooms most visible instants are clustered: iterating the full
+  // lane burned thousands of skip-checks per frame).
+  private laneUnclustered: NInterval[][] = [];
   // Sticky row state, one allocator per lane ID (not index — lane
   // insertions must never hand one lane's row memory to another). The
   // state deliberately survives setData: a full resync must not reshuffle
@@ -1042,6 +1047,10 @@ export class TimelineViewElement extends HTMLElement {
     this.markers = [];
     this.coverage = new CoverageTracker();
     this.loadTick++;
+    // A full replace invalidates every mark the minimap density texture
+    // baked — the incremental queue only covers additions.
+    this.mmTexDirty = true;
+    this.mmPendingNew.length = 0;
     this.mergeData(data);
   }
 
@@ -1145,12 +1154,18 @@ export class TimelineViewElement extends HTMLElement {
     this.perLane = [];
     this.connectors = [];
     this.markers = markers;
+    // Lane replacement can renumber every row — the baked marks are stale.
+    this.mmTexDirty = true;
+    this.mmPendingNew.length = 0;
     this.mergeData({ lanes, intervals: kept, connectors });
   }
 
   setIntervals(intervals: TimelineInterval[]): void {
     this.byId.clear();
     this.perLane = this.lanes.map(() => []);
+    // Full interval replace — the baked density marks are all stale.
+    this.mmTexDirty = true;
+    this.mmPendingNew.length = 0;
     for (const iv of intervals) this.ingestInterval(iv);
     this.rebuild();
   }
@@ -1358,8 +1373,21 @@ export class TimelineViewElement extends HTMLElement {
    * historical parallelism burst stops padding its lane once off-screen.
    */
   private rebuild(): void {
+    // Re-sort only lanes that actually fell out of (start, id) order: a
+    // live merge APPENDS near-now intervals, leaving most lanes already
+    // sorted — the O(n) plain-compare check replaces an O(n log n)
+    // comparator sort per lane per merge (the 5s merge spike).
     for (const per of this.perLane) {
-      per.sort((a, b) => a.start - b.start || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      let sorted = true;
+      for (let i = 1; i < per.length; i++) {
+        const a = per[i - 1];
+        const b = per[i];
+        if (a.start > b.start || (a.start === b.start && a.id > b.id)) {
+          sorted = false;
+          break;
+        }
+      }
+      if (!sorted) per.sort((a, b) => a.start - b.start || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     }
     // Exact recompute of the cull/extent metadata the ingest path grew
     // incrementally (this pass also SHRINKS after replaces): per-lane max
@@ -1447,13 +1475,18 @@ export class TimelineViewElement extends HTMLElement {
     const needCluster =
       this.clusteredEpoch !== this.packEpoch || this.clusteredSpanKey !== spanKey || this.clusteredPlotW !== plotW || structure;
     if (needCluster) {
+      // A pure zoom/resize re-cluster sees the exact objects of the last
+      // pass — clusterLane's membership-identical fast path may reuse its
+      // derived structures. A data change (epoch moved) always rebuilds.
+      const sameData = this.clusteredEpoch === this.packEpoch && !structure;
       this.clusteredEpoch = this.packEpoch;
       this.clusteredSpanKey = spanKey;
       this.clusteredPlotW = plotW;
       this.laneClusters.length = this.perLane.length;
       this.lanePackItems.length = this.perLane.length;
       this.lanePackTargets.length = this.perLane.length;
-      for (let i = 0; i < this.perLane.length; i++) this.clusterLane(i, rv, plotW);
+      this.laneUnclustered.length = this.perLane.length;
+      for (let i = 0; i < this.perLane.length; i++) this.clusterLane(i, rv, plotW, sameData);
     }
     // TRACK ASSIGNMENT — re-runs with the clustering, and additionally
     // once the window start has drifted a quantum since the last pass.
@@ -1556,10 +1589,34 @@ export class TimelineViewElement extends HTMLElement {
    * inputs (items + write-back targets) are cached for the assignment
    * passes that run between re-clusterings.
    */
-  private clusterLane(laneIdx: number, rv: TimeView, plotW: number): void {
+  private clusterLane(laneIdx: number, rv: TimeView, plotW: number, sameData: boolean): void {
     const per = this.perLane[laneIdx];
     const lane = this.lanes[laneIdx];
     const { clusters, memberOf } = clusterInstants(per, rv, plotW);
+    // Membership-identical fast path — pure ZOOM/RESIZE re-clusters only
+    // (`sameData`: the pack epoch is unchanged, so `per` holds exactly the
+    // objects the previous pass saw; a data change always rebuilds). Most
+    // zoom bucket steps change NO lane's membership, and a cluster is a
+    // CONTIGUOUS run of the sorted instant order, so (count, first, last)
+    // member-reference identity proves the whole membership matches — then
+    // every derived structure (NCluster objects, pack items/targets, the
+    // unclustered list, per-item clustered flags) is already exactly
+    // right and the rebuild below is skipped wholesale.
+    if (sameData) {
+      const prev = this.laneClusters[laneIdx];
+      if (prev !== undefined && prev.length === clusters.length && this.lanePackItems[laneIdx] !== undefined && this.laneUnclustered[laneIdx] !== undefined) {
+        let same = true;
+        for (let k = 0; k < clusters.length; k++) {
+          const idx = clusters[k].indices;
+          const pm = prev[k].members;
+          if (pm.length !== idx.length || pm[0] !== per[idx[0]] || pm[pm.length - 1] !== per[idx[idx.length - 1]]) {
+            same = false;
+            break;
+          }
+        }
+        if (same) return;
+      }
+    }
     const ncs: NCluster[] = new Array(clusters.length);
     for (let ci = 0; ci < clusters.length; ci++) {
       const c = clusters[ci];
@@ -1570,11 +1627,13 @@ export class TimelineViewElement extends HTMLElement {
     }
     const items: PackItem[] = [];
     const targets: { track: number }[] = [];
+    const unclustered: NInterval[] = [];
     for (let j = 0; j < per.length; j++) {
       per[j].clustered = memberOf[j] >= 0;
       if (memberOf[j] >= 0) continue;
       items.push(per[j]);
       targets.push(per[j]);
+      unclustered.push(per[j]);
     }
     for (let k = 0; k < ncs.length; k++) {
       const nc = ncs[k];
@@ -1584,6 +1643,7 @@ export class TimelineViewElement extends HTMLElement {
     this.laneClusters[laneIdx] = ncs;
     this.lanePackItems[laneIdx] = items;
     this.lanePackTargets[laneIdx] = targets;
+    this.laneUnclustered[laneIdx] = unclustered;
   }
 
   /**
@@ -1632,8 +1692,13 @@ export class TimelineViewElement extends HTMLElement {
     return { catKey, state };
   }
 
+  // Cached — theme-derived constants, refreshed by readTheme(). metrics()
+  // sits inside rectForInto on the per-bar draw path: allocating a fresh
+  // object per call was ~thousands of allocations per drawn frame.
+  private metricsCache = { trackHeight: THEME_DEFAULTS.trackHeight, trackGap: 2, lanePad: 3 };
+
   private metrics(): { trackHeight: number; trackGap: number; lanePad: number } {
-    return { trackHeight: this.theme.trackHeight, trackGap: 2, lanePad: 3 };
+    return this.metricsCache;
   }
 
   /** Effective compact track height: the themed value, never above the normal height. */
@@ -2264,6 +2329,7 @@ export class TimelineViewElement extends HTMLElement {
     t.gutterWidth = readNum(cs, '--timeline-gutter-width', THEME_DEFAULTS.gutterWidth, 0, 400);
     this.fontAxis = `${t.fontSize - 1}px ${t.font}`;
     this.fontBar = `${t.fontSize}px ${t.font}`;
+    this.metricsCache.trackHeight = t.trackHeight;
     this.labelHalo = labelHaloColor(t.fg);
     this.oklch = typeof CSS !== 'undefined' && !!CSS.supports && CSS.supports('color', 'oklch(0.6 0.1 120)');
     const ctx = this.ctx2d();
@@ -2408,11 +2474,22 @@ export class TimelineViewElement extends HTMLElement {
    * cache shares one CanvasPattern per (kind, color) and the transform is
    * read at fill time.
    */
+  /** Reused by anchorPattern — setTransform reads the matrix synchronously, so one mutable instance is safe (and kills a per-patterned-fill allocation). */
+  private patternMatrix = typeof DOMMatrix !== 'undefined' ? new DOMMatrix() : null;
+
   private anchorPattern(pat: CanvasPattern, ox: number, oy: number): CanvasPattern {
     const px = ((ox % PATTERN_TILE_PX) + PATTERN_TILE_PX) % PATTERN_TILE_PX;
     const py = ((oy % PATTERN_TILE_PX) + PATTERN_TILE_PX) % PATTERN_TILE_PX;
-    if (Number.isFinite(px) && Number.isFinite(py)) {
-      pat.setTransform?.(new DOMMatrix().translateSelf(px, py).scaleSelf(1 / this.dpr));
+    const m = this.patternMatrix;
+    if (m && Number.isFinite(px) && Number.isFinite(py)) {
+      const s = 1 / this.dpr;
+      m.a = s;
+      m.b = 0;
+      m.c = 0;
+      m.d = s;
+      m.e = px;
+      m.f = py;
+      pat.setTransform?.(m);
     }
     return pat;
   }
@@ -3644,7 +3721,11 @@ export class TimelineViewElement extends HTMLElement {
     for (let laneIdx = 0; laneIdx < this.perLane.length; laneIdx++) {
       const laneTop = AXIS_H + tops[laneIdx] - this.laneScroll;
       if (laneTop + heights[laneIdx] < AXIS_H || laneTop > h) continue;
-      const per = this.perLane[laneIdx];
+      // Iterate only the UNCLUSTERED items (built at cluster time, same
+      // (start, id) order — clustered members draw as their cluster's
+      // stack marker below, and skipping them one by one used to burn
+      // thousands of no-op iterations per frame on busy zooms).
+      const per = this.laneUnclustered[laneIdx] ?? this.perLane[laneIdx];
       // Lower-bound cull: a TERMINATED item starting before
       // rv.start − maxDur necessarily ended before the window; ongoing
       // items (end = null, growing to now) block the bound only down to
@@ -3666,7 +3747,7 @@ export class TimelineViewElement extends HTMLElement {
         const n = per[i];
         if (n.start > rv.end) break; // sorted by start
         if ((n.end ?? now) < rv.start && n.end !== null) continue;
-        if (n.clustered) continue; // drawn as its cluster's stack marker below
+        if (n.clustered) continue; // belt — membership changed since the last cluster pass
         this.drawInterval(ctx, n, now);
       }
       // The lane's cluster stack markers, over its bars.
