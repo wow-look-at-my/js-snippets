@@ -245,8 +245,9 @@ Instant markers CLUSTER at scale: pips whose centers would visually
 overlap in the current window (within ~12px of a neighbor — a greedy
 transitive sweep, re-derived per layout pass) merge into ONE point-like
 STACKED marker — the SAME diamond pip as a single instant, drawn as a
-stack of exactly THREE copies (two ghost copies offset up-right behind
-the true front pip; always three, NEVER scaled by the member count —
+stack of exactly THREE copies (two ghost copies offset straight RIGHT
+behind the true front pip with a depth fade — front full-bright, middle
+dimmer, back dimmest; always three, NEVER scaled by the member count —
 the stack silhouette alone says "several live here", and there is no
 count text on the canvas: the tooltip carries the real ×N count;
 membership is exactly "would visually overlap", so a stacked pip can
@@ -573,14 +574,28 @@ empty-text (empty-state hint), fullscreen (reflected viewport-fill mode
 fullscreen toggle), no-minimap (hide the bottom minimap strip),
 no-legend (hide the "?" legend pill).
 
-Interaction: plain wheel / two-finger scroll routes by DOMINANT axis —
-horizontal-dominant (|deltaX| > |deltaY|) pans time (consumed; its minor
-vertical component nudges the lane stack when it overflows the host);
-VERTICAL-dominant — ties included — is NEVER consumed, whether or not
-the lanes overflow (no preventDefault, no zoom: the page scrolls
-normally over the chart, and the lane stack scrolls by pointer drag or
-arrow keys instead; vertical scrolling never pans the chart sideways);
-all deltas deltaMode-normalized;
+Interaction: plain wheel / two-finger scroll routes by DOMINANT axis
+with a GESTURE-LEVEL AXIS LOCK (WheelGestureRouter): the FIRST decisive
+unmodified event classifies the stream — horizontal-dominant
+(|deltaX| > |deltaY|) locks 'h', vertical-dominant (ties included)
+locks 'v' — and that lock governs every unmodified event arriving
+within WHEEL_GESTURE_GAP_MS (200ms) of the previous one (a real swipe
+is a stream whose jittery minority events are individually
+opposite-dominant; per-event routing leaked them). An 'h' gesture is
+consumed WHOLE: deltaX pans time and the minor vertical component
+nudges the lane stack when it overflows the host — it never creeps the
+page. A 'v' gesture is NEVER consumed, whether or not the lanes
+overflow (no preventDefault, no zoom: the page scrolls normally over
+the chart, its horizontal jitter never pans the chart sideways, and
+the lane stack scrolls by pointer drag or arrow keys instead). A
+DECISIVE opposite-axis event mid-gesture — beating the locked axis by
+more than WHEEL_AXIS_FLIP_RATIO (2x) with at least
+WHEEL_AXIS_FLIP_MIN_PX (24px) — re-locks on the spot (proportional
+jitter can never clear both thresholds; a genuine direction change, or
+a chart freshly scrolled under the cursor mid-page-scroll that
+mis-locked on a jitter event, recovers within one tick). A
+FRESH/ISOLATED event routes exactly by the per-event dominant-axis
+table; all deltas deltaMode-normalized;
 ctrl/meta+wheel zooms anchored under the cursor (pixel-precise trackpad
 deltas apply 1:1; discrete wheel steps glide ~130ms; always consumed —
 never browser page-zoom; the cursor anchor holds while follow-now is
@@ -666,18 +681,33 @@ Exports:
     (deltaMode 0/1/2 → px), zoomFactorForWheel(deltaPx) (exponential,
     composable; ZOOM_PX_PER_DOUBLE px per doubling),
     routeWheel(WheelInput, lanesOverflow) → WheelRoute {zoomPx, panPx,
-    laneScrollPx, consumed} (the gesture router: ctrl/meta = zoom,
-    always consumed; shift = time pan; else the DOMINANT axis decides —
-    horizontal-dominant (|dx| > |dy|) pans time, consumed, with the
-    minor deltaY nudging lanes only when they overflow; vertical-dominant
-    incl. ties routes NOWHERE regardless of overflow, and consumed=false
-    means DO NOT preventDefault, let the page scroll; deltaMode
-    normalized),
+    laneScrollPx, consumed} (the PER-EVENT router — exact for a
+    fresh/isolated event: ctrl/meta = zoom, always consumed; shift =
+    time pan; else the DOMINANT axis decides — horizontal-dominant
+    (|dx| > |dy|) pans time, consumed, with the minor deltaY nudging
+    lanes only when they overflow; vertical-dominant incl. ties routes
+    NOWHERE regardless of overflow, and consumed=false means DO NOT
+    preventDefault, let the page scroll; deltaMode normalized),
     classifyWheel(WheelInput) → WheelClass 'zoom' | 'pan' |
-    'passthrough' (the routing decision without magnitudes, normalized
-    the same way; lanesOverflow deliberately has no input — a test-pinned
-    invariant guarantees routeWheel(e, o).consumed ===
+    'passthrough' (the per-event routing decision without magnitudes,
+    normalized the same way; lanesOverflow deliberately has no input — a
+    test-pinned invariant guarantees routeWheel(e, o).consumed ===
     (classifyWheel(e) !== 'passthrough') for ALL inputs and overflow),
+    class WheelGestureRouter — route(WheelInput, lanesOverflow, ts) →
+    WheelRoute (the STREAM-level router the element feeds every wheel
+    event through: the first decisive unmodified event locks the
+    gesture's axis — 'h' consumes every unmodified event, dx pans /
+    overflow-gated dy lane-scrolls; 'v' consumes nothing — until
+    unmodified events pause longer than the gap, or a mid-gesture event
+    beats the locked axis by more than WHEEL_AXIS_FLIP_RATIO with at
+    least WHEEL_AXIS_FLIP_MIN_PX and re-locks on the spot; ts is the
+    caller's clock (e.timeStamp), never Date.now(); a FRESH router
+    equals routeWheel on any single event — test-pinned; modifier
+    events delegate to routeWheel and neither read nor extend the lock;
+    zero-delta unmodified ticks are inert),
+    WHEEL_GESTURE_GAP_MS (200 — unmodified-wheel silence that ends a
+    gesture), WHEEL_AXIS_FLIP_RATIO (2), WHEEL_AXIS_FLIP_MIN_PX (24 —
+    the decisive-flip thresholds, both required, on normalized pixels),
     clampViewToNow(view, now) → TimeView (the hard right
     end stop: a user view's end never passes now, span preserved),
     followAfterGesture(wasFollowing, prevEnd, next, now, isPan,
