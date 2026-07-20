@@ -375,8 +375,17 @@ Element <timeline-view> — data API (properties/methods, never attributes):
   colorFor          — (interval, lane) => cssColor | null override.
   tooltipFor        — (hit: TimelineHit) => string | Node | null; null/
                       undefined hides. Default tooltip shows label,
-                      category, state, start/end, duration, segment
-                      durations. Node content is appended, never innerHTML.
+                      category, state, the HOVERED phase segment (a
+                      'segment: <kind> · <duration>' line — named by its
+                      style-map kind, the legend's vocabulary, so no
+                      legend round-trip to decode a stripe), start/end,
+                      duration, segment durations. An interval hit
+                      carries that hovered phase as `segment`
+                      (SegmentHit {index, kind, start, end} — clamped ms
+                      window; null over the base bar) — an ADDITIVE
+                      field, so existing callbacks keep working and opt
+                      in by reading `hit.segment`.
+                      Node content is appended, never innerHTML.
                       Long lines WRAP inside the box (unbroken tokens like
                       run ids/error blobs included; newlines in string
                       content are honored), and pathological content clips
@@ -446,6 +455,15 @@ Viewport / follow:
                       hard-stops at now; engages follow only when it
                       ends within the 2-device-px snap zone of now;
                       latches the window as chosen — see DEFAULT window).
+  fitToInterval(id, {pad?}) — fit the viewport to ONE interval: its span
+                      full-width plus `pad` fraction each side (default
+                      0.05) — the run-detail-dialog convenience (an
+                      embedded instance shows just the clicked span with
+                      no viewport math). A thin setViewport wrapper:
+                      counts as a consumer-chosen window (latches),
+                      clamps + now-stops the same; instants/sub-~2s
+                      spans center in the minimum window. Returns false
+                      (viewport untouched) for an unknown id.
   followNow         — boolean (default true): right edge pinned to live
                       now. Any backward PAN (wheel, drag, arrow keys)
                       disengages immediately — even a tiny step, so
@@ -631,12 +649,15 @@ Exports:
     TimelineSegment {start, end?, kind}, TimelineConnector,
     TimelineMarker {time, label?, kind?}, TimeView {start, end},
     TimeRange {start, end}, IntervalStyle, StyleMap, StylePattern,
-    PackItem, LaneMetrics, LaneLayout, HitRect, CategoryColorOptions,
-    CoverageOptions.
+    PackItem, LaneMetrics, LaneLayout, HitRect, SegmentHit,
+    CategoryColorOptions, CoverageOptions.
   toMs(t: number | Date) → number
   Scale/zoom: timeToX(t, view, width), xToTime(x, view, width),
     panView(view, dt), zoomView(view, anchor, factor, minSpan?, maxSpan?)
     (anchor-preserving, span clamped; MIN_SPAN_MS = 2s, MAX_SPAN_MS = 7d),
+    fitSpanView(start, end, pad?, minSpan?) → TimeView (one span plus
+    pad fraction — default 0.05 — each side; a padded window under
+    minSpan centers the span instead — the element's fitToInterval),
     defaultSpanForAspect(hostW, hostH, refSpanMs?) → span ms (the
     aspect-scaled DEFAULT window: DEFAULT_SPAN_REF_MS = 3 min at 16:9,
     linear in the container aspect, clamped to the span limits;
@@ -799,7 +820,13 @@ Exports:
     hitTestRects(x, y, rects) (topmost = last; -1 on miss),
     distSqToSegment(px, py, ax, ay, bx, by), hitTestPolyline(px, py, pts,
     tol), connectorRoute(from, to, samples?) (sampled cubic S-curve from
-    right-center to left-center; 2-point segment when aligned forward).
+    right-center to left-center; 2-point segment when aligned forward),
+    segmentAtTime(segments, intervalStart, intervalEnd, t) →
+    SegmentHit {index, kind, start, end} | null (the phase PAINTED at
+    time t: last covering array entry — draw order overpaints — with the
+    draw clamps applied; half-open [start, end) except t at the
+    interval's own end still hits a segment ending there; feeds the
+    interval hit's `segment`).
   Category color: hashString(s) (FNV-1a 32-bit), categoryHue(s) (stable
     0..359, golden-ratio spread), categoryJitter(s) (deterministic small
     {dl, dc} tone offsets), categoryColor(hue, {mode 'oklch'|'hsl',

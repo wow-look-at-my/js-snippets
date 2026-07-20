@@ -85,6 +85,8 @@ import {
   clusterInstants,
   clusterZoomView,
   clusterMarkerTime,
+  fitSpanView,
+  segmentAtTime,
   CLUSTER_JOIN_PX,
   CLUSTER_ZOOM_FILL_FRAC,
   minimapExtent,
@@ -2502,4 +2504,89 @@ test('labelHaloColor: unparseable colors fall back to the dark halo', () => {
   // The dark default theme's shape — a var()/named fg keeps a sane rim.
   assert.equal(labelHaloColor('var(--my-fg)'), 'rgba(0, 0, 0, 0.55)');
   assert.equal(labelHaloColor('papayawhip'), 'rgba(0, 0, 0, 0.55)');
+});
+
+// -- segmentAtTime (hovered-phase hit refinement) --------------------------------------
+
+// The webhook-runner shape: a dim queue lead-in, a hatched wait, then the
+// unsegmented base bar to the end.
+const SEG_IV = { start: 0, end: 100_000 };
+const SEGS = [
+  { start: 0, end: 40_000, kind: 'queued' },
+  { start: 40_000, end: 70_000, kind: 'waiting' },
+];
+
+test('segmentAtTime: resolves the phase covering t, with index and clamped window', () => {
+  assert.deepEqual(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, 10_000), { index: 0, kind: 'queued', start: 0, end: 40_000 });
+  assert.deepEqual(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, 55_000), { index: 1, kind: 'waiting', start: 40_000, end: 70_000 });
+});
+
+test('segmentAtTime: base bar (no covering phase) and off-bar times resolve to null', () => {
+  assert.equal(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, 85_000), null); // past the last phase
+  assert.equal(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, -5), null);
+  assert.equal(segmentAtTime([], SEG_IV.start, SEG_IV.end, 10), null);
+  assert.equal(segmentAtTime(null, SEG_IV.start, SEG_IV.end, 10), null);
+  assert.equal(segmentAtTime(undefined, SEG_IV.start, SEG_IV.end, 10), null);
+});
+
+test('segmentAtTime: half-open boundaries — a shared edge belongs to the incoming phase', () => {
+  assert.equal(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, 40_000)?.kind, 'waiting');
+  // The last phase's trailing edge is exclusive too (base bar beyond it).
+  assert.equal(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, 70_000), null);
+});
+
+test('segmentAtTime: overlaps resolve LAST-painted (draw order overpaints)', () => {
+  const overlapping = [
+    { start: 0, end: 80_000, kind: 'dim' },
+    { start: 50_000, end: 100_000, kind: 'waiting' },
+  ];
+  assert.equal(segmentAtTime(overlapping, SEG_IV.start, SEG_IV.end, 60_000)?.kind, 'waiting');
+  assert.equal(segmentAtTime(overlapping, SEG_IV.start, SEG_IV.end, 20_000)?.kind, 'dim');
+});
+
+test('segmentAtTime: null end runs to the interval end, inclusive at the bar\'s last instant', () => {
+  const tail = [{ start: 90_000, end: null, kind: 'outline' }];
+  assert.deepEqual(segmentAtTime(tail, SEG_IV.start, SEG_IV.end, 95_000), { index: 0, kind: 'outline', start: 90_000, end: 100_000 });
+  // t exactly at the interval end still hits the segment ending there.
+  assert.equal(segmentAtTime(tail, SEG_IV.start, SEG_IV.end, 100_000)?.kind, 'outline');
+  assert.equal(segmentAtTime(tail, SEG_IV.start, SEG_IV.end, 100_001), null);
+});
+
+test('segmentAtTime: draw-path clamps — starts floor to the interval, ends cap to it, outside phases skip', () => {
+  const segs = [
+    { start: -10_000, end: 20_000, kind: 'queued' }, // start clamps to 0
+    { start: 60_000, end: 500_000, kind: 'waiting' }, // end caps to the interval
+    { start: 150_000, end: 160_000, kind: 'dim' }, // fully outside — never matches
+  ];
+  assert.deepEqual(segmentAtTime(segs, SEG_IV.start, SEG_IV.end, 5_000), { index: 0, kind: 'queued', start: 0, end: 20_000 });
+  assert.deepEqual(segmentAtTime(segs, SEG_IV.start, SEG_IV.end, 99_000), { index: 1, kind: 'waiting', start: 60_000, end: 100_000 });
+  assert.equal(segmentAtTime(segs, SEG_IV.start, SEG_IV.end, 30_000), null);
+});
+
+test('segmentAtTime: accepts Date phase bounds (toMs like every API edge)', () => {
+  const segs = [{ start: new Date(10_000), end: new Date(20_000), kind: 'waiting' }];
+  assert.equal(segmentAtTime(segs, SEG_IV.start, SEG_IV.end, 15_000)?.index, 0);
+});
+
+// -- fitSpanView (single-span full-width fit) ------------------------------------------
+
+test('fitSpanView: pads the span by the fraction each side (default 0.05)', () => {
+  assert.deepEqual(fitSpanView(0, 100_000), { start: -5_000, end: 105_000 });
+  assert.deepEqual(fitSpanView(0, 100_000, 0.1), { start: -10_000, end: 110_000 });
+  // pad 0 = exact span; a padded window exactly at minSpan is NOT re-centered.
+  assert.deepEqual(fitSpanView(0, 100_000, 0), { start: 0, end: 100_000 });
+  assert.deepEqual(fitSpanView(0, MIN_SPAN_MS, 0), { start: 0, end: MIN_SPAN_MS });
+});
+
+test('fitSpanView: short spans and instants center in the minimum window', () => {
+  // 500ms padded (550ms) is under MIN_SPAN_MS — center, never left-anchor.
+  assert.deepEqual(fitSpanView(0, 500), { start: 250 - MIN_SPAN_MS / 2, end: 250 + MIN_SPAN_MS / 2 });
+  assert.deepEqual(fitSpanView(5_000, 5_000), { start: 5_000 - MIN_SPAN_MS / 2, end: 5_000 + MIN_SPAN_MS / 2 });
+});
+
+test('fitSpanView: order-tolerant, Date-tolerant, junk pad falls back to the default', () => {
+  assert.deepEqual(fitSpanView(100_000, 0), fitSpanView(0, 100_000));
+  assert.deepEqual(fitSpanView(new Date(0), new Date(100_000), 0.05), { start: -5_000, end: 105_000 });
+  assert.deepEqual(fitSpanView(0, 100_000, -1), fitSpanView(0, 100_000, 0.05));
+  assert.deepEqual(fitSpanView(0, 100_000, Number.NaN), fitSpanView(0, 100_000, 0.05));
 });

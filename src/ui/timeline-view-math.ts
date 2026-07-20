@@ -175,6 +175,27 @@ export function zoomView(
 }
 
 /**
+ * The view that renders ONE span full-width: [start, end] plus `pad`
+ * fraction of the span on each side. Spans whose padded window would fall
+ * under `minSpan` (instants, sub-second runs) center in a `minSpan`
+ * window instead — never left-anchored by a later span clamp. Order- and
+ * NaN-tolerant like setViewport (callers still clamp through it).
+ */
+export function fitSpanView(start: number | Date, end: number | Date, pad = 0.05, minSpan = MIN_SPAN_MS): TimeView {
+  const a = toMs(start);
+  const b = toMs(end);
+  const lo = Math.min(a, b);
+  const hi = Math.max(a, b);
+  const p = Number.isFinite(pad) && pad > 0 ? pad : pad === 0 ? 0 : 0.05;
+  const span = hi - lo;
+  if (span * (1 + 2 * p) < minSpan) {
+    const mid = (lo + hi) / 2;
+    return { start: mid - minSpan / 2, end: mid + minSpan / 2 };
+  }
+  return { start: lo - span * p, end: hi + span * p };
+}
+
+/**
  * Normalize a WheelEvent delta to pixels. deltaMode 0 (pixel) passes
  * through 1:1; 1 (line) and 2 (page) — discrete wheels — convert via the
  * given heights. Non-finite deltas normalize to 0.
@@ -1444,6 +1465,47 @@ export function connectorRoute(from: HitRect, to: HitRect, samples = 24): { x: n
     });
   }
   return pts;
+}
+
+/** The clamped phase window `segmentAtTime` resolved, with its array index. */
+export interface SegmentHit {
+  /** Index into the interval's `segments` array. */
+  index: number;
+  /** The segment's `kind` (style-map key — the legend/tooltip vocabulary). */
+  kind: string;
+  /** Phase start, clamped into the interval (ms). */
+  start: number;
+  /** Phase end (null end resolves to `intervalEnd`), clamped (ms). */
+  end: number;
+}
+
+/**
+ * The segment PAINTED at time `t` inside an interval's bar: the LAST array
+ * entry covering t (segments draw in order — later overpaints earlier),
+ * with the draw path's clamps (start floored to `intervalStart`, null/late
+ * end capped to `intervalEnd` — pass the effective end: `end ?? now`).
+ * Coverage is half-open [start, end) so shared phase boundaries resolve to
+ * the incoming phase, EXCEPT t at the interval's own end still hits a
+ * segment ending there (the bar's last pixel must resolve). Null when no
+ * segment covers t (the pointer is over the base bar, or off it).
+ */
+export function segmentAtTime(
+  segments: readonly TimelineSegment[] | null | undefined,
+  intervalStart: number,
+  intervalEnd: number,
+  t: number,
+): SegmentHit | null {
+  if (!segments) return null;
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const s = segments[i];
+    const cs = Math.max(toMs(s.start), intervalStart);
+    const ce = Math.min(s.end == null ? intervalEnd : toMs(s.end), intervalEnd);
+    if (ce < cs) continue;
+    if (t >= cs && (t < ce || (t === ce && ce === intervalEnd))) {
+      return { index: i, kind: s.kind, start: cs, end: ce };
+    }
+  }
+  return null;
 }
 
 // -- Category color -----------------------------------------------------------------
