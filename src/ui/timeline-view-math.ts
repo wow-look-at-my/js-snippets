@@ -98,6 +98,31 @@ export interface TimeView {
 export const MIN_SPAN_MS = 2_000;
 export const MAX_SPAN_MS = 7 * 86_400_000;
 
+/** The default visible span at the reference 16:9 container aspect: 3 minutes. */
+export const DEFAULT_SPAN_REF_MS = 180_000;
+
+/** The container aspect ratio DEFAULT_SPAN_REF_MS is calibrated at. */
+const DEFAULT_SPAN_REF_ASPECT = 16 / 9;
+
+/**
+ * The DEFAULT visible span for a container of `hostW` × `hostH` CSS px:
+ * DEFAULT_SPAN_REF_MS (3 min) at a 16:9 aspect, scaled LINEARLY by the
+ * actual aspect ratio — a wider container shows proportionally more time
+ * at the same ms-per-pixel density, a squarer one less — clamped to
+ * [MIN_SPAN_MS, MAX_SPAN_MS]. Degenerate sizes (zero/negative/non-finite
+ * — an unlaid-out host) fall back to the 3-minute reference. The element
+ * applies this on every resize until the first user gesture or
+ * programmatic setViewport (`viewTouched`); it never overrides a chosen
+ * window.
+ */
+export function defaultSpanForAspect(hostW: number, hostH: number, refSpanMs = DEFAULT_SPAN_REF_MS): number {
+  let span = refSpanMs;
+  if (Number.isFinite(hostW) && hostW > 0 && Number.isFinite(hostH) && hostH > 0) {
+    span = (refSpanMs * (hostW / hostH)) / DEFAULT_SPAN_REF_ASPECT;
+  }
+  return Math.min(MAX_SPAN_MS, Math.max(MIN_SPAN_MS, span));
+}
+
 /** Time → x in [0, width] for the view (un-clamped; callers cull). */
 export function timeToX(t: number, view: TimeView, width: number): number {
   return ((t - view.start) / (view.end - view.start)) * width;

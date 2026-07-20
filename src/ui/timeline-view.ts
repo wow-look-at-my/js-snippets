@@ -127,6 +127,8 @@ import {
   nowLineX,
   MIN_SPAN_MS,
   MAX_SPAN_MS,
+  DEFAULT_SPAN_REF_MS,
+  defaultSpanForAspect,
   timeTicks,
   timeTickStep,
   formatTimeTick,
@@ -326,7 +328,6 @@ interface ResolvedStyle {
 // grey (unreadable) over dimmed/hatched sections, flipping with zoom as
 // the anchor crossed segment boundaries.
 
-const DEFAULT_SPAN_MS = 15 * 60_000;
 const LAYOUT_TWEEN_MS = 150; // lane-height ease on visible-track-count AND fit-height change
 const AXIS_H = 22;
 const LANE_LABEL_MIN_PX = 10; // below this lane height the gutter label is tooltip-only
@@ -491,8 +492,16 @@ export class TimelineViewElement extends HTMLElement {
   private styleMap: StyleMap = { ...DEFAULT_STYLES };
 
   // -- Viewport --
-  private view: TimeView = { start: 0, end: 1 }; // set on connect/first data
+  private view: TimeView = { start: 0, end: 1 }; // seeded in the constructor; aspect-derived on first layout
   private following = true;
+  // Latched by the FIRST user gesture or programmatic setViewport (every
+  // window-changing path funnels through applyUserView; setViewport latches
+  // explicitly too). While false, resizeBackingStore keeps (re)deriving the
+  // DEFAULT span from the host's aspect ratio (defaultSpanForAspect) — a
+  // chosen window must always beat the default. followNow / jumpToNow /
+  // the per-frame pin move POSITION only and deliberately do NOT latch:
+  // the default governs the SPAN alone.
+  private viewTouched = false;
   private laneScroll = 0;
   // The ONE scalar behind every follow transition: the current lead of the
   // view's end over "now", as a fraction of the span. Steady follow pins
@@ -651,8 +660,12 @@ export class TimelineViewElement extends HTMLElement {
     // the corner when the toggle is opted out.
     shadow.append(this.canvas, this.mmCanvas, this.tooltipEl, this.fsEl, this.pillEl, this.emptyEl, this.staleEl, this.legendEl, this.legendPanelEl);
 
+    // Seed end = now with the 3-min reference span as the never-sized
+    // fallback; the first resizeBackingStore with a real host box
+    // re-derives the span from the container's aspect ratio (end stays
+    // anchored) while the view is still untouched.
     const now = this.nowMs();
-    this.view = { start: now - DEFAULT_SPAN_MS, end: now };
+    this.view = { start: now - DEFAULT_SPAN_REF_MS, end: now };
   }
 
   // -- Lifecycle -------------------------------------------------------------
@@ -1124,6 +1137,10 @@ export class TimelineViewElement extends HTMLElement {
     const s = toMs(start);
     const e = toMs(end);
     if (!Number.isFinite(s) || !Number.isFinite(e) || !(e > s)) return;
+    // A consumer-chosen window beats the aspect default from here on
+    // (applyUserView latches too — this is the explicit belt for the one
+    // programmatic path consumers call directly).
+    this.viewTouched = true;
     const span = Math.min(Math.max(e - s, MIN_SPAN_MS), MAX_SPAN_MS);
     this.applyUserView({ start: s, end: s + span }, { jump: true });
   }
@@ -1670,6 +1687,10 @@ export class TimelineViewElement extends HTMLElement {
    * teleports this replaced. Reduced motion snaps both.
    */
   private applyUserView(next: TimeView, opts?: { pan?: boolean; jump?: boolean; zoom?: boolean }): void {
+    // Every user gesture (wheel, glide, drag, pinch, keyboard, minimap)
+    // and programmatic setViewport funnels through here — the window is
+    // now CHOSEN, so the aspect-derived default span stops applying.
+    this.viewTouched = true;
     const span = next.end - next.start;
     const now = this.liveEdge(); // stale mode: gestures clamp/dock at the FROZEN edge
     const wasFollowing = this.following;
@@ -1978,6 +1999,23 @@ export class TimelineViewElement extends HTMLElement {
     this.dpr = dpr;
     this.cssW = bw / dpr;
     this.cssH = bh / dpr;
+    // Aspect-scaled DEFAULT zoom: until the first user gesture or
+    // programmatic setViewport (viewTouched), the visible span derives
+    // from the HOST box's aspect ratio — 3 min at 16:9, scaled linearly
+    // (defaultSpanForAspect, clamped) — re-derived on every real resize
+    // with the view END anchored. The host box (container aspect) on
+    // purpose, not the plot box: the default must not couple to gutter
+    // auto-sizing or minimap visibility. A chosen window is never
+    // overridden — this block stops running forever once touched.
+    if (!this.viewTouched) {
+      const hostW = this.clientWidth;
+      if (hostW > 0 && hostH > 0) {
+        const span = defaultSpanForAspect(hostW, hostH);
+        if (span !== this.view.end - this.view.start) {
+          this.view = { start: this.view.end - span, end: this.view.end };
+        }
+      }
+    }
     this.readTheme();
     this.clampLaneScroll();
     this.invalidate();

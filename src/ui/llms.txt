@@ -431,9 +431,21 @@ renders in the emphasis color.
 
 Viewport / follow:
   viewport          — getter {start, end} (ms).
+  DEFAULT window    — until the first user gesture or setViewport call,
+                      the visible span is ASPECT-DERIVED: 3 minutes at a
+                      16:9 container, scaled linearly by the host's
+                      actual aspect ratio (defaultSpanForAspect, clamped
+                      ~2s..~7d), ending at now — and re-derived on every
+                      host resize, END anchored, while still untouched.
+                      Any gesture or setViewport latches the window as
+                      CHOSEN and the default never applies again;
+                      followNow / jumpToNow move position only and do
+                      NOT latch. Consumers that call setViewport keep
+                      their own initial window entirely.
   setViewport(start, end) — explicit window (span clamped ~2s..~7d;
                       hard-stops at now; engages follow only when it
-                      ends within the 2-device-px snap zone of now).
+                      ends within the 2-device-px snap zone of now;
+                      latches the window as chosen — see DEFAULT window).
   followNow         — boolean (default true): right edge pinned to live
                       now. Any backward PAN (wheel, drag, arrow keys)
                       disengages immediately — even a tiny step, so
@@ -617,6 +629,10 @@ Exports:
   Scale/zoom: timeToX(t, view, width), xToTime(x, view, width),
     panView(view, dt), zoomView(view, anchor, factor, minSpan?, maxSpan?)
     (anchor-preserving, span clamped; MIN_SPAN_MS = 2s, MAX_SPAN_MS = 7d),
+    defaultSpanForAspect(hostW, hostH, refSpanMs?) → span ms (the
+    aspect-scaled DEFAULT window: DEFAULT_SPAN_REF_MS = 3 min at 16:9,
+    linear in the container aspect, clamped to the span limits;
+    degenerate sizes fall back to the reference),
     wheelDeltaToPixels(delta, deltaMode, lineHeight?, pageHeight?)
     (deltaMode 0/1/2 → px), zoomFactorForWheel(deltaPx) (exponential,
     composable; ZOOM_PX_PER_DOUBLE px per doubling),

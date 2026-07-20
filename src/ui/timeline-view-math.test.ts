@@ -31,6 +31,8 @@ import {
   ZOOM_PX_PER_DOUBLE,
   MIN_SPAN_MS,
   MAX_SPAN_MS,
+  DEFAULT_SPAN_REF_MS,
+  defaultSpanForAspect,
   TIME_TICK_STEPS,
   timeTickStep,
   timeTicks,
@@ -202,6 +204,42 @@ test('zoomFactorForWheel: exponential, composable, and doubling at the constant'
   const a = zoomFactorForWheel(-37) * zoomFactorForWheel(-63);
   const b = zoomFactorForWheel(-100);
   assert.ok(Math.abs(a - b) < 1e-12, 'factors compose: f(a)*f(b) == f(a+b)');
+});
+
+// -- Default span (aspect-scaled initial window) -----------------------------------
+
+test('defaultSpanForAspect: exactly the 3-min reference at 16:9', () => {
+  assert.equal(defaultSpanForAspect(1600, 900), DEFAULT_SPAN_REF_MS);
+  assert.equal(defaultSpanForAspect(1920, 1080), DEFAULT_SPAN_REF_MS);
+  assert.equal(DEFAULT_SPAN_REF_MS, 180_000);
+});
+
+test('defaultSpanForAspect: scales linearly with the container aspect ratio', () => {
+  // 21:9 ultrawide: span × (21/9)/(16/9) = ×(21/16).
+  assert.ok(Math.abs(defaultSpanForAspect(2100, 900) - DEFAULT_SPAN_REF_MS * (21 / 16)) < 1e-6);
+  // 1:1 square: span × 1/(16/9) = ×(9/16).
+  assert.ok(Math.abs(defaultSpanForAspect(900, 900) - DEFAULT_SPAN_REF_MS * (9 / 16)) < 1e-6);
+  // Linearity: doubling the width doubles the span (below the clamp).
+  assert.ok(Math.abs(defaultSpanForAspect(3200, 900) - 2 * defaultSpanForAspect(1600, 900)) < 1e-6);
+  // Pure-scale invariance: only the RATIO matters, not the absolute size.
+  assert.equal(defaultSpanForAspect(160, 90), defaultSpanForAspect(3200, 1800));
+});
+
+test('defaultSpanForAspect: degenerate/unsized hosts fall back to the 3-min reference', () => {
+  assert.equal(defaultSpanForAspect(0, 900), DEFAULT_SPAN_REF_MS);
+  assert.equal(defaultSpanForAspect(1600, 0), DEFAULT_SPAN_REF_MS);
+  assert.equal(defaultSpanForAspect(0, 0), DEFAULT_SPAN_REF_MS);
+  assert.equal(defaultSpanForAspect(-4, 100), DEFAULT_SPAN_REF_MS);
+  assert.equal(defaultSpanForAspect(NaN, 900), DEFAULT_SPAN_REF_MS);
+  assert.equal(defaultSpanForAspect(1600, Infinity), DEFAULT_SPAN_REF_MS);
+});
+
+test('defaultSpanForAspect: clamps to [MIN_SPAN_MS, MAX_SPAN_MS] at extreme aspects', () => {
+  assert.equal(defaultSpanForAspect(1e9, 1), MAX_SPAN_MS);
+  assert.equal(defaultSpanForAspect(1, 1e6), MIN_SPAN_MS);
+  // Just inside the clamps stays unclamped.
+  const wide = defaultSpanForAspect(6000, 900);
+  assert.ok(wide > DEFAULT_SPAN_REF_MS && wide < MAX_SPAN_MS);
 });
 
 // -- Time ticks --------------------------------------------------------------------
