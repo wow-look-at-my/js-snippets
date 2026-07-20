@@ -240,6 +240,12 @@ export interface WheelRoute {
  * by pointer drag or arrow keys instead. (An overflowing lane stack used
  * to capture plain deltaY here, which ate the page's vertical scroll on
  * exactly the busy multi-lane charts that always overflow.)
+ *
+ * This is the PER-EVENT rule — exact for a FRESH/ISOLATED event. A real
+ * trackpad swipe is a STREAM of events whose jittery minority are
+ * individually opposite-dominant, so the element routes streams through
+ * WheelGestureRouter, which applies this rule to a gesture's first
+ * decisive event and then holds that axis for the whole stream.
  */
 export function routeWheel(e: WheelInput, lanesOverflow: boolean): WheelRoute {
   const dx = wheelDeltaToPixels(e.deltaX, e.deltaMode);
@@ -274,6 +280,12 @@ export type WheelClass = 'zoom' | 'pan' | 'passthrough';
  * laneScrollPx inside an already-consumed horizontal-dominant route and
  * must never influence consumption — an overflowing lane stack capturing
  * plain vertical wheels is exactly the regression this pins out.
+ *
+ * Like routeWheel, this describes a FRESH/ISOLATED event only: within a
+ * live gesture, WheelGestureRouter's axis lock governs consumption, so a
+ * 'passthrough'-classed jitter event inside a locked-horizontal stream IS
+ * consumed (and a 'pan'-classed one inside a locked-vertical stream is
+ * NOT).
  */
 export function classifyWheel(e: WheelInput): WheelClass {
   if (e.ctrlKey || e.metaKey) return 'zoom';
@@ -281,6 +293,106 @@ export function classifyWheel(e: WheelInput): WheelClass {
   const dy = wheelDeltaToPixels(e.deltaY, e.deltaMode);
   if (e.shiftKey) return (dy || dx) !== 0 ? 'pan' : 'passthrough';
   return Math.abs(dx) > Math.abs(dy) ? 'pan' : 'passthrough';
+}
+
+/**
+ * Milliseconds of unmodified-wheel silence that ends a gesture: an
+ * unmodified event arriving more than this after the previous unmodified
+ * event classifies FRESH (per routeWheel's dominant-axis rule) instead of
+ * inheriting the stream's axis lock. Sized between one momentum-tail
+ * event spacing (well under it at ~16ms cadence, and still over the
+ * sparse tail ticks) and a deliberate pause before a new gesture.
+ */
+export const WHEEL_GESTURE_GAP_MS = 200;
+
+/**
+ * Mid-gesture decisive-flip re-lock thresholds: the opposite axis must
+ * beat the locked axis by MORE than the ratio AND carry at least the
+ * pixel floor. The floor is sized above any proportional swipe jitter
+ * (a mostly-horizontal swipe's vertical wobble rides at ~5-15px against
+ * ~120px of dx, and shrinks with the swipe through the momentum tail)
+ * but under a single deliberate scroll tick (~50-150px trackpad, 48px
+ * for a 3-line discrete wheel).
+ */
+export const WHEEL_AXIS_FLIP_RATIO = 2;
+export const WHEEL_AXIS_FLIP_MIN_PX = 24;
+
+/**
+ * Stream-level wheel router: routeWheel's per-event table plus a GESTURE
+ * AXIS LOCK. A physical trackpad swipe arrives as a STREAM of wheel
+ * events, and the jittery minority inside a mostly-horizontal swipe are
+ * individually vertical-dominant (dx -4, dy 10 at gesture edges and
+ * momentum tails) — per-event routing let each of those through to the
+ * page, so a horizontal chart pan crept the page vertically; and
+ * symmetrically, a page scroll's horizontal-dominant jitter nudged the
+ * chart sideways. The first decisive unmodified event of a gesture LOCKS
+ * the stream's axis:
+ *
+ *   'h' (|dx| > |dy|): EVERY unmodified event in the gesture is consumed
+ *       — dx pans time and dy nudges the lane stack when it overflows
+ *       (the per-event horizontal-dominant route, applied stream-wide),
+ *       so the incidental vertical component never reaches the page.
+ *   'v' (ties included): NOTHING is consumed for the rest of the gesture
+ *       — the page scrolls, and a horizontal-jitter event never pans the
+ *       chart.
+ *
+ * A gap of more than WHEEL_GESTURE_GAP_MS since the gesture's last
+ * unmodified event ends it; the next unmodified event re-classifies
+ * fresh (a deliberate axis change usually comes with a natural pause).
+ * Zero-delta unmodified ticks route nothing and neither start, extend,
+ * nor reset a gesture. Modifier events (ctrl/meta zoom, shift pan) route
+ * exactly as routeWheel and neither read nor extend the lock — a pinch
+ * mid-scroll is its own intent, and the surrounding gesture survives it
+ * (unless the modifier hold itself outlasts the gap, which is a real
+ * pause).
+ *
+ * DECISIVE-FLIP RE-LOCK: a mid-gesture event whose OPPOSITE axis beats
+ * the locked one by more than WHEEL_AXIS_FLIP_RATIO with at least
+ * WHEEL_AXIS_FLIP_MIN_PX of magnitude re-locks the gesture to that axis
+ * on the spot. The magnitude floor is what keeps jitter from flipping:
+ * a swipe's incidental minor axis is proportional to its major one
+ * (dy ~8 against dx ~120), so a proportional wobble can never clear the
+ * floor AND the ratio at once, while a genuine direction change (a full
+ * ~100px vertical tick mid-h-stream) flips immediately. The case that
+ * makes this load-bearing rather than polish: a page scroll carries a
+ * SECOND chart under the cursor mid-stream, and the first event its
+ * fresh router happens to see is a horizontal-dominant jitter event —
+ * without the flip that chart locks 'h' and eats the rest of the page's
+ * scroll (browser-verified on the two-chart showcase).
+ *
+ * Pure with respect to time: `ts` is the caller's clock — the element
+ * passes e.timeStamp; tests drive it explicitly — and the router never
+ * reads Date.now(). Pinned invariant (see the test suite): a FRESH
+ * router routes any single event exactly like routeWheel, so the
+ * per-event behavior table above stays the isolated-event contract.
+ */
+export class WheelGestureRouter {
+  private axis: 'h' | 'v' | null = null;
+  private lastTs = -Infinity;
+
+  /**
+   * Route one event of the stream. `ts` is the event's timestamp in ms
+   * on any monotonic clock (e.timeStamp / performance.now()); WheelRoute
+   * semantics — `consumed` is the preventDefault contract — are
+   * unchanged from routeWheel.
+   */
+  route(e: WheelInput, lanesOverflow: boolean, ts: number): WheelRoute {
+    if (e.ctrlKey || e.metaKey || e.shiftKey) return routeWheel(e, lanesOverflow);
+    const dx = wheelDeltaToPixels(e.deltaX, e.deltaMode);
+    const dy = wheelDeltaToPixels(e.deltaY, e.deltaMode);
+    if (dx === 0 && dy === 0) return { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false };
+    if (this.axis === null || ts - this.lastTs > WHEEL_GESTURE_GAP_MS) {
+      // Fresh gesture: the per-event dominant-axis rule locks the stream.
+      this.axis = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
+    } else if (this.axis === 'h' && Math.abs(dy) > WHEEL_AXIS_FLIP_RATIO * Math.abs(dx) && Math.abs(dy) >= WHEEL_AXIS_FLIP_MIN_PX) {
+      this.axis = 'v';
+    } else if (this.axis === 'v' && Math.abs(dx) > WHEEL_AXIS_FLIP_RATIO * Math.abs(dy) && Math.abs(dx) >= WHEEL_AXIS_FLIP_MIN_PX) {
+      this.axis = 'h';
+    }
+    this.lastTs = ts;
+    if (this.axis === 'v') return { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false };
+    return { zoomPx: 0, panPx: dx, laneScrollPx: lanesOverflow ? dy : 0, consumed: true };
+  }
 }
 
 // -- Follow-now rule ---------------------------------------------------------------

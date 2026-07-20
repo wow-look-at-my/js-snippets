@@ -63,6 +63,8 @@ import {
   historyProbe,
   routeWheel,
   classifyWheel,
+  WheelGestureRouter,
+  WHEEL_GESTURE_GAP_MS,
   followAfterGesture,
   FOLLOW_LEAD_FRAC,
   FOLLOW_SNAP_DEVICE_PX,
@@ -908,7 +910,10 @@ const wheel = (over: Partial<WheelInput>): WheelInput => ({
 // deltaY only, diagonal by dominant axis} x {lanes overflow, no
 // overflow}. `consumed` is the preventDefault contract — false means the
 // element must NOT call preventDefault and the page scrolls normally over
-// the chart.
+// the chart. routeWheel is the PER-EVENT rule, exact for a FRESH or
+// ISOLATED event ("vertical-dominant is never consumed" holds AS A FRESH
+// EVENT); within a live stream the WheelGestureRouter's axis lock governs
+// consumption instead — see the stream tests below the classify block.
 
 test('routeWheel: deltaX always pans time (consumed), with and without lane overflow', () => {
   for (const lanesOverflow of [false, true]) {
@@ -919,10 +924,13 @@ test('routeWheel: deltaX always pans time (consumed), with and without lane over
 
 test('routeWheel: plain deltaY routes NOTHING — page scroll wins even over an overflowing lane stack', () => {
   // The vertical-scroll contract: a vertical-dominant modifier-less wheel
-  // is never consumed, so preventDefault is never called and the page
-  // scrolls over the chart — regardless of lane overflow (an overflowing
-  // stack used to capture deltaY and eat the page's scroll on exactly the
-  // busy charts that always overflow).
+  // is never consumed AS A FRESH/ISOLATED EVENT, so preventDefault is not
+  // called and the page scrolls over the chart — regardless of lane
+  // overflow (an overflowing stack used to capture deltaY and eat the
+  // page's scroll on exactly the busy charts that always overflow).
+  // Stream-level: inside a live HORIZONTAL-locked gesture the same event
+  // IS consumed (see the WheelGestureRouter tests) — that's the fix for
+  // its jitter creeping the page mid-pan, not a hole in this contract.
   for (const lanesOverflow of [false, true]) {
     assert.deepEqual(routeWheel(wheel({ deltaY: 5 }), lanesOverflow), { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false });
     assert.deepEqual(routeWheel(wheel({ deltaY: -240 }), lanesOverflow), { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false });
@@ -1085,6 +1093,287 @@ test('classifyWheel ↔ routeWheel invariant: consumed === (class !== passthroug
     }
   }
   assert.ok(checked >= 6 * 3 * 11 * 11 * 2, `full matrix swept (${checked})`);
+});
+
+// -- Wheel gesture axis lock (stream-level routing) -------------------------------
+
+// WheelGestureRouter = the per-event table above + a gesture axis lock
+// bounded by WHEEL_GESTURE_GAP_MS of unmodified-wheel silence. All tests
+// drive time explicitly (the third `route` argument) — the router reads
+// no clock of its own.
+
+test('WheelGestureRouter: a FRESH router routes any single event exactly like routeWheel (full matrix)', () => {
+  // The isolated-event contract: gesture state only ever changes what
+  // happens WITHIN a stream — the first (or a lone) event's route is
+  // byte-identical to the per-event router's, across the same matrix the
+  // classify invariant sweeps.
+  const deltas = [-240, -16, -5, -1, 0, 1, 5, 16, 240, NaN, Infinity];
+  const modes = [0, 1, 2];
+  const mods = [
+    {},
+    { ctrlKey: true },
+    { metaKey: true },
+    { shiftKey: true },
+    { ctrlKey: true, shiftKey: true },
+    { metaKey: true, shiftKey: true },
+  ];
+  let checked = 0;
+  for (const mod of mods) {
+    for (const deltaMode of modes) {
+      for (const deltaX of deltas) {
+        for (const deltaY of deltas) {
+          const e = wheel({ deltaX, deltaY, deltaMode, ...mod });
+          for (const lanesOverflow of [false, true]) {
+            const fresh = new WheelGestureRouter();
+            assert.deepEqual(
+              fresh.route(e, lanesOverflow, 1000),
+              routeWheel(e, lanesOverflow),
+              `fresh-router mismatch at dx=${deltaX} dy=${deltaY} mode=${deltaMode} mods=${JSON.stringify(mod)} overflow=${lanesOverflow}`,
+            );
+            checked++;
+          }
+        }
+      }
+    }
+  }
+  assert.ok(checked >= 6 * 3 * 11 * 11 * 2, `full matrix swept (${checked})`);
+});
+
+test('WheelGestureRouter: h-locked stream consumes its vertical-dominant jitter — pan is Σdx, the page gets nothing', () => {
+  // The operator gesture: a mostly-horizontal trackpad swipe whose edge /
+  // momentum-tail events are individually vertical-dominant (-4, 10-ish).
+  // Per-event routing leaked each of those to the page; locked, EVERY
+  // unmodified event of the gesture is consumed — including a
+  // pure-vertical momentum tick — and pan is the exact sum of dx.
+  const stream: Array<[number, number]> = [
+    [-120, 8],
+    [-120, 8],
+    [-4, 12], // vertical-dominant jitter: passthrough as a fresh event, consumed here
+    [-120, 8],
+    [0, 10], // pure-vertical momentum tick inside the gesture: still consumed
+    [-120, 8],
+    [-4, 12],
+    [-120, 8],
+  ];
+  const r = new WheelGestureRouter();
+  let ts = 5000;
+  let pan = 0;
+  for (const [deltaX, deltaY] of stream) {
+    const route = r.route(wheel({ deltaX, deltaY }), false, ts);
+    assert.equal(route.consumed, true, `(${deltaX}, ${deltaY}) at ${ts} must be consumed inside the h gesture`);
+    assert.equal(route.zoomPx, 0);
+    assert.equal(route.laneScrollPx, 0, 'no lane overflow: the minor dy is dropped, never half-forwarded');
+    pan += route.panPx;
+    ts += 16;
+  }
+  assert.equal(pan, -120 * 5 - 4 * 2, 'pan equals the sum of every event\'s dx, jitter included');
+});
+
+test('WheelGestureRouter: h-locked stream over overflowing lanes — dy keeps nudging the lane stack, jitter included', () => {
+  const r = new WheelGestureRouter();
+  let ts = 0;
+  let pan = 0;
+  let lane = 0;
+  for (const [deltaX, deltaY] of [
+    [-60, 4],
+    [-3, 9], // vertical-dominant jitter
+    [-60, 4],
+  ] as Array<[number, number]>) {
+    const route = r.route(wheel({ deltaX, deltaY }), true, ts);
+    assert.equal(route.consumed, true);
+    pan += route.panPx;
+    lane += route.laneScrollPx;
+    ts += 16;
+  }
+  assert.equal(pan, -123);
+  assert.equal(lane, 17, 'the h route\'s laneScroll behavior applies stream-wide (lanesOverflow ? dy : 0)');
+});
+
+test('WheelGestureRouter: v-locked stream passes EVERYTHING through — horizontal jitter never pans the chart', () => {
+  // The symmetric leak: a page scroll's jittery minority events are
+  // individually horizontal-dominant and used to nudge the chart
+  // sideways. Locked vertical, nothing is consumed and nothing routes.
+  const stream: Array<[number, number]> = [
+    [0, 120],
+    [2, 90],
+    [-12, 5], // horizontal-dominant jitter: pan as a fresh event, passthrough here
+    [0, 120],
+    [-14, 6],
+    [0, 120],
+  ];
+  const r = new WheelGestureRouter();
+  let ts = 9000;
+  for (const [deltaX, deltaY] of stream) {
+    for (const lanesOverflow of [false, true]) {
+      // Routing must not depend on overflow either way; route twice at
+      // the same ts (idempotent for a v-locked stream — nothing mutates
+      // but the gesture clock).
+      assert.deepEqual(r.route(wheel({ deltaX, deltaY }), lanesOverflow, ts), {
+        zoomPx: 0,
+        panPx: 0,
+        laneScrollPx: 0,
+        consumed: false,
+      });
+    }
+    ts += 16;
+  }
+});
+
+test('WheelGestureRouter: a gap over WHEEL_GESTURE_GAP_MS ends the gesture — the next event classifies fresh', () => {
+  const r = new WheelGestureRouter();
+  // h gesture...
+  assert.equal(r.route(wheel({ deltaX: -120, deltaY: 8 }), false, 1000).consumed, true);
+  assert.equal(r.route(wheel({ deltaX: -120, deltaY: 8 }), false, 1016).consumed, true);
+  // ...pause 300ms, then a vertical-dominant event: FRESH → 'v' → the page.
+  assert.equal(r.route(wheel({ deltaX: -4, deltaY: 10 }), false, 1316).consumed, false);
+  // The fresh event locked 'v': horizontal JITTER inside its gesture
+  // passes through too (under the flip floor — a DECISIVE horizontal
+  // event would re-lock instead, see the flip test)...
+  assert.equal(r.route(wheel({ deltaX: -12, deltaY: 5 }), false, 1332).consumed, false);
+  // ...until a pause frees it again.
+  assert.equal(r.route(wheel({ deltaX: -12, deltaY: 5 }), false, 1332 + WHEEL_GESTURE_GAP_MS + 1).consumed, true);
+
+  // Boundary pin: exactly WHEEL_GESTURE_GAP_MS later is still the same
+  // gesture; one ms past it is fresh.
+  const b = new WheelGestureRouter();
+  assert.equal(b.route(wheel({ deltaX: -120, deltaY: 8 }), false, 2000).consumed, true);
+  assert.equal(b.route(wheel({ deltaX: -4, deltaY: 10 }), false, 2000 + WHEEL_GESTURE_GAP_MS).consumed, true, 'ts delta == gap: still locked');
+  const c = new WheelGestureRouter();
+  assert.equal(c.route(wheel({ deltaX: -120, deltaY: 8 }), false, 2000).consumed, true);
+  assert.equal(c.route(wheel({ deltaX: -4, deltaY: 10 }), false, 2000 + WHEEL_GESTURE_GAP_MS + 1).consumed, false, 'ts delta > gap: fresh');
+});
+
+test('WheelGestureRouter: a DECISIVE opposite-axis event re-locks mid-gesture — proportional jitter never does', () => {
+  // The load-bearing case (browser-verified on the two-chart showcase): a
+  // page scroll carries a second chart under the cursor mid-stream, and
+  // the first event that chart's FRESH router sees is horizontal-dominant
+  // jitter → it locks 'h'. Without the flip it would eat the rest of the
+  // page's scroll; the next full-size vertical tick must win it back.
+  const r = new WheelGestureRouter();
+  assert.equal(r.route(wheel({ deltaX: -12, deltaY: 5 }), false, 1000).consumed, true, 'fresh h-dominant jitter locks h (per-event rule)');
+  assert.equal(r.route(wheel({ deltaY: 100 }), false, 1016).consumed, false, 'decisive vertical (>2x, >=24px) flips the lock to v');
+  assert.equal(r.route(wheel({ deltaY: 100 }), false, 1032).consumed, false, 'the page keeps the stream');
+  assert.equal(r.route(wheel({ deltaX: -12, deltaY: 5 }), false, 1048).consumed, false, 'later jitter is under the floor: no flip back');
+
+  // Symmetric: a decisive horizontal event mid-v-stream reclaims the
+  // chart without waiting out the gap.
+  const v = new WheelGestureRouter();
+  assert.equal(v.route(wheel({ deltaY: 120 }), false, 2000).consumed, false);
+  assert.deepEqual(v.route(wheel({ deltaX: -120, deltaY: 8 }), false, 2016), {
+    zoomPx: 0,
+    panPx: -120,
+    laneScrollPx: 0,
+    consumed: true,
+  });
+
+  // The flip needs BOTH thresholds — this is what keeps the operator's
+  // own jitter from re-leaking:
+  const h = new WheelGestureRouter();
+  assert.equal(h.route(wheel({ deltaX: -120, deltaY: 8 }), false, 3000).consumed, true);
+  // ratio met (12 > 2*4) but under the 24px floor → still consumed.
+  assert.equal(h.route(wheel({ deltaX: -4, deltaY: 12 }), false, 3016).consumed, true);
+  // floor met but not the ratio (100 <= 2*60) → a strong diagonal stays h.
+  assert.equal(h.route(wheel({ deltaX: -60, deltaY: 100 }), false, 3032).consumed, true);
+  // exactly at the floor with the ratio → flips (>= is inclusive).
+  assert.equal(h.route(wheel({ deltaX: -4, deltaY: 24 }), false, 3048).consumed, false);
+});
+
+test('WheelGestureRouter: modifier events route as routeWheel and neither read nor extend the lock', () => {
+  // (d) a ctrl zoom mid-h-stream: routes exactly like per-event
+  // routeWheel (always consumed), and the h lock survives for the next
+  // unmodified event — jitter right after the pinch is still consumed.
+  const r = new WheelGestureRouter();
+  assert.equal(r.route(wheel({ deltaX: -120, deltaY: 8 }), false, 1000).consumed, true);
+  assert.deepEqual(r.route(wheel({ deltaY: -40, ctrlKey: true }), true, 1016), {
+    zoomPx: -40,
+    panPx: 0,
+    laneScrollPx: 0,
+    consumed: true,
+  });
+  assert.deepEqual(r.route(wheel({ deltaX: -4, deltaY: 10 }), false, 1032), {
+    zoomPx: 0,
+    panPx: -4,
+    laneScrollPx: 0,
+    consumed: true,
+  });
+
+  // ...but modifiers do not EXTEND the gesture: a pinch outlasting the
+  // gap is a real pause, so the next unmodified event classifies fresh.
+  const s = new WheelGestureRouter();
+  assert.equal(s.route(wheel({ deltaX: -120, deltaY: 8 }), false, 1000).consumed, true);
+  for (let ts = 1016; ts <= 1250; ts += 16) {
+    assert.equal(s.route(wheel({ deltaY: -10, ctrlKey: true }), false, ts).consumed, true);
+  }
+  assert.equal(s.route(wheel({ deltaX: -4, deltaY: 10 }), false, 1266).consumed, false, 'gap since the last UNMODIFIED event: fresh → v');
+
+  // shift-pan mid-v-stream stays a consumed time pan while the v lock
+  // survives around it (the page keeps the surrounding gesture).
+  const v = new WheelGestureRouter();
+  assert.equal(v.route(wheel({ deltaY: 120 }), false, 3000).consumed, false);
+  assert.deepEqual(v.route(wheel({ deltaY: 7, shiftKey: true }), false, 3016), {
+    zoomPx: 0,
+    panPx: 7,
+    laneScrollPx: 0,
+    consumed: true,
+  });
+  assert.equal(v.route(wheel({ deltaX: -12, deltaY: 5 }), false, 3032).consumed, false, 'v lock intact across the shift event');
+
+  // And modifiers never START a gesture: an isolated zoom leaves no lock
+  // behind for the next unmodified event to inherit.
+  const z = new WheelGestureRouter();
+  assert.equal(z.route(wheel({ deltaY: -40, ctrlKey: true }), false, 4000).consumed, true);
+  assert.equal(z.route(wheel({ deltaX: -4, deltaY: 10 }), false, 4016).consumed, false, 'fresh classification (v), not an inherited lock');
+});
+
+test('WheelGestureRouter: zero-delta unmodified ticks route nothing and neither start, extend, nor reset a gesture', () => {
+  // Fresh zero tick: not consumed, no gesture begun.
+  const r = new WheelGestureRouter();
+  assert.deepEqual(r.route(wheel({}), false, 1000), { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false });
+
+  // Zero ticks inside an h gesture leave the lock intact (no reset)...
+  assert.equal(r.route(wheel({ deltaX: -120, deltaY: 8 }), false, 1016).consumed, true);
+  assert.equal(r.route(wheel({}), false, 1032).consumed, false);
+  assert.equal(r.route(wheel({ deltaX: -4, deltaY: 10 }), false, 1100).consumed, true, 'lock intact across the zero tick');
+
+  // ...but do not extend it: with only zero ticks inside the gap window,
+  // the gesture still expires relative to the last NONZERO event.
+  const s = new WheelGestureRouter();
+  assert.equal(s.route(wheel({ deltaX: -120, deltaY: 8 }), false, 2000).consumed, true);
+  assert.equal(s.route(wheel({}), false, 2000 + 180).consumed, false);
+  // 2000+380 is exactly GAP past the zero tick but PAST the gap from the
+  // last nonzero event at 2000 → fresh → v → passthrough. (If zero ticks
+  // extended the gesture, this would still be h-locked and consumed.)
+  assert.equal(s.route(wheel({ deltaX: -4, deltaY: 10 }), false, 2000 + 180 + WHEEL_GESTURE_GAP_MS).consumed, false);
+});
+
+test('WheelGestureRouter: deltaMode-normalized classification — a line-mode stream locks and routes like its pixel equivalent', () => {
+  // (e) classification and routing happen on wheelDeltaToPixels-normalized
+  // deltas: a Firefox line-mode wheel stream behaves exactly like the
+  // pixel-mode stream it converts to (lineHeight 16).
+  const r = new WheelGestureRouter();
+  assert.deepEqual(r.route(wheel({ deltaX: -2, deltaY: 1, deltaMode: 1 }), true, 1000), {
+    zoomPx: 0,
+    panPx: -32,
+    laneScrollPx: 16,
+    consumed: true,
+  });
+  // A 1-line pure-vertical tick inside the h gesture: consumed,
+  // normalized to 16px — under the 24px flip floor.
+  assert.deepEqual(r.route(wheel({ deltaY: 1, deltaMode: 1 }), true, 1016), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: 16,
+    consumed: true,
+  });
+  // A 2-line vertical tick normalizes to 32px — over the floor, so it
+  // decisively FLIPS the gesture (discrete wheels do not jitter; the
+  // thresholds apply to the normalized pixels, not raw line counts).
+  assert.equal(r.route(wheel({ deltaY: 2, deltaMode: 1 }), true, 1032).consumed, false);
+  // Fresh line-mode vertical-dominant event → 'v' lock, then a line-mode
+  // horizontal jitter passes through: same table as pixel mode.
+  const v = new WheelGestureRouter();
+  assert.equal(v.route(wheel({ deltaY: 3, deltaMode: 1 }), false, 2000).consumed, false);
+  assert.equal(v.route(wheel({ deltaX: -1, deltaMode: 1 }), false, 2016).consumed, false, 'line-mode h jitter inside the v gesture');
 });
 
 // -- Now-line x ------------------------------------------------------------------
