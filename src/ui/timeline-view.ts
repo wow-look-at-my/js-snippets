@@ -161,6 +161,9 @@ import {
   clusterInstants,
   clusterMarkerTime,
   clusterZoomView,
+  fitSpanView,
+  segmentAtTime,
+  type SegmentHit,
   minimapExtent,
   minimapWindowRect,
   minimapHitZone,
@@ -272,10 +275,13 @@ export type LoadRangeFn = (start: number, end: number) => Promise<{ exhausted?: 
  * 'cluster' (a stacked group of visually-overlapping instant markers) is the
  * one hit type NEVER handed to tooltipFor: its summary tooltip is
  * component-built, and clicking it zooms to the member extent instead of
- * dispatching intervalclick.
+ * dispatching intervalclick. An interval hit's `segment` names the phase
+ * segment under the pointer (null over the base bar) — ADDITIVE, so
+ * existing tooltipFor callbacks keep working unchanged and opt in by
+ * reading it.
  */
 export type TimelineHit =
-  | { type: 'interval'; interval: TimelineInterval; lane: TimelineLane }
+  | { type: 'interval'; interval: TimelineInterval; lane: TimelineLane; segment?: SegmentHit | null }
   | { type: 'cluster'; intervals: TimelineInterval[]; lane: TimelineLane }
   | { type: 'connector'; connector: TimelineConnector; missingEndpoint?: 'from' | 'to' }
   | { type: 'marker'; marker: TimelineMarker }
@@ -1291,6 +1297,23 @@ export class TimelineViewElement extends HTMLElement {
     this.viewTouched = true;
     const span = Math.min(Math.max(e - s, MIN_SPAN_MS), MAX_SPAN_MS);
     this.applyUserView({ start: s, end: s + span }, { jump: true });
+  }
+
+  /**
+   * Fit the viewport to ONE interval: its span full-width plus
+   * `pad` fraction of it each side (default 0.05) — the run-detail-dialog
+   * convenience (an embedded instance shows just the clicked span, no
+   * viewport math). A thin wrapper over setViewport, so it counts as a
+   * consumer-chosen window (latches viewTouched; span clamps + the now
+   * stop apply; instants center in the ~2s minimum window). False when
+   * the id is unknown — viewport untouched.
+   */
+  fitToInterval(id: string, opts?: { pad?: number }): boolean {
+    const n = this.byId.get(id);
+    if (!n) return false;
+    const v = fitSpanView(n.start, n.end ?? this.liveEdge(), opts?.pad);
+    this.setViewport(v.start, v.end);
+    return true;
   }
 
   /** Whether the right edge is pinned to live "now" (default true). */
@@ -2604,7 +2627,11 @@ export class TimelineViewElement extends HTMLElement {
         if (n.start > this.renderView().end) continue;
         const r = expandHitRect(this.rectFor(n, now), HIT_MIN_W);
         if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
-          return { type: 'interval', interval: n.src, lane: this.lanes[n.laneIdx] };
+          // Which phase segment the pointer's TIME falls in (data-space —
+          // the expanded hit halo around instants resolves to none).
+          const t = xToTime(x - this.gutterW, this.renderView(), this.plotWidth());
+          const segment = n.segs ? segmentAtTime(n.segs, n.start, n.end ?? now, t) : null;
+          return { type: 'interval', interval: n.src, lane: this.lanes[n.laneIdx], segment };
         }
       }
     }
@@ -3048,6 +3075,9 @@ export class TimelineViewElement extends HTMLElement {
       row('lane', hit.lane.label);
       row('category', n.catKey);
       if (n.state) row('state', n.state);
+      // The phase under the pointer, named by its style-map kind — the
+      // legend's vocabulary, so no legend round-trip to decode a stripe.
+      if (hit.segment) row('segment', `${hit.segment.kind} · ${formatDuration(hit.segment.end - hit.segment.start)}`);
       const now = this.nowMs();
       const end = n.end ?? now;
       const fine = end - n.start < 10_000;
