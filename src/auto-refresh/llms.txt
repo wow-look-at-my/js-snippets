@@ -1,0 +1,17 @@
+### auto-refresh/auto-refresh.js
+Live-reload detection. Polls a `version.txt` file (e.g. commit SHA) at the
+site root to detect deployments. Falls back to HEAD-polling the current page
+and comparing ETag / Last-Modified headers if version.txt is missing.
+Shows a notification banner before reloading.
+
+Exports:
+  createAutoRefresh(options?: AutoRefreshOptions) → AutoRefreshHandle
+    options.interval     — ms between checks (default 30 000)
+    options.refreshDelay — ms before reload after detection (default 2 000)
+    Returns { start(), stop() }. Call start() to begin polling.
+    Pauses automatically when the tab is hidden.
+
+  bustCacheAndReload() → void
+    Navigate to the current page with a cache-busting _v query param.
+
+Types: AutoRefreshOptions, AutoRefreshHandle

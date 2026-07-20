@@ -1,0 +1,505 @@
+/* Shadow-DOM styles for <timeline-view> (imported as text via ts0.json's
+ * ".css" loader and adopted as a constructable stylesheet). Everything in
+ * the plot is canvas-painted; this file styles the host and the DOM chrome:
+ * tooltip, jump-to-live pill, and the empty-state hint. Colors defer to the
+ * --timeline-* custom properties with the same dark defaults the canvas
+ * uses (see THEME_DEFAULTS in timeline-view.ts). */
+
+:host {
+  display: block;
+  position: relative;
+  width: 100%;
+  height: 320px;
+  overflow: hidden;
+  background: var(--timeline-bg, #0d0f14);
+  font-family: var(--timeline-font, 'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Fira Code', monospace);
+  /* The host is a scroll container (overflow: hidden), so it sits in every
+   * scroll chain from its shadow children. HORIZONTAL-only on purpose: a
+   * horizontal pull at the pan boundary (wheel over the chrome, a touch
+   * drag starting on a button) must never become Chrome/Firefox
+   * history-back navigation — but the VERTICAL axis stays free, matching
+   * the wheel router's contract (a plain vertical wheel is never consumed
+   * and must chain to the page scroll; the old `overscroll-behavior:
+   * none` shorthand blanketed Y against that intent). */
+  overscroll-behavior-x: none;
+}
+
+:host([hidden]) {
+  display: none;
+}
+
+/* Viewport-fill fullscreen (the reflected `fullscreen` attribute; NOT the
+ * Fullscreen API). !important on purpose: page styles targeting the host
+ * (e.g. `#my-timeline { height: 75vh; border: … }`) beat plain :host
+ * rules, but important shadow declarations beat important-less page ones —
+ * fullscreen must win regardless of how the consumer sized the host.
+ * Exiting removes the attribute and every page style applies again
+ * exactly as before. */
+:host([fullscreen]) {
+  position: fixed !important;
+  inset: 0 !important;
+  width: auto !important;
+  height: auto !important;
+  max-width: none !important;
+  max-height: none !important;
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  z-index: 2147483000;
+}
+
+:host(:focus) {
+  outline: none;
+}
+
+:host(:focus-visible) {
+  outline: 1px solid var(--timeline-now, #00e47a);
+  outline-offset: -1px;
+}
+
+canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* pan-y: the BROWSER owns vertical touch pans (a one-finger vertical
+   * swipe scrolls the page — the same rule the wheel router enforces for
+   * vertical wheels; the element gets pointercancel and stops). A
+   * horizontal one-finger drag still pans the chart, and two-finger
+   * pinch-zoom is NOT in the allowed set, so the element's own pinch
+   * keeps working. Accepted tradeoff: one-finger vertical LANE-drag is
+   * gone on touch (arrow keys / desktop drag unaffected). */
+  touch-action: pan-y;
+  overscroll-behavior-x: none; /* belt to the :host rule (no-op unless a UA treats the canvas as chainable) */
+}
+
+/* The minimap strip: a slim overview band along the bottom. Position only —
+ * its height (and the plot canvas ceding the band) is set inline by the
+ * element so MINIMAP_H has one source of truth. bottom/left/right come
+ * from the base canvas rule's inset. */
+canvas.minimap {
+  top: auto;
+  /* The strip is a pure horizontal-drag control (window pan/resize) —
+   * unlike the plot canvas it keeps every touch gesture to itself. */
+  touch-action: none;
+}
+
+canvas.minimap[hidden] {
+  display: none;
+}
+
+/* -- Tooltip ---------------------------------------------------------------- */
+
+.tooltip {
+  position: absolute;
+  z-index: 3;
+  max-width: 340px;
+  /* Pathological content (a wall of wrapped error text) clips instead of
+   * outgrowing the host; the % keeps it inside even a short host. */
+  max-height: min(240px, 85%);
+  overflow: hidden;
+  padding: 6px 9px;
+  pointer-events: none;
+  background: var(--timeline-tooltip-bg, rgba(20, 24, 32, 0.96));
+  color: var(--timeline-tooltip-fg, #e8ecf4);
+  border: 1px solid var(--timeline-hairline, rgba(200, 205, 216, 0.16));
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  font-size: calc(var(--timeline-font-size, 11px) + 0px);
+  line-height: 1.45;
+  /* Long lines WRAP inside the box (they used to spill past it under
+   * nowrap); pre-line keeps intentional newlines in string content, and
+   * anywhere lets unbroken tokens (run ids, error blobs) break too. */
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  opacity: 0;
+  transition: opacity 90ms ease-out;
+}
+
+.tooltip.visible {
+  opacity: 1;
+}
+
+.tooltip .tt-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.tooltip .tt-row {
+  display: flex;
+  gap: 8px;
+}
+
+.tooltip .tt-k {
+  color: var(--timeline-muted, #6b7280);
+  min-width: 52px;
+  flex-shrink: 0;
+}
+
+.tooltip .tt-v {
+  /* Flex items refuse to shrink below their content by default; letting
+   * the value column shrink is what makes long values wrap instead of
+   * pushing the row past the tooltip border. */
+  min-width: 0;
+}
+
+.tooltip .tt-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 2px;
+  vertical-align: baseline;
+}
+
+/* -- Jump-to-live pill + fullscreen toggle ------------------------------------- */
+/* The fullscreen toggle owns the bottom-right corner (always visible); the
+ * pill slides in to its LEFT while parked, so neither ever moves when the
+ * other appears. touch-action: manipulation keeps taps instant while the
+ * host's overscroll-behavior stops a drag that starts on a button from
+ * chaining into browser navigation. */
+
+.live-pill {
+  position: absolute;
+  z-index: 2;
+  right: 44px;
+  bottom: 10px;
+  padding: 3px 11px 4px;
+  border: 1px solid var(--timeline-now, #00e47a);
+  border-radius: 999px;
+  background: var(--timeline-bg, #0d0f14);
+  color: var(--timeline-now, #00e47a);
+  font: inherit;
+  font-size: var(--timeline-font-size, 11px);
+  line-height: 1.4;
+  cursor: pointer;
+  opacity: 0.92;
+  transition: opacity 90ms ease-out, transform 120ms ease-out;
+  touch-action: manipulation;
+}
+
+.live-pill:hover {
+  opacity: 1;
+  transform: translateY(-1px);
+}
+
+.live-pill:focus-visible {
+  outline: 1px solid var(--timeline-now, #00e47a);
+  outline-offset: 2px;
+}
+
+.live-pill[hidden] {
+  display: none;
+}
+
+.fs-pill {
+  position: absolute;
+  z-index: 2;
+  right: 10px;
+  bottom: 10px;
+  width: 26px;
+  padding: 3px 0 4px;
+  border: 1px solid var(--timeline-muted, #6b7280);
+  border-radius: 999px;
+  background: var(--timeline-bg, #0d0f14);
+  color: var(--timeline-fg, #e8ecf4);
+  font: inherit;
+  font-size: var(--timeline-font-size, 11px);
+  line-height: 1.4;
+  text-align: center;
+  cursor: pointer;
+  opacity: 0.85;
+  transition: opacity 90ms ease-out, transform 120ms ease-out;
+  touch-action: manipulation;
+}
+
+.fs-pill:hover {
+  opacity: 1;
+  transform: translateY(-1px);
+}
+
+.fs-pill:focus-visible {
+  outline: 1px solid var(--timeline-now, #00e47a);
+  outline-offset: 2px;
+}
+
+.fs-pill[hidden] {
+  display: none;
+}
+
+/* With the toggle opted out (`no-fullscreen-button`) the pill reclaims the corner. */
+.fs-pill[hidden] ~ .live-pill {
+  right: 10px;
+}
+
+/* -- Stale-feed note ------------------------------------------------------------ */
+/* Shown while the live feed has stopped delivering (see staleAfterMs): the
+ * chart is frozen at the last vouched timestamp and says so, with a live
+ * seconds counter that never gives up. */
+
+.stale-note {
+  position: absolute;
+  z-index: 2;
+  top: 30px;
+  right: 10px;
+  padding: 3px 10px 4px;
+  pointer-events: none;
+  border: 1px solid var(--timeline-stale, #f0a500);
+  border-radius: 4px;
+  background: var(--timeline-bg, #0d0f14);
+  color: var(--timeline-stale, #f0a500);
+  font: inherit;
+  font-size: var(--timeline-font-size, 11px);
+  line-height: 1.4;
+  opacity: 0.95;
+}
+
+.stale-note[hidden] {
+  display: none;
+}
+
+/* -- Empty-state hint ---------------------------------------------------------- */
+
+.empty-hint {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: var(--timeline-muted, #6b7280);
+  font-size: calc(var(--timeline-font-size, 11px) + 1px);
+}
+
+.empty-hint[hidden] {
+  display: none;
+}
+
+/* -- Legend ("?" pill + panel) ---------------------------------------------------- */
+/* The glyph vocabulary, learnable in place: a "?" pill stacked above the
+ * fullscreen toggle opens a panel of swatch → meaning rows (component
+ * vocabulary first, then consumer `legendEntries`). Pure DOM chrome — it
+ * rides the host into fullscreen and never touches the canvas hot path.
+ * Swatches are CSS-drawn in a NEUTRAL blue-grey on purpose: they teach
+ * shape and pattern, never a real category hue. */
+
+.legend-pill {
+  position: absolute;
+  z-index: 2;
+  right: 10px;
+  bottom: 44px;
+  width: 26px;
+  padding: 3px 0 4px;
+  border: 1px solid var(--timeline-muted, #6b7280);
+  border-radius: 999px;
+  background: var(--timeline-bg, #0d0f14);
+  color: var(--timeline-fg, #e8ecf4);
+  font: inherit;
+  font-size: var(--timeline-font-size, 11px);
+  line-height: 1.4;
+  text-align: center;
+  cursor: pointer;
+  opacity: 0.85;
+  transition: opacity 90ms ease-out, transform 120ms ease-out;
+  touch-action: manipulation;
+}
+
+.legend-pill:hover {
+  opacity: 1;
+  transform: translateY(-1px);
+}
+
+.legend-pill:focus-visible {
+  outline: 1px solid var(--timeline-now, #00e47a);
+  outline-offset: 2px;
+}
+
+.legend-pill[hidden] {
+  display: none;
+}
+
+.legend-panel {
+  position: absolute;
+  z-index: 3;
+  right: 10px;
+  bottom: 76px;
+  width: 340px;
+  max-width: calc(100% - 20px);
+  max-height: calc(100% - 96px);
+  overflow-y: auto;
+  padding: 8px 12px 10px;
+  border: 1px solid var(--timeline-grid, #262b36);
+  border-radius: 6px;
+  background: var(--timeline-bg, #0d0f14);
+  color: var(--timeline-fg, #e8ecf4);
+  font-size: var(--timeline-font-size, 11px);
+  line-height: 1.45;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+
+.legend-panel[hidden] {
+  display: none;
+}
+
+.lg-title {
+  color: var(--timeline-muted, #6b7280);
+  margin-bottom: 6px;
+}
+
+.lg-sep {
+  border-top: 1px solid var(--timeline-grid, #262b36);
+  margin: 7px 0;
+}
+
+.lg-row {
+  display: grid;
+  grid-template-columns: 48px 1fr;
+  gap: 9px;
+  align-items: center;
+  margin: 5px 0;
+}
+
+.lg-text {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.lg-swatch {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 14px;
+}
+
+/* Consumer rows: the entry's own glyph string IS the swatch. */
+.lg-glyph {
+  font-size: 12px;
+}
+
+/* Bar-shaped swatches share a neutral body… */
+.lg-bar {
+  width: 44px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid rgba(151, 173, 205, 0.9);
+  background: rgba(122, 148, 183, 0.75);
+}
+
+/* …failed adds the stipple dots, emphasis border, and corner bang… */
+.lg-failed {
+  border: 2px solid var(--timeline-emphasis, #ff5c5c);
+  background:
+    radial-gradient(rgba(0, 0, 0, 0.55) 1px, transparent 1.3px) 0 0 / 4px 4px,
+    rgba(122, 148, 183, 0.75);
+}
+
+.lg-failed::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  border-style: solid;
+  border-width: 0 7px 7px 0;
+  border-color: transparent var(--timeline-emphasis, #ff5c5c) transparent transparent;
+}
+
+/* …hatch = the 45° declared-wait stripes… */
+.lg-hatch {
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(122, 148, 183, 0.85) 0 2px,
+    rgba(122, 148, 183, 0.25) 2px 5px
+  );
+}
+
+/* …dim = the uniform 50%-saturation/50%-value de-emphasis (one filter
+   over the whole region, label text included)… */
+.lg-dim {
+  filter: saturate(0.5) brightness(0.5);
+}
+
+/* …cancelled span: hollow + dashed; the scrimmed kill tail starts at a
+   cut line in the span's own hue… */
+.lg-killed {
+  background: transparent;
+  border-style: dashed;
+}
+
+.lg-killed::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 9px;
+  background: rgba(0, 0, 0, 0.55);
+  border-left: 1px solid rgba(151, 173, 205, 1);
+}
+
+/* Instant pips: filled diamond = event, hollow diamond = cancelled. A
+   cluster is the SAME diamond drawn as a fixed 3-stack — always three
+   copies, never scaled by the member count. */
+.lg-instant::before,
+.lg-cancelled-pip::before,
+.lg-cluster::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  transform: rotate(45deg);
+  background: rgba(122, 148, 183, 1);
+  border: 1px solid rgba(151, 173, 205, 1);
+}
+
+.lg-cancelled-pip::before {
+  background: transparent;
+  border-width: 1.5px;
+  border-style: dashed;
+}
+
+/* Cluster: three copies stacked right with a depth fade (the canvas
+   glyph's CLUSTER_MID/BACK_ALPHA). Shadow offsets are in the ROTATED
+   frame: local (1.4, -1.4px)/(2.8, -2.8px) = screen (2,0)/(4,0). */
+.lg-cluster::before {
+  box-shadow:
+    1.4px -1.4px 0 -0.5px rgba(122, 148, 183, 0.65),
+    2.8px -2.8px 0 -1px rgba(122, 148, 183, 0.35);
+}
+
+/* -- Minimap lift for the corner chrome ------------------------------------------ */
+/* While the minimap strip is visible (the element unhides canvas.minimap,
+ * which precedes all the chrome in the shadow DOM, so the sibling
+ * combinator can key off it — the same idiom as `.fs-pill[hidden] ~
+ * .live-pill` above), EVERY piece of corner chrome rides up above the
+ * band TOGETHER, keeping the exact stacking gaps of the base offsets.
+ * Each value is its base offset + 32px (MINIMAP_H in timeline-view.ts —
+ * the strip canvas' own inline height comes from that constant). The lift
+ * lives HERE, next to the base offsets it shifts, precisely because a
+ * partial lift from element code once raised only the fullscreen toggle +
+ * live pill and parked the ⤢ button underneath the statically-positioned
+ * "?" legend pill. */
+
+canvas.minimap:not([hidden]) ~ .live-pill,
+canvas.minimap:not([hidden]) ~ .fs-pill {
+  bottom: 42px; /* 10px base + 32px strip */
+}
+
+canvas.minimap:not([hidden]) ~ .legend-pill {
+  bottom: 76px; /* 44px base + 32px strip */
+}
+
+canvas.minimap:not([hidden]) ~ .legend-panel {
+  bottom: 108px; /* 76px base + 32px strip */
+  max-height: calc(100% - 128px); /* keep the same 20px top clearance as the base rule */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tooltip,
+  .live-pill,
+  .fs-pill,
+  .legend-pill {
+    transition: none;
+  }
+}
