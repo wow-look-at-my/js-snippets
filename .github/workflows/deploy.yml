@@ -5,6 +5,11 @@ on: push
 permissions:
   contents: read
   id-token: write # buildhost OIDC auth
+  # The buildhost-publish-site action (consumed @master) now front-runs the
+  # org's no-all-builds shadow guard, which scans this run's jobs and the
+  # head commit's check runs — it FAILS CLOSED without these two reads.
+  actions: read
+  checks: read
 
 env:
   COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
