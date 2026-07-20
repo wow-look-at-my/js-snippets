@@ -31,6 +31,8 @@ import {
   ZOOM_PX_PER_DOUBLE,
   MIN_SPAN_MS,
   MAX_SPAN_MS,
+  DEFAULT_SPAN_REF_MS,
+  defaultSpanForAspect,
   TIME_TICK_STEPS,
   timeTickStep,
   timeTicks,
@@ -60,6 +62,7 @@ import {
   CoverageTracker,
   historyProbe,
   routeWheel,
+  classifyWheel,
   followAfterGesture,
   FOLLOW_LEAD_FRAC,
   FOLLOW_SNAP_DEVICE_PX,
@@ -202,6 +205,42 @@ test('zoomFactorForWheel: exponential, composable, and doubling at the constant'
   const a = zoomFactorForWheel(-37) * zoomFactorForWheel(-63);
   const b = zoomFactorForWheel(-100);
   assert.ok(Math.abs(a - b) < 1e-12, 'factors compose: f(a)*f(b) == f(a+b)');
+});
+
+// -- Default span (aspect-scaled initial window) -----------------------------------
+
+test('defaultSpanForAspect: exactly the 3-min reference at 16:9', () => {
+  assert.equal(defaultSpanForAspect(1600, 900), DEFAULT_SPAN_REF_MS);
+  assert.equal(defaultSpanForAspect(1920, 1080), DEFAULT_SPAN_REF_MS);
+  assert.equal(DEFAULT_SPAN_REF_MS, 180_000);
+});
+
+test('defaultSpanForAspect: scales linearly with the container aspect ratio', () => {
+  // 21:9 ultrawide: span × (21/9)/(16/9) = ×(21/16).
+  assert.ok(Math.abs(defaultSpanForAspect(2100, 900) - DEFAULT_SPAN_REF_MS * (21 / 16)) < 1e-6);
+  // 1:1 square: span × 1/(16/9) = ×(9/16).
+  assert.ok(Math.abs(defaultSpanForAspect(900, 900) - DEFAULT_SPAN_REF_MS * (9 / 16)) < 1e-6);
+  // Linearity: doubling the width doubles the span (below the clamp).
+  assert.ok(Math.abs(defaultSpanForAspect(3200, 900) - 2 * defaultSpanForAspect(1600, 900)) < 1e-6);
+  // Pure-scale invariance: only the RATIO matters, not the absolute size.
+  assert.equal(defaultSpanForAspect(160, 90), defaultSpanForAspect(3200, 1800));
+});
+
+test('defaultSpanForAspect: degenerate/unsized hosts fall back to the 3-min reference', () => {
+  assert.equal(defaultSpanForAspect(0, 900), DEFAULT_SPAN_REF_MS);
+  assert.equal(defaultSpanForAspect(1600, 0), DEFAULT_SPAN_REF_MS);
+  assert.equal(defaultSpanForAspect(0, 0), DEFAULT_SPAN_REF_MS);
+  assert.equal(defaultSpanForAspect(-4, 100), DEFAULT_SPAN_REF_MS);
+  assert.equal(defaultSpanForAspect(NaN, 900), DEFAULT_SPAN_REF_MS);
+  assert.equal(defaultSpanForAspect(1600, Infinity), DEFAULT_SPAN_REF_MS);
+});
+
+test('defaultSpanForAspect: clamps to [MIN_SPAN_MS, MAX_SPAN_MS] at extreme aspects', () => {
+  assert.equal(defaultSpanForAspect(1e9, 1), MAX_SPAN_MS);
+  assert.equal(defaultSpanForAspect(1, 1e6), MIN_SPAN_MS);
+  // Just inside the clamps stays unclamped.
+  const wide = defaultSpanForAspect(6000, 900);
+  assert.ok(wide > DEFAULT_SPAN_REF_MS && wide < MAX_SPAN_MS);
 });
 
 // -- Time ticks --------------------------------------------------------------------
@@ -986,6 +1025,66 @@ test('routeWheel: deltaMode 1 (lines) normalizes to pixels on every path', () =>
     laneScrollPx: 0,
     consumed: true,
   });
+});
+
+test('classifyWheel: spot checks of the three classes', () => {
+  assert.equal(classifyWheel(wheel({ ctrlKey: true })), 'zoom'); // even zero-delta (pinch stream)
+  assert.equal(classifyWheel(wheel({ metaKey: true, deltaY: 4 })), 'zoom');
+  assert.equal(classifyWheel(wheel({ shiftKey: true, deltaY: 7 })), 'pan');
+  assert.equal(classifyWheel(wheel({ shiftKey: true, deltaX: 3 })), 'pan'); // Firefox puts shift-pan in deltaX
+  assert.equal(classifyWheel(wheel({ shiftKey: true })), 'passthrough'); // inert shift tick
+  assert.equal(classifyWheel(wheel({ deltaX: -8 })), 'pan'); // horizontal-dominant
+  assert.equal(classifyWheel(wheel({ deltaY: 120 })), 'passthrough'); // plain vertical → the page
+  assert.equal(classifyWheel(wheel({ deltaX: 5, deltaY: 5 })), 'passthrough'); // ties are vertical
+  assert.equal(classifyWheel(wheel({})), 'passthrough'); // zero-delta unmodified tick
+  // deltaMode normalization happens BEFORE classification: a line-mode
+  // wheel classifies exactly like its pixel-mode equivalent.
+  assert.equal(classifyWheel(wheel({ deltaY: 3, deltaMode: 1 })), 'passthrough');
+  assert.equal(classifyWheel(wheel({ deltaX: -2, deltaMode: 1 })), 'pan');
+});
+
+test('classifyWheel ↔ routeWheel invariant: consumed === (class !== passthrough), for ALL inputs and overflow', () => {
+  // The pinned contract: lane overflow must NEVER influence consumption
+  // (the pre-#42 regression), and the classifier must agree with the
+  // router byte-for-byte on every combination. Sweep the full matrix:
+  // modifiers × per-axis delta values (incl. zero, ties, negatives, and
+  // non-finite — which normalize to 0) × deltaMode × lanesOverflow.
+  const deltas = [-240, -16, -5, -1, 0, 1, 5, 16, 240, NaN, Infinity];
+  const modes = [0, 1, 2];
+  const mods = [
+    {},
+    { ctrlKey: true },
+    { metaKey: true },
+    { shiftKey: true },
+    { ctrlKey: true, shiftKey: true },
+    { metaKey: true, shiftKey: true },
+  ];
+  let checked = 0;
+  for (const mod of mods) {
+    for (const deltaMode of modes) {
+      for (const deltaX of deltas) {
+        for (const deltaY of deltas) {
+          const e = wheel({ deltaX, deltaY, deltaMode, ...mod });
+          const cls = classifyWheel(e);
+          for (const lanesOverflow of [false, true]) {
+            const route = routeWheel(e, lanesOverflow);
+            assert.equal(
+              route.consumed,
+              cls !== 'passthrough',
+              `mismatch at dx=${deltaX} dy=${deltaY} mode=${deltaMode} mods=${JSON.stringify(mod)} overflow=${lanesOverflow}: class=${cls}, consumed=${route.consumed}`,
+            );
+            checked++;
+          }
+          // The class also never depends on overflow by construction
+          // (classifyWheel has no overflow parameter) — and consumption
+          // agreeing across both overflow values re-proves the router
+          // side of that same rule.
+          assert.equal(routeWheel(e, false).consumed, routeWheel(e, true).consumed);
+        }
+      }
+    }
+  }
+  assert.ok(checked >= 6 * 3 * 11 * 11 * 2, `full matrix swept (${checked})`);
 });
 
 // -- Now-line x ------------------------------------------------------------------

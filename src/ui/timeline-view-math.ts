@@ -98,6 +98,31 @@ export interface TimeView {
 export const MIN_SPAN_MS = 2_000;
 export const MAX_SPAN_MS = 7 * 86_400_000;
 
+/** The default visible span at the reference 16:9 container aspect: 3 minutes. */
+export const DEFAULT_SPAN_REF_MS = 180_000;
+
+/** The container aspect ratio DEFAULT_SPAN_REF_MS is calibrated at. */
+const DEFAULT_SPAN_REF_ASPECT = 16 / 9;
+
+/**
+ * The DEFAULT visible span for a container of `hostW` × `hostH` CSS px:
+ * DEFAULT_SPAN_REF_MS (3 min) at a 16:9 aspect, scaled LINEARLY by the
+ * actual aspect ratio — a wider container shows proportionally more time
+ * at the same ms-per-pixel density, a squarer one less — clamped to
+ * [MIN_SPAN_MS, MAX_SPAN_MS]. Degenerate sizes (zero/negative/non-finite
+ * — an unlaid-out host) fall back to the 3-minute reference. The element
+ * applies this on every resize until the first user gesture or
+ * programmatic setViewport (`viewTouched`); it never overrides a chosen
+ * window.
+ */
+export function defaultSpanForAspect(hostW: number, hostH: number, refSpanMs = DEFAULT_SPAN_REF_MS): number {
+  let span = refSpanMs;
+  if (Number.isFinite(hostW) && hostW > 0 && Number.isFinite(hostH) && hostH > 0) {
+    span = (refSpanMs * (hostW / hostH)) / DEFAULT_SPAN_REF_ASPECT;
+  }
+  return Math.min(MAX_SPAN_MS, Math.max(MIN_SPAN_MS, span));
+}
+
 /** Time → x in [0, width] for the view (un-clamped; callers cull). */
 export function timeToX(t: number, view: TimeView, width: number): number {
   return ((t - view.start) / (view.end - view.start)) * width;
@@ -226,6 +251,36 @@ export function routeWheel(e: WheelInput, lanesOverflow: boolean): WheelRoute {
   }
   if (!(Math.abs(dx) > Math.abs(dy))) return { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false };
   return { zoomPx: 0, panPx: dx, laneScrollPx: lanesOverflow ? dy : 0, consumed: true };
+}
+
+/** The three wheel-routing outcomes, without magnitudes (see classifyWheel). */
+export type WheelClass = 'zoom' | 'pan' | 'passthrough';
+
+/**
+ * classifyWheel(e): the routing decision without magnitudes.
+ *   'zoom'        iff e.ctrlKey || e.metaKey                       (always consumed, even zero-delta)
+ *   'pan'         iff (e.shiftKey && (dyPx || dxPx) !== 0)         (shift-pan: dy first, else dx — Chrome vs Firefox)
+ *                  || (!mods && |dxPx| > |dyPx|)                   (horizontal-dominant; implies dxPx !== 0)
+ *   'passthrough' otherwise — vertical-dominant (ties included), shift with all-zero deltas,
+ *                  or an all-zero unmodified tick. NEVER preventDefault on 'passthrough'.
+ * where dxPx/dyPx = wheelDeltaToPixels(delta, e.deltaMode) — classification happens
+ * AFTER deltaMode normalization so a line-mode (Firefox mouse) wheel classifies
+ * identically to its pixel-mode equivalent.
+ *
+ * A readability/test wrapper over routeWheel's `consumed` contract — the
+ * pinned invariant (see the test suite): for all e and lanesOverflow o,
+ * routeWheel(e, o).consumed === (classifyWheel(e) !== 'passthrough').
+ * `lanesOverflow` deliberately has NO input here: it only scales
+ * laneScrollPx inside an already-consumed horizontal-dominant route and
+ * must never influence consumption — an overflowing lane stack capturing
+ * plain vertical wheels is exactly the regression this pins out.
+ */
+export function classifyWheel(e: WheelInput): WheelClass {
+  if (e.ctrlKey || e.metaKey) return 'zoom';
+  const dx = wheelDeltaToPixels(e.deltaX, e.deltaMode);
+  const dy = wheelDeltaToPixels(e.deltaY, e.deltaMode);
+  if (e.shiftKey) return (dy || dx) !== 0 ? 'pan' : 'passthrough';
+  return Math.abs(dx) > Math.abs(dy) ? 'pan' : 'passthrough';
 }
 
 // -- Follow-now rule ---------------------------------------------------------------
@@ -672,7 +727,17 @@ export class TrackAllocator {
   private memory = new Map<string, number>();
   /** ids assigned (visible) by the previous call — their tracks are kept. */
   private live = new Set<string>();
+  /** Double-buffer partner for `live` (swapped per call — no Set churn). */
+  private liveNext = new Set<string>();
   private cap: number;
+  // Per-call scratch, reused across calls (assign runs on the element's
+  // layout path): index lists and the per-track placed footprints as flat
+  // [start, end, …] pairs. The returned `tracks` array is NOT reused —
+  // it is the output contract and callers may hold it.
+  private visScratch: number[] = [];
+  private returningScratch: number[] = [];
+  private freshScratch: number[] = [];
+  private placedScratch: number[][] = [];
 
   constructor(memoryCap = TRACK_MEMORY_CAP) {
     this.cap = Math.max(1, Math.floor(memoryCap));
@@ -681,7 +746,8 @@ export class TrackAllocator {
   /** Assign tracks for the items visible in `view` (see the class doc). */
   assign(items: readonly PackItem[], view: TimeView): { tracks: number[]; trackCount: number } {
     const tracks = new Array<number>(items.length).fill(-1);
-    const vis: number[] = [];
+    const vis = this.visScratch;
+    vis.length = 0;
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       if (it.start <= view.end && packEnd(it) >= view.start) vis.push(i);
@@ -692,17 +758,27 @@ export class TrackAllocator {
       return ia.start - ib.start || (ia.id < ib.id ? -1 : ia.id > ib.id ? 1 : 0);
     });
     // Per-track footprints placed THIS call — the only conflict authority
-    // (memory is a preference, never proof of fit).
-    const placed: { start: number; end: number }[][] = [];
+    // (memory is a preference, never proof of fit). placedUsed tracks how
+    // many scratch slots are valid this call; slots clear lazily as the
+    // high-water mark grows.
+    const placed = this.placedScratch;
+    let placedUsed = 0;
     const canPlace = (t: number, s: number, e: number): boolean => {
+      if (t >= placedUsed) return true;
       const list = placed[t];
-      if (!list) return true;
-      for (const f of list) if (s < f.end && f.start < e) return false;
+      for (let k = 0; k < list.length; k += 2) {
+        if (s < list[k + 1] && list[k] < e) return false;
+      }
       return true;
     };
     const place = (i: number, t: number): void => {
       tracks[i] = t;
-      (placed[t] ??= []).push({ start: items[i].start, end: packEnd(items[i]) });
+      while (placedUsed <= t) {
+        const slot = placed[placedUsed] ?? (placed[placedUsed] = []);
+        slot.length = 0;
+        placedUsed++;
+      }
+      placed[t].push(items[i].start, packEnd(items[i]));
     };
     const lowestFree = (s: number, e: number): number => {
       let t = 0;
@@ -710,9 +786,12 @@ export class TrackAllocator {
       return t;
     };
     // Pass 1 — keepers: continuously-visible items hold their rows.
-    const returning: number[] = [];
-    const fresh: number[] = [];
-    for (const i of vis) {
+    const returning = this.returningScratch;
+    const fresh = this.freshScratch;
+    returning.length = 0;
+    fresh.length = 0;
+    for (let vi = 0; vi < vis.length; vi++) {
+      const i = vis[vi];
       const it = items[i];
       const kept = this.live.has(it.id) ? this.memory.get(it.id) : undefined;
       if (kept !== undefined && canPlace(kept, it.start, packEnd(it))) place(i, kept);
@@ -720,28 +799,34 @@ export class TrackAllocator {
       else fresh.push(i);
     }
     // Pass 2 — returning items reclaim their old row when still free.
-    for (const i of returning) {
+    for (let ri = 0; ri < returning.length; ri++) {
+      const i = returning[ri];
       const it = items[i];
       const end = packEnd(it);
       const remembered = this.memory.get(it.id) as number;
       place(i, canPlace(remembered, it.start, end) ? remembered : lowestFree(it.start, end));
     }
     // Pass 3 — new items fill from the bottom (density recovery).
-    for (const i of fresh) {
+    for (let fi = 0; fi < fresh.length; fi++) {
+      const i = fresh[fi];
       const it = items[i];
       place(i, lowestFree(it.start, packEnd(it)));
     }
     // Remember every visible assignment (refreshing LRU recency), then
-    // prune the oldest beyond the cap.
-    this.live = new Set<string>();
+    // prune the oldest beyond the cap. `live` double-buffers via swap.
+    const liveNext = this.liveNext;
+    liveNext.clear();
     let maxTrack = -1;
-    for (const i of vis) {
+    for (let vi = 0; vi < vis.length; vi++) {
+      const i = vis[vi];
       const id = items[i].id;
-      this.live.add(id);
+      liveNext.add(id);
       this.memory.delete(id);
       this.memory.set(id, tracks[i]);
       if (tracks[i] > maxTrack) maxTrack = tracks[i];
     }
+    this.liveNext = this.live;
+    this.live = liveNext;
     while (this.memory.size > this.cap) {
       const oldest = this.memory.keys().next().value;
       if (oldest === undefined) break;
@@ -1033,27 +1118,50 @@ export function clusterInstants(
     if (it.end == null || it.end - it.start >= instantMaxMs) continue;
     order.push(i);
   }
-  order.sort((a, b) => {
-    const ia = items[a];
-    const ib = items[b];
-    return ia.start - ib.start || (ia.id < ib.id ? -1 : ia.id > ib.id ? 1 : 0);
-  });
-  let bucket: number[] = [];
-  const flush = (): void => {
-    if (bucket.length > 1) {
-      for (const i of bucket) memberOf[i] = clusters.length;
+  // The element feeds (start, id)-sorted lane arrays, making `order`
+  // already sorted — detect that in O(n) plain compares and skip the
+  // comparator sort (whose closure calls dominated re-cluster frames
+  // during zooms). Unsorted input still sorts exactly as before.
+  let sorted = true;
+  for (let k = 1; k < order.length; k++) {
+    const ia = items[order[k - 1]];
+    const ib = items[order[k]];
+    if (ia.start > ib.start || (ia.start === ib.start && ia.id > ib.id)) {
+      sorted = false;
+      break;
+    }
+  }
+  if (!sorted) {
+    order.sort((a, b) => {
+      const ia = items[a];
+      const ib = items[b];
+      return ia.start - ib.start || (ia.id < ib.id ? -1 : ia.id > ib.id ? 1 : 0);
+    });
+  }
+  // Greedy transitive sweep over `order` as index ranges (no per-bucket
+  // array churn — this runs on the layout hot path): a bucket is
+  // order[bucketStart, oi); it flushes when the next instant's gap from
+  // its predecessor exceeds joinMs, and at the end.
+  let bucketStart = 0;
+  for (let oi = 0; oi <= order.length; oi++) {
+    const boundary =
+      oi === order.length || (oi > bucketStart && items[order[oi]].start - items[order[oi - 1]].start > joinMs);
+    if (!boundary) continue;
+    const len = oi - bucketStart;
+    if (len > 1) {
+      const indices = new Array<number>(len);
+      for (let k = 0; k < len; k++) {
+        const idx = order[bucketStart + k];
+        indices[k] = idx;
+        memberOf[idx] = clusters.length;
+      }
       clusters.push({
-        indices: bucket,
-        extent: { start: items[bucket[0]].start, end: items[bucket[bucket.length - 1]].start },
+        indices,
+        extent: { start: items[indices[0]].start, end: items[indices[len - 1]].start },
       });
     }
-    bucket = [];
-  };
-  for (const i of order) {
-    if (bucket.length > 0 && items[i].start - items[bucket[bucket.length - 1]].start > joinMs) flush();
-    bucket.push(i);
+    bucketStart = oi;
   }
-  flush();
   return { clusters, memberOf };
 }
 

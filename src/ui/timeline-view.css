@@ -14,12 +14,14 @@
   background: var(--timeline-bg, #0d0f14);
   font-family: var(--timeline-font, 'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Fira Code', monospace);
   /* The host is a scroll container (overflow: hidden), so it sits in every
-   * scroll chain from its shadow children — `none` (not `contain`) here
-   * kills BOTH scroll chaining and the browser's overscroll affordances:
-   * a horizontal pull at the pan boundary (wheel over the chrome, a touch
+   * scroll chain from its shadow children. HORIZONTAL-only on purpose: a
+   * horizontal pull at the pan boundary (wheel over the chrome, a touch
    * drag starting on a button) must never become Chrome/Firefox
-   * history-back navigation. */
-  overscroll-behavior: none;
+   * history-back navigation — but the VERTICAL axis stays free, matching
+   * the wheel router's contract (a plain vertical wheel is never consumed
+   * and must chain to the page scroll; the old `overscroll-behavior:
+   * none` shorthand blanketed Y against that intent). */
+  overscroll-behavior-x: none;
 }
 
 :host([hidden]) {
@@ -61,8 +63,15 @@ canvas {
   display: block;
   width: 100%;
   height: 100%;
-  touch-action: none; /* pinch/drag are handled by the element */
-  overscroll-behavior: none; /* belt to the :host rule (no-op unless a UA treats the canvas as chainable) */
+  /* pan-y: the BROWSER owns vertical touch pans (a one-finger vertical
+   * swipe scrolls the page — the same rule the wheel router enforces for
+   * vertical wheels; the element gets pointercancel and stops). A
+   * horizontal one-finger drag still pans the chart, and two-finger
+   * pinch-zoom is NOT in the allowed set, so the element's own pinch
+   * keeps working. Accepted tradeoff: one-finger vertical LANE-drag is
+   * gone on touch (arrow keys / desktop drag unaffected). */
+  touch-action: pan-y;
+  overscroll-behavior-x: none; /* belt to the :host rule (no-op unless a UA treats the canvas as chainable) */
 }
 
 /* The minimap strip: a slim overview band along the bottom. Position only —
@@ -71,6 +80,9 @@ canvas {
  * from the base canvas rule's inset. */
 canvas.minimap {
   top: auto;
+  /* The strip is a pure horizontal-drag control (window pan/resize) —
+   * unlike the plot canvas it keeps every touch gesture to itself. */
+  touch-action: none;
 }
 
 canvas.minimap[hidden] {
@@ -428,7 +440,8 @@ canvas.minimap[hidden] {
 }
 
 /* Instant pips: filled diamond = event, hollow diamond = cancelled. A
-   cluster is the SAME diamond — the ×N badge alone marks the group. */
+   cluster is the SAME diamond drawn as a fixed 3-stack — always three
+   copies, never scaled by the member count. */
 .lg-instant::before,
 .lg-cancelled-pip::before,
 .lg-cluster::before {
@@ -446,11 +459,14 @@ canvas.minimap[hidden] {
   border-style: dashed;
 }
 
-/* Cluster: the ×N count badge beside the ordinary pip diamond. */
-.lg-cluster::after {
-  content: '×N';
-  margin-left: 6px;
-  font-size: 10px;
+/* Cluster: the same diamond as a stack of exactly three copies. The two
+   back copies are box-shadows on the rotated element — the offsets are in
+   the ROTATED frame, so local (0, -2.8px)/(0, -5.7px) renders as the
+   canvas glyph's screen-space up-right (2,-2)/(4,-4) steps. */
+.lg-cluster::before {
+  box-shadow:
+    0 -2.8px 0 -0.5px rgba(122, 148, 183, 0.8),
+    0 -5.7px 0 -1px rgba(122, 148, 183, 0.55);
 }
 
 /* -- Minimap lift for the corner chrome ------------------------------------------ */
