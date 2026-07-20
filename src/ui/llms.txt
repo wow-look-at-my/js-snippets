@@ -275,17 +275,18 @@ dashed diamond outline — the declared pattern is rescaled so 3-5 whole
 dash cycles close around the perimeter — so a cancelled instant carries
 the same dashed signature as a cancelled span). A style with `dimmed: true`
 (the dim/queued/hatch/waiting built-ins) renders as ONE uniform filter
-over the whole region: fill, hatching, border, and the label/badge text
-over it (bar labels, the cluster ×N badge, adapter-composed badge
-strings like queue ordinals) all get the same dimColor transform (50%
-saturation, 50% value — hue and alpha untouched), so the section reads
-quieter than a running span while text keeps the SAME relative
-text-vs-fill contrast (text never dims independently of — or more
-than — its section, which is what made grey-on-muted labels
-unreadable). The label's anchor point decides which section it belongs
-to: anchored inside a dimmed segment's visible slice, it takes that
-section's dimmed text color; otherwise the full-contrast foreground
-(--timeline-fg). Ongoing intervals (end == null)
+over the region's GEOMETRY: fill, hatching, and border all get the same
+dimColor transform (50% saturation, 50% value — hue and alpha
+untouched), so the section reads quieter than a running span. Label and
+badge text is deliberately EXEMPT from that filter: every span-surface
+label (bar labels, the cluster ×N badge, adapter-composed badge strings
+like queue ordinals) always renders at the full-contrast foreground
+(--timeline-fg) over a thin counter-color halo (labelHaloColor: dark
+rim under a light fg, light rim under a dark one), so text stays
+readable over solid, dimmed, hatched, and mixed surfaces at EVERY zoom
+— deriving text color from the section underneath produced unreadable
+grey-on-grey labels that flipped with the zoom level as the label's
+anchor crossed segment boundaries. Ongoing intervals (end == null)
 render to the live now edge with a subtly pulsing leading edge (static
 under prefers-reduced-motion; while the feed is STALE they freeze at the
 last vouched timestamp and restyle dim + hatched — see Feed staleness
@@ -832,7 +833,13 @@ Exports:
     uniform dim transform (HSV 50% saturation + 50% value, hue/alpha
     untouched; parses #hex, rgb()/rgba(), hsl()/hsla(), oklch();
     unsupported forms pass through unchanged — the element applies it
-    to every color inside a `dimmed` region, label text included).
+    to a `dimmed` region's fill/hatching/border, never to label text),
+    labelHaloColor(fg) → the label-halo rim color ('rgba(0, 0, 0, 0.55)'
+    under a light fg, 'rgba(255, 255, 255, 0.55)' under a dark one —
+    whichever of black/white contrasts more with the fg itself;
+    unparseable fg falls back to the dark rim). The element strokes it
+    under every span-surface label so text keeps guaranteed contrast on
+    any background at any zoom.
   Styles: DEFAULT_STYLES (the built-in StyleMap described above; the
     dim/queued/hatch/waiting entries set `dimmed: true`).
   Coverage: mergeRanges(ranges), subtractRanges(span, covers),

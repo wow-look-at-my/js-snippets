@@ -1,14 +1,14 @@
 # js-snippets
 
-Reusable ES modules served via GitHub Pages. Source is TypeScript + WGSL, compiled to plain JavaScript by [ts0](https://github.com/wow-look-at-my/ts0). Import directly by URL — no bundler or package manager needed.
+Reusable ES modules served via [buildhost](https://github.com/wow-look-at-my/buildhost) sites. Source is TypeScript + WGSL, compiled to plain JavaScript by [ts0](https://github.com/wow-look-at-my/ts0). Import directly by URL — no bundler or package manager needed.
 
-**Base URL:** `https://wow-look-at-my.github.io/js-snippets`
+**Base URL:** `https://sites.pazer.build/js-snippets/branch/library`
 
 ## Usage
 
 ```js
-import { loadHDR } from 'https://wow-look-at-my.github.io/js-snippets/webgpu/hdr-loader.js';
-import * as mat4 from 'https://wow-look-at-my.github.io/js-snippets/math/mat4.js';
+import { loadHDR } from 'https://sites.pazer.build/js-snippets/branch/library/webgpu/hdr-loader.js';
+import * as mat4 from 'https://sites.pazer.build/js-snippets/branch/library/math/mat4.js';
 ```
 
 ## Modules
@@ -71,11 +71,11 @@ pnpm build      # ts0 build (type-check + compile src/ -> dist/) + assemble dist
 
 [ts0](https://github.com/wow-look-at-my/ts0)'s "js" library target compiles every `.ts` under `src/` to a parallel `.js` under `dist/`, preserving structure (`src/webgpu/sky.ts` → `dist/webgpu/sky.js`). Code shared between modules (e.g. `vec3`, used by `mat4`) is deduplicated into a chunk and imported — never copied into both — so you still import a single URL and the browser fetches any shared chunk transitively. WGSL shaders are imported as strings via the `loaders: { ".wgsl": "text" }` field in `ts0.json`. `ts0 build` type-checks first (`tsc --noEmit`), so there is no separate type-check step.
 
-The build also emits a TypeScript declaration sibling for every module — `dist/webgpu/sky.js` gets `dist/webgpu/sky.d.ts` — and deploys carry them to Pages at the same URL with the extension swapped (`https://…/js-snippets/ui/timeline-view.d.ts` next to `…/ui/timeline-view.js`), so consumers can fetch types alongside the code. Shared chunks and tests get no declarations.
+The build also emits a TypeScript declaration sibling for every module — `dist/webgpu/sky.js` gets `dist/webgpu/sky.d.ts` — and deploys carry them to the site at the same URL with the extension swapped (`https://…/js-snippets/ui/timeline-view.d.ts` next to `…/ui/timeline-view.js`), so consumers can fetch types alongside the code. Shared chunks and tests get no declarations.
 
 ## Deploy
 
-CI runs on every push (`.github/workflows/deploy.yml`). Pushes to `master` deploy `dist/` to GitHub Pages automatically.
+CI runs on every push (`.github/workflows/deploy.yml`). Every push publishes `dist/` to buildhost sites: `master` → the stable `library` site (the base URL above), any other branch → `library-<branch>` for pre-merge verification. The legacy GitHub Pages site serves frozen 2026-07-15 content (the org Actions artifact quota killed its deploys).
 
 Branches that touch the timeline chart (`src/ui/`) or `showcase/` also publish a live single-file demo of `<timeline-view>` (fake local data, every visual looping) to buildhost: `https://sites.pazer.build/js-snippets/branch/<branch>/` (`/` in branch names flattened to `-`). The preview is private/token-gated by operator decision — do not add `public: 'true'` to the publish step. Build it locally with `pnpm build:showcase` → `showcase/dist/index.html`.
 
@@ -84,7 +84,7 @@ Branches that touch the timeline chart (`src/ui/`) or `showcase/` also publish a
 Machine-readable docs are available at:
 
 ```
-https://wow-look-at-my.github.io/js-snippets/llms.txt
+https://sites.pazer.build/js-snippets/branch/library/llms.txt
 ```
 
 This file is auto-generated from `llms-header.txt` and per-category `llms.txt` files in `src/`.
