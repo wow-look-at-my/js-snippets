@@ -225,14 +225,15 @@ dynamic lane count (1-50+), smooth with thousands of in-window intervals
 at 3, adaptive idle pacing — full rate while interacting + a ~500ms
 grace, ~30fps idle, ~10fps idle on battery via navigator.getBattery
 feature-detection, paused while the document is hidden — and those tier
-rates are a CEILING: clock-driven animation (the follow-now scroll,
-ongoing-bar growth) is additionally event-driven below it, sleeping on a
-single timer wake per whole device pixel of time-axis advance
-(clockWakeDelayMs, capped at ~1s so pulses keep breathing) whenever that
-period exceeds the tier budget, so a zoomed-out followed chart draws ~1
-frame/s instead of 30 and a chart with nothing animating draws nothing
-at all; input/data/hover changes still render immediately via the dirty
-flag). Canvas text is
+rates are a CEILING: while the only motion is clock-driven (the
+follow-now scroll, ongoing-bar growth) the effective rate is
+min(tier fps, device px per second) — the rAF loop keeps running and
+skips frames that would be pixel-identical, on an even frame-aligned
+cadence (clockDrawBudgetMs; never timer wakes, so motion stays smooth
+at every zoom, and at normal zooms the px rate meets the tier so pacing
+is exactly the tier's) — and a chart with nothing animating draws
+nothing at all; input/data/hover changes still render immediately via
+the dirty flag). Canvas text is
 kept crisp: the 2d context is OPAQUE (alpha: false — the chart paints
 its own background every frame, and an opaque canvas gets subpixel text
 antialiasing where an alpha one gets grayscale-only; keep --timeline-bg
@@ -855,12 +856,12 @@ Exports:
     frameBudgetMs(tier) (0 / IDLE_FRAME_MS ≈ 33.3 / IDLE_BATTERY_FRAME_MS
     = 100), shouldRender(nowTs, lastRenderTs, budgetMs, rafIntervalMs?)
     (rAF frame gate with anti-aliasing slack), INTERACT_GRACE_MS (= 500ms
-    of full rate after the last input), clockWakeDelayMs(view,
-    plotWidthCss, dpr, budgetMs) → number (event-driven idle cadence for
-    clock-driven animation: the ms until the time axis next advances one
-    whole device pixel — span/(plotW*dpr) — capped at CLOCK_WAKE_MAX_MS
-    (1000); 0 = keep the plain rAF loop, returned whenever the period
-    fits the tier budget, the budget is 0/interactive, or geometry is
-    degenerate; a nonzero delay is always > budgetMs, so the wake can
-    only ever LOWER the redraw rate below the tier ceiling, never raise
-    it), CLOCK_WAKE_MAX_MS.
+    of full rate after the last input), clockDrawBudgetMs(view,
+    plotWidthCss, dpr, tierBudgetMs) → number (draw budget while the only
+    motion is clock-driven: max(tierBudgetMs, span/(plotW*dpr)) — the
+    per-device-pixel period, i.e. min(tier fps, device px/sec) in budget
+    form; the tier budget is a hard floor so the chart never renders
+    faster than the tier pacing, and there is deliberately NO upper cap —
+    delivery is the caller's rAF loop skipping frames on an even
+    due-time grid, never a timer; degenerate geometry falls back to
+    tierBudgetMs).

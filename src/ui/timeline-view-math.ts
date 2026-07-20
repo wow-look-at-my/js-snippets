@@ -1796,39 +1796,29 @@ export function shouldRender(nowTs: number, lastRenderTs: number, budgetMs: numb
 }
 
 /**
- * Ceiling on the clock-wake delay: even a chart whose time-per-device-px
- * period is minutes redraws at least ~1/s while a live animation (the
- * follow scroll, an ongoing bar's leading-edge pulse) is on screen — the
- * aggressive idle FLOOR. Keeps the pulse visibly breathing and live
- * chrome honest at negligible cost; a chart with nothing clock-driven
- * still schedules NOTHING at all.
+ * Draw budget (ms per rendered frame) while the ONLY motion on screen is
+ * CLOCK-driven — the follow-now scroll and ongoing-bar growth. The scene
+ * then translates exactly one whole DEVICE pixel per
+ * span / (plotWidthCss * dpr) ms, so redrawing any faster produces
+ * pixel-identical frames. The effective rate is therefore
+ * min(tier fps, device px per second) — expressed here in budget form as
+ * max(tierBudgetMs, per-device-pixel period), which makes the tier
+ * budget the structural CEILING (the result is never below it, so the
+ * chart never draws faster than the pre-existing tier pacing — the
+ * interactive tier's 0 budget yields the bare per-pixel period, i.e.
+ * min(display rate, px rate)). There is deliberately NO upper cap: a
+ * slowly scrolling chart draws exactly at its own per-pixel rate, each
+ * 1px step landing the instant it is due — extra frames between steps
+ * would be identical, and a fixed wake floor (the retired ~1s clock-wake
+ * cap) is precisely what read as stuttery stepping. Delivery is the
+ * caller's rAF loop SKIPPING frames against this budget on an even
+ * due-time grid — never a timer — so the cadence stays frame-aligned
+ * and even. Degenerate geometry (empty/invalid span, no width, bad dpr)
+ * falls back to the tier budget: plain pacing, never a bogus throttle.
  */
-export const CLOCK_WAKE_MAX_MS = 1000;
-
-/**
- * Event-driven cadence for CLOCK-driven animation (the follow-now scroll
- * and ongoing-bar growth): nothing on the time axis moves a visible
- * amount until the clock advances one whole DEVICE pixel at the current
- * scale — span / (plotWidthCss * dpr) ms — so instead of spinning a rAF
- * loop that mostly skips, the element sleeps on ONE scheduled timer wake
- * per pixel of advance. Returns that wake delay in ms, clamped to
- * CLOCK_WAKE_MAX_MS, or 0 meaning "keep the plain rAF loop": the
- * per-pixel period already fits inside `budgetMs` (the current tier's
- * frame budget — frameBudgetMs — which stays the CEILING; this throttle
- * only ever LOWERS the rate, so a nonzero delay is always > budgetMs and
- * the chart never redraws faster than the pre-existing tier pacing). A
- * zero/negative budget (the interactive tier renders every rAF) also
- * returns 0 — the wake replaces only the throttled IDLE tiers; while the
- * user interacts, full-rate rAF is the existing ceiling and stays as-is.
- * Degenerate geometry (no width, bad dpr, empty span) returns 0 too —
- * fall back to the loop, never a bogus timer.
- */
-export function clockWakeDelayMs(view: TimeView, plotWidthCss: number, dpr: number, budgetMs: number): number {
-  if (!(budgetMs > 0)) return 0;
+export function clockDrawBudgetMs(view: TimeView, plotWidthCss: number, dpr: number, tierBudgetMs: number): number {
   const span = view.end - view.start;
   const wDev = plotWidthCss * dpr;
-  if (!Number.isFinite(span) || span <= 0 || !Number.isFinite(wDev) || wDev <= 0) return 0;
-  const period = span / wDev;
-  if (!(period > budgetMs)) return 0;
-  return Math.min(period, CLOCK_WAKE_MAX_MS);
+  if (!Number.isFinite(span) || span <= 0 || !Number.isFinite(wDev) || wDev <= 0) return tierBudgetMs;
+  return Math.max(tierBudgetMs, span / wDev);
 }
