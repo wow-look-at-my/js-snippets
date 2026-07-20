@@ -1520,6 +1520,36 @@ export function dimColor(color: string): string {
   return `rgba(${out[0]}, ${out[1]}, ${out[2]}, ${round3(p.a)})`;
 }
 
+// -- Label legibility -----------------------------------------------------------------
+
+/** WCAG relative luminance (0..1) of sRGB 0..255 channels. */
+function relativeLuminance(r: number, g: number, b: number): number {
+  const lin = (ch: number): number => {
+    const s = Math.max(0, Math.min(255, ch)) / 255;
+    return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+/**
+ * Halo color for canvas label text: the translucent counter-color rim
+ * (`strokeText` under the fill) that guarantees label legibility over
+ * ANY span surface — solid fills, dimmed/hatched segments, pattern
+ * stripes, scrims — at every zoom. Picks whichever of black/white
+ * contrasts more with the foreground itself (the WCAG-ratio crossover
+ * sits at relative luminance ≈ 0.1791): dark halo under a light fg,
+ * light halo under a dark fg, so the pairing holds on light themes
+ * too. Alpha 0.55 keeps it a rim, not a box. Unparseable colors
+ * (var() refs, named colors) fall back to the dark halo — the shape of
+ * the dark default theme.
+ */
+export function labelHaloColor(fg: string): string {
+  const p = parseColor(fg);
+  // contrast(fg, black) >= contrast(fg, white) ⇔ (L+0.05)² >= 0.05·1.05.
+  const dark = !p || relativeLuminance(p.r, p.g, p.b) >= Math.sqrt(0.05 * 1.05) - 0.05;
+  return dark ? 'rgba(0, 0, 0, 0.55)' : 'rgba(255, 255, 255, 0.55)';
+}
+
 // -- Style map ----------------------------------------------------------------------
 
 /** Fill pattern for an interval state / segment kind. */
@@ -1539,12 +1569,14 @@ export interface IntervalStyle {
   /** Corner glyph: 'bang' is the unmissable failure mark. */
   glyph?: 'none' | 'bang' | 'dot';
   /**
-   * A DIMMED region: everything painted inside it — fill, hatching,
-   * border, and the label/badge text over it — gets the same uniform
-   * dimColor transform (50% saturation, 50% value), as if one filter
-   * lay over the whole section. Text dims WITH its section, so it reads
-   * quieter than a running span's label while keeping the same relative
-   * text-vs-fill contrast (never text dimmed more than the fill).
+   * A DIMMED region: its GEOMETRY — fill, hatching, border — gets the
+   * uniform dimColor transform (50% saturation, 50% value), as if one
+   * filter lay over the section. Label/badge text is deliberately
+   * EXEMPT: it always renders at the full-contrast theme foreground
+   * over a thin counter-color halo (labelHaloColor), so labels stay
+   * readable over dimmed and hatched surfaces at every zoom — deriving
+   * text color from the section produced unreadable grey-on-grey that
+   * flipped with the zoom level.
    */
   dimmed?: boolean;
 }
@@ -1557,7 +1589,8 @@ export type StyleMap = Record<string, IntervalStyle>;
  * `styles` property): '' solid; 'emphasis'/'failed' unmissable — thick
  * emphasis border + corner bang glyph + stipple, hue untouched;
  * 'dim'/'queued' uniformly dimmed (the `dimmed` flag: 50% saturation,
- * 50% value over fill, border, and label text alike); 'hatch'/'waiting'
+ * 50% value over fill and border; label text stays full-contrast — see
+ * `dimmed`'s doc); 'hatch'/'waiting'
  * 45° stripes, dimmed the same way (a wait is de-emphasized time);
  * 'outline' hollow; 'cancelled' hollow + DASHED category-hue border —
  * reads "stopped, not failed" at a glance: never the emphasis color,

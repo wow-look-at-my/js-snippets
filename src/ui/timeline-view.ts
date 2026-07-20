@@ -157,6 +157,7 @@ import {
   categoryJitter,
   categoryColor,
   dimColor,
+  labelHaloColor,
   DEFAULT_STYLES,
   CoverageTracker,
   historyProbe,
@@ -316,18 +317,13 @@ interface ResolvedStyle {
   dash: number[] | null;
   pattern: 'solid' | 'hatch' | 'stipple' | 'outline';
   glyph: 'none' | 'bang' | 'dot';
-  /** The style's `dimmed` flag — drives the label-over-dim-segment rule. */
-  dimmed: boolean;
-  /**
-   * Label text color. Normally the full-contrast foreground; for a
-   * DIMMED style it is dimColor(fg) — the same uniform 50%-sat/50%-value
-   * transform the fill and border get, as if one filter lay over the
-   * whole region. Text dims WITH its section (never independently, and
-   * never MORE than the fill — grey-on-muted labels were unreadable),
-   * so relative text-vs-fill contrast matches the undimmed sections.
-   */
-  labelColor: string;
 }
+// Deliberately NO label color here: a dimmed style dims its GEOMETRY
+// (fill, border, hatching) only, while label text always renders at the
+// full-contrast theme foreground through labelText()'s halo — deriving
+// the text color from the span's style is exactly what made labels go
+// grey (unreadable) over dimmed/hatched sections, flipping with zoom as
+// the anchor crossed segment boundaries.
 
 const DEFAULT_SPAN_MS = 15 * 60_000;
 const LAYOUT_TWEEN_MS = 150; // lane-height ease on visible-track-count AND fit-height change
@@ -338,6 +334,9 @@ const CONNECTOR_TOL = 4;
 const CLICK_SLOP = 4;
 const EMPTY_DASH: number[] = [];
 const MARKER_DASH = [4, 3];
+// Label-halo stroke width (CSS px): centered on the glyph outline, so the
+// visible rim is half this — thin enough to read as edge contrast, not a box.
+const LABEL_HALO_PX = 3;
 // A terminal-cut ('outline'-kind) segment never renders narrower than this
 // many DEVICE pixels — a kill tail is typically sub-second (docker-kill
 // latency), which at a 10-min window maps under half a CSS px and used to
@@ -571,6 +570,7 @@ export class TimelineViewElement extends HTMLElement {
   private theme: Theme = { ...THEME_DEFAULTS };
   private fontAxis = '';
   private fontBar = '';
+  private labelHalo = labelHaloColor(THEME_DEFAULTS.fg);
   private charW = 6;
   private gutterW = 90;
   private oklch = true;
@@ -2019,6 +2019,7 @@ export class TimelineViewElement extends HTMLElement {
     t.gutterWidth = readNum(cs, '--timeline-gutter-width', THEME_DEFAULTS.gutterWidth, 0, 400);
     this.fontAxis = `${t.fontSize - 1}px ${t.font}`;
     this.fontBar = `${t.fontSize}px ${t.font}`;
+    this.labelHalo = labelHaloColor(t.fg);
     this.oklch = typeof CSS !== 'undefined' && !!CSS.supports && CSS.supports('color', 'oklch(0.6 0.1 120)');
     const ctx = this.ctx2d();
     if (ctx) {
@@ -2063,20 +2064,42 @@ export class TimelineViewElement extends HTMLElement {
     const dimmed = st.dimmed === true;
     const finalBorder = emphasisBorder ? t.emphasis : border;
     const out: ResolvedStyle = {
-      // A dimmed region is "one filter over the whole section": fill,
-      // border, and label text all through the same dimColor transform
-      // (see ResolvedStyle.labelColor).
+      // A dimmed region is "one filter over its GEOMETRY": fill and
+      // border through the same dimColor transform. Label text is
+      // deliberately exempt — see labelText().
       fill: dimmed ? dimColor(fill) : fill,
       border: dimmed ? dimColor(finalBorder) : finalBorder,
       borderWidth: st.border?.width ?? 1,
       dash: st.border?.dash ?? null,
       pattern: st.pattern ?? 'solid',
       glyph: st.glyph ?? 'none',
-      dimmed,
-      labelColor: dimmed ? dimColor(t.fg) : t.fg,
     };
     this.colorCache.set(cacheKey, out);
     return out;
+  }
+
+  /**
+   * Draw label text at GUARANTEED contrast: the full-contrast theme
+   * foreground over a thin counter-color halo (strokeText under the
+   * fill; labelHaloColor picks dark-under-light-fg / light-under-dark-fg
+   * at theme read). Every span-surface label goes through here so
+   * legibility never depends on what happens to be underneath — solid
+   * fill, dimmed section, hatch stripes, a scrim — or on the zoom level
+   * that decides which of those the text lands on. (Labels used to take
+   * a dimmed section's dimColor(fg) — mid-grey — which was unreadable
+   * over the equally-dim fill and flipped with zoom as the anchor
+   * crossed segment boundaries.) Callers set font/textAlign/textBaseline;
+   * lineJoin is restored to the canvas default so border/connector
+   * strokes are untouched.
+   */
+  private labelText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number): void {
+    ctx.strokeStyle = this.labelHalo;
+    ctx.lineWidth = LABEL_HALO_PX;
+    ctx.lineJoin = 'round';
+    ctx.strokeText(text, x, y);
+    ctx.lineJoin = 'miter';
+    ctx.fillStyle = this.theme.fg;
+    ctx.fillText(text, x, y);
   }
 
   private patternFor(kind: 'hatch' | 'stipple', color: string): CanvasPattern | null {
@@ -3124,11 +3147,11 @@ export class TimelineViewElement extends HTMLElement {
       ctx.fill(path);
     }
 
-    // Where the label anchors — needed BEFORE the segs loop: a label
-    // whose anchor sits over a DIMMED section dims with that section.
+    // Where the label anchors: the bar start, sticking to the plot's
+    // left edge (past any continuation shadow) while the start is
+    // scrolled off-screen.
     const labelPad = 5;
     const labelX = Math.max(x0, this.gutterW + (fade.left ? EDGE_FADE_PX : 0)) + labelPad;
-    let labelStyle = style;
 
     // Phase segments, clipped to the bar.
     if (n.segs) {
@@ -3138,10 +3161,6 @@ export class TimelineViewElement extends HTMLElement {
         let sx0 = Math.max(x0, this.gutterW + timeToX(s.start, rv, plotW));
         const sx1 = Math.min(x1, this.gutterW + timeToX(s.end ?? (n.end ?? now), rv, plotW));
         const ss = this.resolved(n.catKey, s.kind, null);
-        // Label-over-dim rule: the label's ANCHOR point decides — inside
-        // a dimmed segment's visible slice, the label takes that
-        // section's dimmed text color (one filter over the region).
-        if (ss.dimmed && labelX >= sx0 && labelX < sx1) labelStyle = ss;
         if (ss.pattern === 'outline') {
           // A terminal cut (e.g. a kill tail: cancel requested → finished).
           // Unlike decorative phases it must NEVER vanish: it keeps a
@@ -3254,8 +3273,9 @@ export class TimelineViewElement extends HTMLElement {
       const glyphPad = style.glyph === 'bang' ? 8 : 0;
       const label = fitText(n.label, x1 - labelX - labelPad - glyphPad, this.charW);
       if (label !== '') {
-        ctx.fillStyle = labelStyle.labelColor;
-        ctx.fillText(label, this.textPx(labelX), this.textPx(y + bh / 2 + 0.5));
+        // Full-contrast text + halo regardless of the surface — the
+        // span's own state/segments must never grey the label out.
+        this.labelText(ctx, label, this.textPx(labelX), this.textPx(y + bh / 2 + 0.5));
       }
     }
 
@@ -3401,13 +3421,13 @@ export class TimelineViewElement extends HTMLElement {
     const t = this.theme;
     const style = this.resolved(c.catKey, c.state, null);
     this.drawInstant(ctx, style, p.cx, p.cy, p.th, this.hoverClusterId === c.members[0].id);
-    // ×N badge — same fit rule as bar labels (suppressed on slivers).
+    // ×N badge — same fit rule as bar labels (suppressed on slivers),
+    // same guaranteed-contrast treatment (never the member state's dim).
     if (p.th >= t.fontSize + 3) {
       ctx.font = this.fontBar;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillStyle = style.labelColor;
-      ctx.fillText(`×${c.members.length}`, this.textPx(p.cx + p.r + 4), this.textPx(p.cy + 0.5));
+      this.labelText(ctx, `×${c.members.length}`, this.textPx(p.cx + p.r + 4), this.textPx(p.cy + 0.5));
     }
   }
 
