@@ -1,3 +1,44 @@
+### ui/canvas-text.js
+Responsive multi-tier canvas text with alpha-fade truncation. A label is an
+ordered list of TIERS, fullest → most compact; the largest tier that fits
+the available width draws, and when even the last tier overflows it is
+hard-clipped and its trailing ~2-3 characters fade to transparent — the
+truncation signal — instead of an ellipsis (no width spent on '…', and the
+final characters stay readable right up to the edge). Fitting is pure and
+canvas-free: width comes from an injected MeasureText fn (cached char-width
+arithmetic, or a memoized ctx.measureText) so callers control measurement
+cost; only FadeTextPainter touches a canvas. Generic — no timeline types;
+<timeline-view> drives its bar/gutter labels through it.
+
+  deriveLabelTiers(label) → string[] — the full text; then a leading
+    `owner/` path segment stripped (only when that segment contains no
+    whitespace); then everything from the first ' - ' on stripped.
+    Inapplicable tiers are skipped; always >= 1 tier.
+    'wow-look-at-my/gosmopolitan - workflow_job' →
+    ['wow-look-at-my/gosmopolitan - workflow_job',
+     'gosmopolitan - workflow_job', 'gosmopolitan'].
+  selectTier(tiers, availPx, measure) → index of the largest (earliest)
+    non-empty tier that fits, or -1.
+  clipToWidth(text, availPx, measure) → the longest prefix whose measured
+    width fits ('' when none); measure must be monotonic over prefixes.
+  fitTieredText(tiers, availPx, measure, opts?) → {text, tier, faded,
+    width} | null — the fit decision: largest fitting tier (faded: false),
+    else the most compact tier clipped to width (faded: true — draw with a
+    fade tail), else null (suppress; a clip keeps at least
+    opts.minClipChars ?? MIN_CLIP_CHARS (3) characters). `tiers` may be a
+    plain string (a single tier).
+  class FadeTextPainter — paint(ctx, text, x, y, width, fadePx, fill,
+    halo?, haloWidth?) fills text (left-aligned; width = its measured
+    width) with the last fadePx px alpha-fading to transparent, the
+    optional halo stroked under the fill with the same fade; clear() drops
+    cached gradients (call on theme changes). One cached gradient per
+    (color, fade width) spans [0, fadePx] in user space and ctx.translate
+    positions it per label — no per-label createLinearGradient, ever.
+  FADE_TAIL_CHARS (2.5) — recommended fade width in character widths
+    (fadePx = FADE_TAIL_CHARS * charW); MIN_CLIP_CHARS (3).
+
+Types: MeasureText, FittedText, FitTieredOptions
+
 ### ui/perf-graph.js
 Compact, stackable, canvas-rendered performance graph as a <perf-graph>
 custom element. One element = one scrolling metric strip (frame time, fps,
@@ -125,7 +166,8 @@ Types: PerfStats, AutoRangeOptions, DisplayRange
 ### ui/timeline-view.js
 Canvas-rendered realtime swimlane timeline as a <timeline-view> custom
 element. A shared horizontal time axis across the full width; stacked
-labeled lanes (left gutter, ellipsized labels, full text via tooltip;
+labeled lanes (left gutter; labels too wide for it clip with a fade-out
+tail — see ui/canvas-text.js — full text via tooltip;
 lane order = exactly the order supplied — never re-sorted internally),
 each a band of interval bars (left = start, right = end). A lane grows
 extra sub-tracks when intervals VISIBLE in the current window overlap,
@@ -282,10 +324,18 @@ end — or an ongoing bar's extent in a parked view — exceeds the window,
 over every treatment (solid, hollow, hatched, terminal cuts). Spans
 whose edge coincides with the window edge are exempt (they genuinely
 start/end there), as are stubs too short to reach through the shadow
-zone (which would swallow them). Bar labels truncate with an ellipsis
-and are suppressed below fit width — they never spill into neighboring
-bars — and stick to the plot edge while a bar's start is scrolled
-off-screen (just past the continuation shadow when one is active).
+zone (which would swallow them). Bar labels are RESPONSIVE MULTI-TIER
+text (ui/canvas-text.js): each label is an ordered list of fallbacks,
+fullest → most compact — explicit via the interval's labelTiers, else
+derived from `label` (leading `owner/` segment stripped, then the
+trailing ' - suffix') — and the widest tier that fits the bar draws.
+When even the most compact tier overflows, it hard-clips and its last
+~2-3 characters alpha-fade to transparent (never an ellipsis — no width
+spent on '…', and the characters stay readable up to the edge); below a
+3-character clip the label is suppressed — it never spills into
+neighboring bars — and labels stick to the plot edge while a bar's start
+is scrolled off-screen (just past the continuation shadow when one is
+active).
 
 A MINIMAP strip (32px, its own canvas) runs along the bottom while data
 exists: the FULL loaded extent — earliest loaded interval widened by
@@ -409,9 +459,11 @@ Element <timeline-view> — data API (properties/methods, never attributes):
                       the current auto-fit demotion set in display order
                       (mirrors the latest 'fitchange' event).
 
-Interval shape: {id, laneId, start, end?, label?, category?, state?,
-segments?, data?}. start/end are ms since epoch or Date; end null/
-undefined = ongoing. segments: [{start, end?, kind}] phases WITHIN the
+Interval shape: {id, laneId, start, end?, label?, labelTiers?, category?,
+state?, segments?, data?}. start/end are ms since epoch or Date; end null/
+undefined = ongoing. labelTiers: ordered label fallbacks, fullest → most
+compact (overrides the tiers derived from label; label — else
+labelTiers[0] — stays the tooltip/full text). segments: [{start, end?, kind}] phases WITHIN the
 bar, each styled via kind (e.g. a dim leading 'queued' phase, a hatched
 'waiting' span); end null = to the bar's end. A segment whose kind
 resolves to the 'outline' pattern is a TERMINAL CUT (e.g. a kill tail:

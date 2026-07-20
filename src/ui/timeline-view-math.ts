@@ -53,6 +53,11 @@ export interface TimelineInterval {
   end?: number | Date | null;
   /** Text drawn inside the bar when it fits (never overflows the bar). */
   label?: string;
+  /**
+   * Ordered label fallbacks, fullest → most compact; the widest that fits
+   * draws. Overrides the tiers otherwise derived from `label`.
+   */
+  labelTiers?: string[];
   /** Color key: same category = same hue. Defaults to lane.group, then laneId. */
   category?: string;
   /** Style-map key: rendering treatment (e.g. 'failed', 'dim', 'hatch'). */

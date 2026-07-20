@@ -190,6 +190,8 @@ import {
   type PackItem,
 } from './timeline-view-math.ts';
 
+import { FADE_TAIL_CHARS, FadeTextPainter, deriveLabelTiers, fitTieredText } from './canvas-text.ts';
+
 import TIMELINE_CSS from './timeline-view.css';
 
 export * from './timeline-view-math.ts';
@@ -293,6 +295,8 @@ interface NInterval {
   start: number;
   end: number | null; // null = ongoing
   label: string;
+  /** Label fallbacks, fullest → most compact; null = `label` is the only tier. */
+  tiers: string[] | null;
   catKey: string;
   state: string;
   segs: NSeg[] | null;
@@ -686,6 +690,12 @@ export class TimelineViewElement extends HTMLElement {
   private fontBar = '';
   private labelHalo = labelHaloColor(THEME_DEFAULTS.fg);
   private charW = 6;
+  private labelPainter = new FadeTextPainter();
+  // Width model for label fitting: char-count arithmetic on the mutable
+  // measureCharW (set per call site — bar labels use charW, compact gutter
+  // labels a downscaled one), so no closure is allocated per frame.
+  private measureCharW = 6;
+  private measureLabel = (s: string): number => s.length * this.measureCharW;
   private gutterW = 90;
   private oklch = true;
   private reducedMotion = false;
@@ -1317,13 +1327,15 @@ export class TimelineViewElement extends HTMLElement {
     const lane = this.lanes[laneIdx];
     const start = toMs(iv.start);
     const end = iv.end == null ? null : toMs(iv.end);
+    const label = iv.label ?? iv.labelTiers?.[0] ?? '';
     const n: NInterval = {
       src: iv,
       id: iv.id,
       laneIdx,
       start,
       end,
-      label: iv.label ?? '',
+      label,
+      tiers: intervalLabelTiers(iv.labelTiers, label),
       catKey: iv.category ?? lane.group ?? lane.id,
       state: iv.state ?? '',
       segs: iv.segments?.length
@@ -2340,6 +2352,7 @@ export class TimelineViewElement extends HTMLElement {
     }
     this.colorCache.clear();
     this.patternCache.clear();
+    this.labelPainter.clear();
     // Theme colors are baked into the minimap density texture — stamp it
     // stale (an async rebuild repaints it) and drop the cached fills.
     this.mmThemeGen++;
@@ -3631,11 +3644,19 @@ export class TimelineViewElement extends HTMLElement {
         const full = lh >= t.fontSize + 5;
         const fs = full ? t.fontSize : Math.max(7, Math.min(t.fontSize - 2, Math.floor(lh - 3)));
         const charW = full ? this.charW : (this.charW * fs) / t.fontSize;
-        const label = fitText(this.lanes[i].label, this.gutterW - 16, charW);
-        if (label !== '') {
+        this.measureCharW = charW;
+        const fit = fitTieredText(this.lanes[i].label, this.gutterW - 16, this.measureLabel);
+        if (fit !== null) {
           ctx.font = full ? this.fontBar : `${fs}px ${t.font}`;
-          ctx.fillStyle = full ? t.muted : withAlpha(t.muted, 0.7);
-          ctx.fillText(label, this.textPx(8), this.textPx(top + lh / 2 + 0.5));
+          const color = full ? t.muted : withAlpha(t.muted, 0.7);
+          const lx = this.textPx(8);
+          const ly = this.textPx(top + lh / 2 + 0.5);
+          if (fit.faded) {
+            this.labelPainter.paint(ctx, fit.text, lx, ly, fit.width, FADE_TAIL_CHARS * charW, color);
+          } else {
+            ctx.fillStyle = color;
+            ctx.fillText(fit.text, lx, ly);
+          }
         }
       }
     }
@@ -3940,11 +3961,18 @@ export class TimelineViewElement extends HTMLElement {
     // so the sticky label never sits inside the darkened zone.
     if (bh >= t.fontSize + 3) {
       const glyphPad = style.glyph === 'bang' ? 8 : 0;
-      const label = fitText(n.label, x1 - labelX - labelPad - glyphPad, this.charW);
-      if (label !== '') {
+      this.measureCharW = this.charW;
+      const fit = fitTieredText(n.tiers ?? n.label, x1 - labelX - labelPad - glyphPad, this.measureLabel);
+      if (fit !== null) {
         // Full-contrast text + halo regardless of the surface — the
         // span's own state/segments must never grey the label out.
-        this.labelText(ctx, label, this.textPx(labelX), this.textPx(y + bh / 2 + 0.5));
+        const lx = this.textPx(labelX);
+        const ly = this.textPx(y + bh / 2 + 0.5);
+        if (fit.faded) {
+          this.labelPainter.paint(ctx, fit.text, lx, ly, fit.width, FADE_TAIL_CHARS * this.charW, t.fg, this.labelHalo, LABEL_HALO_PX);
+        } else {
+          this.labelText(ctx, fit.text, lx, ly);
+        }
       }
     }
 
@@ -4244,6 +4272,17 @@ function clamp(v: number, lo: number, hi: number): number {
 /** Snap a CSS-px coordinate to the device-pixel grid + half-pixel (crisp 1px lines). */
 function snap(v: number, dpr: number): number {
   return (Math.round(v * dpr) + 0.5) / dpr;
+}
+
+/** Explicit labelTiers win (sanitized); else derive from the label; null = single tier. */
+function intervalLabelTiers(explicit: string[] | undefined, label: string): string[] | null {
+  if (explicit !== undefined) {
+    const tiers = explicit.filter((s) => typeof s === 'string' && s !== '');
+    if (tiers.length > 0) return tiers;
+  }
+  if (label === '') return null;
+  const derived = deriveLabelTiers(label);
+  return derived.length > 1 ? derived : null;
 }
 
 /**
