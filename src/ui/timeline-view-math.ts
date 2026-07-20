@@ -727,7 +727,17 @@ export class TrackAllocator {
   private memory = new Map<string, number>();
   /** ids assigned (visible) by the previous call — their tracks are kept. */
   private live = new Set<string>();
+  /** Double-buffer partner for `live` (swapped per call — no Set churn). */
+  private liveNext = new Set<string>();
   private cap: number;
+  // Per-call scratch, reused across calls (assign runs on the element's
+  // layout path): index lists and the per-track placed footprints as flat
+  // [start, end, …] pairs. The returned `tracks` array is NOT reused —
+  // it is the output contract and callers may hold it.
+  private visScratch: number[] = [];
+  private returningScratch: number[] = [];
+  private freshScratch: number[] = [];
+  private placedScratch: number[][] = [];
 
   constructor(memoryCap = TRACK_MEMORY_CAP) {
     this.cap = Math.max(1, Math.floor(memoryCap));
@@ -736,7 +746,8 @@ export class TrackAllocator {
   /** Assign tracks for the items visible in `view` (see the class doc). */
   assign(items: readonly PackItem[], view: TimeView): { tracks: number[]; trackCount: number } {
     const tracks = new Array<number>(items.length).fill(-1);
-    const vis: number[] = [];
+    const vis = this.visScratch;
+    vis.length = 0;
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       if (it.start <= view.end && packEnd(it) >= view.start) vis.push(i);
@@ -747,17 +758,27 @@ export class TrackAllocator {
       return ia.start - ib.start || (ia.id < ib.id ? -1 : ia.id > ib.id ? 1 : 0);
     });
     // Per-track footprints placed THIS call — the only conflict authority
-    // (memory is a preference, never proof of fit).
-    const placed: { start: number; end: number }[][] = [];
+    // (memory is a preference, never proof of fit). placedUsed tracks how
+    // many scratch slots are valid this call; slots clear lazily as the
+    // high-water mark grows.
+    const placed = this.placedScratch;
+    let placedUsed = 0;
     const canPlace = (t: number, s: number, e: number): boolean => {
+      if (t >= placedUsed) return true;
       const list = placed[t];
-      if (!list) return true;
-      for (const f of list) if (s < f.end && f.start < e) return false;
+      for (let k = 0; k < list.length; k += 2) {
+        if (s < list[k + 1] && list[k] < e) return false;
+      }
       return true;
     };
     const place = (i: number, t: number): void => {
       tracks[i] = t;
-      (placed[t] ??= []).push({ start: items[i].start, end: packEnd(items[i]) });
+      while (placedUsed <= t) {
+        const slot = placed[placedUsed] ?? (placed[placedUsed] = []);
+        slot.length = 0;
+        placedUsed++;
+      }
+      placed[t].push(items[i].start, packEnd(items[i]));
     };
     const lowestFree = (s: number, e: number): number => {
       let t = 0;
@@ -765,9 +786,12 @@ export class TrackAllocator {
       return t;
     };
     // Pass 1 — keepers: continuously-visible items hold their rows.
-    const returning: number[] = [];
-    const fresh: number[] = [];
-    for (const i of vis) {
+    const returning = this.returningScratch;
+    const fresh = this.freshScratch;
+    returning.length = 0;
+    fresh.length = 0;
+    for (let vi = 0; vi < vis.length; vi++) {
+      const i = vis[vi];
       const it = items[i];
       const kept = this.live.has(it.id) ? this.memory.get(it.id) : undefined;
       if (kept !== undefined && canPlace(kept, it.start, packEnd(it))) place(i, kept);
@@ -775,28 +799,34 @@ export class TrackAllocator {
       else fresh.push(i);
     }
     // Pass 2 — returning items reclaim their old row when still free.
-    for (const i of returning) {
+    for (let ri = 0; ri < returning.length; ri++) {
+      const i = returning[ri];
       const it = items[i];
       const end = packEnd(it);
       const remembered = this.memory.get(it.id) as number;
       place(i, canPlace(remembered, it.start, end) ? remembered : lowestFree(it.start, end));
     }
     // Pass 3 — new items fill from the bottom (density recovery).
-    for (const i of fresh) {
+    for (let fi = 0; fi < fresh.length; fi++) {
+      const i = fresh[fi];
       const it = items[i];
       place(i, lowestFree(it.start, packEnd(it)));
     }
     // Remember every visible assignment (refreshing LRU recency), then
-    // prune the oldest beyond the cap.
-    this.live = new Set<string>();
+    // prune the oldest beyond the cap. `live` double-buffers via swap.
+    const liveNext = this.liveNext;
+    liveNext.clear();
     let maxTrack = -1;
-    for (const i of vis) {
+    for (let vi = 0; vi < vis.length; vi++) {
+      const i = vis[vi];
       const id = items[i].id;
-      this.live.add(id);
+      liveNext.add(id);
       this.memory.delete(id);
       this.memory.set(id, tracks[i]);
       if (tracks[i] > maxTrack) maxTrack = tracks[i];
     }
+    this.liveNext = this.live;
+    this.live = liveNext;
     while (this.memory.size > this.cap) {
       const oldest = this.memory.keys().next().value;
       if (oldest === undefined) break;
@@ -1093,22 +1123,30 @@ export function clusterInstants(
     const ib = items[b];
     return ia.start - ib.start || (ia.id < ib.id ? -1 : ia.id > ib.id ? 1 : 0);
   });
-  let bucket: number[] = [];
-  const flush = (): void => {
-    if (bucket.length > 1) {
-      for (const i of bucket) memberOf[i] = clusters.length;
+  // Greedy transitive sweep over `order` as index ranges (no per-bucket
+  // array churn — this runs on the layout hot path): a bucket is
+  // order[bucketStart, oi); it flushes when the next instant's gap from
+  // its predecessor exceeds joinMs, and at the end.
+  let bucketStart = 0;
+  for (let oi = 0; oi <= order.length; oi++) {
+    const boundary =
+      oi === order.length || (oi > bucketStart && items[order[oi]].start - items[order[oi - 1]].start > joinMs);
+    if (!boundary) continue;
+    const len = oi - bucketStart;
+    if (len > 1) {
+      const indices = new Array<number>(len);
+      for (let k = 0; k < len; k++) {
+        const idx = order[bucketStart + k];
+        indices[k] = idx;
+        memberOf[idx] = clusters.length;
+      }
       clusters.push({
-        indices: bucket,
-        extent: { start: items[bucket[0]].start, end: items[bucket[bucket.length - 1]].start },
+        indices,
+        extent: { start: items[indices[0]].start, end: items[indices[len - 1]].start },
       });
     }
-    bucket = [];
-  };
-  for (const i of order) {
-    if (bucket.length > 0 && items[i].start - items[bucket[bucket.length - 1]].start > joinMs) flush();
-    bucket.push(i);
+    bucketStart = oi;
   }
-  flush();
   return { clusters, memberOf };
 }
 
