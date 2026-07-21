@@ -57,6 +57,47 @@ Exports:
 
 Types: EnableOptions, UpgradeOptions, FallbackOptions.
 
+### ui/canvas-text.js
+Responsive multi-tier canvas text with alpha-fade truncation. A label is an
+ordered list of TIERS, fullest → most compact; the largest tier that fits
+the available width draws, and when even the last tier overflows it is
+hard-clipped and its trailing ~2-3 characters fade to transparent — the
+truncation signal — instead of an ellipsis (no width spent on '…', and the
+final characters stay readable right up to the edge). Fitting is pure and
+canvas-free: width comes from an injected MeasureText fn (cached char-width
+arithmetic, or a memoized ctx.measureText) so callers control measurement
+cost; only FadeTextPainter touches a canvas. Generic — no timeline types;
+<timeline-view> drives its bar/gutter labels through it.
+
+  deriveLabelTiers(label) → string[] — the full text; then a leading
+    `owner/` path segment stripped (only when that segment contains no
+    whitespace); then everything from the first ' - ' on stripped.
+    Inapplicable tiers are skipped; always >= 1 tier.
+    'wow-look-at-my/gosmopolitan - workflow_job' →
+    ['wow-look-at-my/gosmopolitan - workflow_job',
+     'gosmopolitan - workflow_job', 'gosmopolitan'].
+  selectTier(tiers, availPx, measure) → index of the largest (earliest)
+    non-empty tier that fits, or -1.
+  clipToWidth(text, availPx, measure) → the longest prefix whose measured
+    width fits ('' when none); measure must be monotonic over prefixes.
+  fitTieredText(tiers, availPx, measure, opts?) → {text, tier, faded,
+    width} | null — the fit decision: largest fitting tier (faded: false),
+    else the most compact tier clipped to width (faded: true — draw with a
+    fade tail), else null (suppress; a clip keeps at least
+    opts.minClipChars ?? MIN_CLIP_CHARS (3) characters). `tiers` may be a
+    plain string (a single tier).
+  class FadeTextPainter — paint(ctx, text, x, y, width, fadePx, fill,
+    halo?, haloWidth?) fills text (left-aligned; width = its measured
+    width) with the last fadePx px alpha-fading to transparent, the
+    optional halo stroked under the fill with the same fade; clear() drops
+    cached gradients (call on theme changes). One cached gradient per
+    (color, fade width) spans [0, fadePx] in user space and ctx.translate
+    positions it per label — no per-label createLinearGradient, ever.
+  FADE_TAIL_CHARS (2.5) — recommended fade width in character widths
+    (fadePx = FADE_TAIL_CHARS * charW); MIN_CLIP_CHARS (3).
+
+Types: MeasureText, FittedText, FitTieredOptions
+
 ### ui/perf-graph.js
 Compact, stackable, canvas-rendered performance graph as a <perf-graph>
 custom element. One element = one scrolling metric strip (frame time, fps,
@@ -184,7 +225,8 @@ Types: PerfStats, AutoRangeOptions, DisplayRange
 ### ui/timeline-view.js
 Canvas-rendered realtime swimlane timeline as a <timeline-view> custom
 element. A shared horizontal time axis across the full width; stacked
-labeled lanes (left gutter, ellipsized labels, full text via tooltip;
+labeled lanes (left gutter; labels too wide for it clip with a fade-out
+tail — see ui/canvas-text.js — full text via tooltip;
 lane order = exactly the order supplied — never re-sorted internally),
 each a band of interval bars (left = start, right = end). A lane grows
 extra sub-tracks when intervals VISIBLE in the current window overlap,
@@ -342,10 +384,18 @@ end — or an ongoing bar's extent in a parked view — exceeds the window,
 over every treatment (solid, hollow, hatched, terminal cuts). Spans
 whose edge coincides with the window edge are exempt (they genuinely
 start/end there), as are stubs too short to reach through the shadow
-zone (which would swallow them). Bar labels truncate with an ellipsis
-and are suppressed below fit width — they never spill into neighboring
-bars — and stick to the plot edge while a bar's start is scrolled
-off-screen (just past the continuation shadow when one is active).
+zone (which would swallow them). Bar labels are RESPONSIVE MULTI-TIER
+text (ui/canvas-text.js): each label is an ordered list of fallbacks,
+fullest → most compact — explicit via the interval's labelTiers, else
+derived from `label` (leading `owner/` segment stripped, then the
+trailing ' - suffix') — and the widest tier that fits the bar draws.
+When even the most compact tier overflows, it hard-clips and its last
+~2-3 characters alpha-fade to transparent (never an ellipsis — no width
+spent on '…', and the characters stay readable up to the edge); below a
+3-character clip the label is suppressed — it never spills into
+neighboring bars — and labels stick to the plot edge while a bar's start
+is scrolled off-screen (just past the continuation shadow when one is
+active).
 
 A MINIMAP strip (32px, its own canvas) runs along the bottom while data
 exists: the FULL loaded extent — earliest loaded interval widened by
@@ -435,8 +485,17 @@ Element <timeline-view> — data API (properties/methods, never attributes):
   colorFor          — (interval, lane) => cssColor | null override.
   tooltipFor        — (hit: TimelineHit) => string | Node | null; null/
                       undefined hides. Default tooltip shows label,
-                      category, state, start/end, duration, segment
-                      durations. Node content is appended, never innerHTML.
+                      category, state, the HOVERED phase segment (a
+                      'segment: <kind> · <duration>' line — named by its
+                      style-map kind, the legend's vocabulary, so no
+                      legend round-trip to decode a stripe), start/end,
+                      duration, segment durations. An interval hit
+                      carries that hovered phase as `segment`
+                      (SegmentHit {index, kind, start, end} — clamped ms
+                      window; null over the base bar) — an ADDITIVE
+                      field, so existing callbacks keep working and opt
+                      in by reading `hit.segment`.
+                      Node content is appended, never innerHTML.
                       Long lines WRAP inside the box (unbroken tokens like
                       run ids/error blobs included; newlines in string
                       content are honored), and pathological content clips
@@ -469,9 +528,11 @@ Element <timeline-view> — data API (properties/methods, never attributes):
                       the current auto-fit demotion set in display order
                       (mirrors the latest 'fitchange' event).
 
-Interval shape: {id, laneId, start, end?, label?, category?, state?,
-segments?, data?}. start/end are ms since epoch or Date; end null/
-undefined = ongoing. segments: [{start, end?, kind}] phases WITHIN the
+Interval shape: {id, laneId, start, end?, label?, labelTiers?, category?,
+state?, segments?, data?}. start/end are ms since epoch or Date; end null/
+undefined = ongoing. labelTiers: ordered label fallbacks, fullest → most
+compact (overrides the tiers derived from label; label — else
+labelTiers[0] — stays the tooltip/full text). segments: [{start, end?, kind}] phases WITHIN the
 bar, each styled via kind (e.g. a dim leading 'queued' phase, a hatched
 'waiting' span); end null = to the bar's end. A segment whose kind
 resolves to the 'outline' pattern is a TERMINAL CUT (e.g. a kill tail:
@@ -506,6 +567,15 @@ Viewport / follow:
                       hard-stops at now; engages follow only when it
                       ends within the 2-device-px snap zone of now;
                       latches the window as chosen — see DEFAULT window).
+  fitToInterval(id, {pad?}) — fit the viewport to ONE interval: its span
+                      full-width plus `pad` fraction each side (default
+                      0.05) — the run-detail-dialog convenience (an
+                      embedded instance shows just the clicked span with
+                      no viewport math). A thin setViewport wrapper:
+                      counts as a consumer-chosen window (latches),
+                      clamps + now-stops the same; instants/sub-~2s
+                      spans center in the minimum window. Returns false
+                      (viewport untouched) for an unknown id.
   followNow         — boolean (default true): right edge pinned to live
                       now. Any backward PAN (wheel, drag, arrow keys)
                       disengages immediately — even a tiny step, so
@@ -625,10 +695,15 @@ is a stream whose jittery minority events are individually
 opposite-dominant; per-event routing leaked them). An 'h' gesture is
 consumed WHOLE: deltaX pans time and the minor vertical component
 nudges the lane stack when it overflows the host — it never creeps the
-page. A 'v' gesture is NEVER consumed, whether or not the lanes
-overflow (no preventDefault, no zoom: the page scrolls normally over
-the chart, its horizontal jitter never pans the chart sideways, and
-the lane stack scrolls by pointer drag or arrow keys instead). A
+page. A 'v' gesture follows the NESTED-SCROLLER contract, latching its
+target from the lane stack's scrollability at lock time: while the
+stack can move in the wheel's direction the whole gesture SCROLLS THE
+STACK in place (consumed, clamped at its edges — browser-style scroll
+latching; drag and arrow keys still scroll it too), and when it cannot
+— already at that edge, or no overflow — NOTHING is consumed for the
+gesture (no preventDefault, no zoom: the page scrolls normally over
+the chart, its horizontal jitter never pans the chart sideways), so
+the page is always reachable past a tall chart. A
 DECISIVE opposite-axis event mid-gesture — beating the locked axis by
 more than WHEEL_AXIS_FLIP_RATIO (2x) with at least
 WHEEL_AXIS_FLIP_MIN_PX (24px) — re-locks on the spot (proportional
@@ -705,12 +780,15 @@ Exports:
     TimelineSegment {start, end?, kind}, TimelineConnector,
     TimelineMarker {time, label?, kind?}, TimeView {start, end},
     TimeRange {start, end}, IntervalStyle, StyleMap, StylePattern,
-    PackItem, LaneMetrics, LaneLayout, HitRect, CategoryColorOptions,
-    CoverageOptions.
+    PackItem, LaneMetrics, LaneLayout, HitRect, SegmentHit,
+    CategoryColorOptions, CoverageOptions.
   toMs(t: number | Date) → number
   Scale/zoom: timeToX(t, view, width), xToTime(x, view, width),
     panView(view, dt), zoomView(view, anchor, factor, minSpan?, maxSpan?)
     (anchor-preserving, span clamped; MIN_SPAN_MS = 2s, MAX_SPAN_MS = 7d),
+    fitSpanView(start, end, pad?, minSpan?) → TimeView (one span plus
+    pad fraction — default 0.05 — each side; a padded window under
+    minSpan centers the span instead — the element's fitToInterval),
     defaultSpanForAspect(hostW, hostH, refSpanMs?) → span ms (the
     aspect-scaled DEFAULT window: DEFAULT_SPAN_REF_MS = 3 min at 16:9,
     linear in the container aspect, clamped to the span limits;
@@ -718,24 +796,34 @@ Exports:
     wheelDeltaToPixels(delta, deltaMode, lineHeight?, pageHeight?)
     (deltaMode 0/1/2 → px), zoomFactorForWheel(deltaPx) (exponential,
     composable; ZOOM_PX_PER_DOUBLE px per doubling),
-    routeWheel(WheelInput, lanesOverflow) → WheelRoute {zoomPx, panPx,
-    laneScrollPx, consumed} (the PER-EVENT router — exact for a
+    routeWheel(WheelInput, lanes: LaneScrollInput) → WheelRoute {zoomPx,
+    panPx, laneScrollPx, consumed} (the PER-EVENT router — exact for a
     fresh/isolated event: ctrl/meta = zoom, always consumed; shift =
     time pan; else the DOMINANT axis decides — horizontal-dominant
     (|dx| > |dy|) pans time, consumed, with the minor deltaY nudging
-    lanes only when they overflow; vertical-dominant incl. ties routes
-    NOWHERE regardless of overflow, and consumed=false means DO NOT
-    preventDefault, let the page scroll; deltaMode normalized),
+    lanes only when they overflow; vertical-dominant incl. ties follows
+    the nested-scroller rule with the direction-aware LaneScrollable
+    {up, down} form — consumed with laneScrollPx = dy exactly while the
+    stack can move in dy's direction, else routes NOWHERE — and with the
+    legacy boolean overflow form NEVER consumes vertical wheels;
+    consumed=false means DO NOT preventDefault, let the page scroll;
+    deltaMode normalized), interface LaneScrollable {up, down} + type
+    LaneScrollInput = boolean | LaneScrollable,
     classifyWheel(WheelInput) → WheelClass 'zoom' | 'pan' |
     'passthrough' (the per-event routing decision without magnitudes,
-    normalized the same way; lanesOverflow deliberately has no input — a
-    test-pinned invariant guarantees routeWheel(e, o).consumed ===
-    (classifyWheel(e) !== 'passthrough') for ALL inputs and overflow),
-    class WheelGestureRouter — route(WheelInput, lanesOverflow, ts) →
+    normalized the same way; the lanes input deliberately has no input
+    here — a test-pinned invariant guarantees routeWheel(e, o).consumed
+    === (classifyWheel(e) !== 'passthrough') for every no-headroom o:
+    the boolean form and {up:false, down:false}),
+    class WheelGestureRouter — route(WheelInput, lanes, ts) →
     WheelRoute (the STREAM-level router the element feeds every wheel
     event through: the first decisive unmodified event locks the
     gesture's axis — 'h' consumes every unmodified event, dx pans /
-    overflow-gated dy lane-scrolls; 'v' consumes nothing — until
+    overflow-gated dy lane-scrolls; 'v' latches lane-vs-page from the
+    stack's scrollability at lock time and holds it for the gesture
+    (lane: every event consumed as laneScrollPx, edges clamped by the
+    element; page: nothing consumed — always the verdict for boolean
+    lanes input) — until
     unmodified events pause longer than the gap, or a mid-gesture event
     beats the locked axis by more than WHEEL_AXIS_FLIP_RATIO with at
     least WHEEL_AXIS_FLIP_MIN_PX and re-locks on the spot; ts is the
@@ -888,7 +976,13 @@ Exports:
     hitTestRects(x, y, rects) (topmost = last; -1 on miss),
     distSqToSegment(px, py, ax, ay, bx, by), hitTestPolyline(px, py, pts,
     tol), connectorRoute(from, to, samples?) (sampled cubic S-curve from
-    right-center to left-center; 2-point segment when aligned forward).
+    right-center to left-center; 2-point segment when aligned forward),
+    segmentAtTime(segments, intervalStart, intervalEnd, t) →
+    SegmentHit {index, kind, start, end} | null (the phase PAINTED at
+    time t: last covering array entry — draw order overpaints — with the
+    draw clamps applied; half-open [start, end) except t at the
+    interval's own end still hits a segment ending there; feeds the
+    interval hit's `segment`).
   Category color: hashString(s) (FNV-1a 32-bit), categoryHue(s) (stable
     0..359, golden-ratio spread), categoryJitter(s) (deterministic small
     {dl, dc} tone offsets), categoryColor(hue, {mode 'oklch'|'hsl',

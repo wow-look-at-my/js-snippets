@@ -87,6 +87,8 @@ import {
   clusterInstants,
   clusterZoomView,
   clusterMarkerTime,
+  fitSpanView,
+  segmentAtTime,
   CLUSTER_JOIN_PX,
   CLUSTER_ZOOM_FILL_FRAC,
   minimapExtent,
@@ -1374,6 +1376,130 @@ test('WheelGestureRouter: deltaMode-normalized classification — a line-mode st
   const v = new WheelGestureRouter();
   assert.equal(v.route(wheel({ deltaY: 3, deltaMode: 1 }), false, 2000).consumed, false);
   assert.equal(v.route(wheel({ deltaX: -1, deltaMode: 1 }), false, 2016).consumed, false, 'line-mode h jitter inside the v gesture');
+});
+
+// -- Direction-aware lane scrolling (the nested-scroller contract) ----------------
+
+// The LaneScrollable input form: a vertical wheel scrolls an overflowing
+// lane stack IN PLACE while the stack can actually move in the wheel's
+// direction, and passes to the page the moment it cannot — so a tall lane
+// stack is finally wheel-scrollable AND the page stays reachable past it.
+// The legacy boolean form keeps the pinned page-always-wins behavior
+// byte-for-byte (every test above this section runs on it, unchanged).
+
+test('routeWheel: direction-aware lanes — a vertical wheel scrolls the stack while it has headroom that way', () => {
+  // Parked at the top (headroom below): wheel-down scrolls the stack,
+  // wheel-up belongs to the page.
+  assert.deepEqual(routeWheel(wheel({ deltaY: 90 }), { up: false, down: true }), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: 90,
+    consumed: true,
+  });
+  assert.deepEqual(routeWheel(wheel({ deltaY: -90 }), { up: false, down: true }), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: 0,
+    consumed: false,
+  });
+  // Symmetric at the bottom.
+  assert.deepEqual(routeWheel(wheel({ deltaY: -90 }), { up: true, down: false }), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: -90,
+    consumed: true,
+  });
+  assert.deepEqual(routeWheel(wheel({ deltaY: 90 }), { up: true, down: false }), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: 0,
+    consumed: false,
+  });
+  // No headroom at all (a stack that fits): identical to the boolean
+  // form — the page owns every vertical wheel.
+  for (const dy of [90, -90]) {
+    assert.equal(routeWheel(wheel({ deltaY: dy }), { up: false, down: false }).consumed, false);
+  }
+  // The consumed-horizontal route's minor-dy nudge keys off OVERFLOW
+  // (either direction), exactly like the boolean form — clamping owns the
+  // edges inside an already-consumed gesture.
+  assert.deepEqual(routeWheel(wheel({ deltaX: -60, deltaY: 4 }), { up: false, down: true }), {
+    zoomPx: 0,
+    panPx: -60,
+    laneScrollPx: 4,
+    consumed: true,
+  });
+  assert.deepEqual(routeWheel(wheel({ deltaX: -60, deltaY: 4 }), { up: false, down: false }), {
+    zoomPx: 0,
+    panPx: -60,
+    laneScrollPx: 0,
+    consumed: true,
+  });
+});
+
+test('WheelGestureRouter: a v gesture latches lane-vs-page from scrollability at lock time', () => {
+  // Downward headroom at lock time: the WHOLE gesture belongs to the
+  // stack — including after the stack reports its edge mid-gesture
+  // (browser-style scroll latching: no mid-swipe handoff jank; the
+  // element's clamp owns the edge) — and its horizontal jitter is
+  // consumed as lane scroll, never a chart pan.
+  const r = new WheelGestureRouter();
+  let ts = 1000;
+  assert.deepEqual(r.route(wheel({ deltaY: 100 }), { up: false, down: true }, ts), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: 100,
+    consumed: true,
+  });
+  ts += 16;
+  assert.deepEqual(
+    r.route(wheel({ deltaY: 100 }), { up: true, down: false }, ts),
+    { zoomPx: 0, panPx: 0, laneScrollPx: 100, consumed: true },
+    'edge reached mid-gesture: still latched to the stack',
+  );
+  ts += 16;
+  const jitter = r.route(wheel({ deltaX: -12, deltaY: 5 }), { up: true, down: false }, ts);
+  assert.equal(jitter.consumed, true, 'h jitter under the flip floor stays in the lane gesture');
+  assert.equal(jitter.panPx, 0);
+  assert.equal(jitter.laneScrollPx, 5);
+  // After the gesture gap, a fresh wheel-down against the exhausted stack
+  // belongs to the page: the page is always reachable past a tall chart.
+  ts += WHEEL_GESTURE_GAP_MS + 1;
+  assert.deepEqual(r.route(wheel({ deltaY: 100 }), { up: true, down: false }, ts), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: 0,
+    consumed: false,
+  });
+  // And a page-latched gesture never grabs the stack mid-stream, even if
+  // headroom appears under it (a re-layout mid-scroll): latched until the
+  // gap, then the next gesture re-evaluates.
+  ts += 16;
+  assert.equal(r.route(wheel({ deltaY: 100 }), { up: true, down: true }, ts).consumed, false);
+  ts += WHEEL_GESTURE_GAP_MS + 1;
+  assert.equal(r.route(wheel({ deltaY: 100 }), { up: true, down: true }, ts).consumed, true, 'fresh gesture takes the now-scrollable stack');
+});
+
+test('WheelGestureRouter: a FRESH router equals routeWheel on direction-aware inputs too', () => {
+  const scrolls = [
+    { up: false, down: false },
+    { up: true, down: false },
+    { up: false, down: true },
+    { up: true, down: true },
+  ];
+  for (const lanes of scrolls) {
+    for (const deltaY of [-90, -1, 0, 1, 90]) {
+      for (const deltaX of [0, -4, 120]) {
+        const e = wheel({ deltaX, deltaY });
+        const fresh = new WheelGestureRouter();
+        assert.deepEqual(
+          fresh.route(e, lanes, 500),
+          routeWheel(e, lanes),
+          `dx=${deltaX} dy=${deltaY} lanes=${JSON.stringify(lanes)}`,
+        );
+      }
+    }
+  }
 });
 
 // -- Now-line x ------------------------------------------------------------------
@@ -2791,4 +2917,89 @@ test('labelHaloColor: unparseable colors fall back to the dark halo', () => {
   // The dark default theme's shape — a var()/named fg keeps a sane rim.
   assert.equal(labelHaloColor('var(--my-fg)'), 'rgba(0, 0, 0, 0.55)');
   assert.equal(labelHaloColor('papayawhip'), 'rgba(0, 0, 0, 0.55)');
+});
+
+// -- segmentAtTime (hovered-phase hit refinement) --------------------------------------
+
+// The webhook-runner shape: a dim queue lead-in, a hatched wait, then the
+// unsegmented base bar to the end.
+const SEG_IV = { start: 0, end: 100_000 };
+const SEGS = [
+  { start: 0, end: 40_000, kind: 'queued' },
+  { start: 40_000, end: 70_000, kind: 'waiting' },
+];
+
+test('segmentAtTime: resolves the phase covering t, with index and clamped window', () => {
+  assert.deepEqual(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, 10_000), { index: 0, kind: 'queued', start: 0, end: 40_000 });
+  assert.deepEqual(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, 55_000), { index: 1, kind: 'waiting', start: 40_000, end: 70_000 });
+});
+
+test('segmentAtTime: base bar (no covering phase) and off-bar times resolve to null', () => {
+  assert.equal(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, 85_000), null); // past the last phase
+  assert.equal(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, -5), null);
+  assert.equal(segmentAtTime([], SEG_IV.start, SEG_IV.end, 10), null);
+  assert.equal(segmentAtTime(null, SEG_IV.start, SEG_IV.end, 10), null);
+  assert.equal(segmentAtTime(undefined, SEG_IV.start, SEG_IV.end, 10), null);
+});
+
+test('segmentAtTime: half-open boundaries — a shared edge belongs to the incoming phase', () => {
+  assert.equal(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, 40_000)?.kind, 'waiting');
+  // The last phase's trailing edge is exclusive too (base bar beyond it).
+  assert.equal(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, 70_000), null);
+});
+
+test('segmentAtTime: overlaps resolve LAST-painted (draw order overpaints)', () => {
+  const overlapping = [
+    { start: 0, end: 80_000, kind: 'dim' },
+    { start: 50_000, end: 100_000, kind: 'waiting' },
+  ];
+  assert.equal(segmentAtTime(overlapping, SEG_IV.start, SEG_IV.end, 60_000)?.kind, 'waiting');
+  assert.equal(segmentAtTime(overlapping, SEG_IV.start, SEG_IV.end, 20_000)?.kind, 'dim');
+});
+
+test('segmentAtTime: null end runs to the interval end, inclusive at the bar\'s last instant', () => {
+  const tail = [{ start: 90_000, end: null, kind: 'outline' }];
+  assert.deepEqual(segmentAtTime(tail, SEG_IV.start, SEG_IV.end, 95_000), { index: 0, kind: 'outline', start: 90_000, end: 100_000 });
+  // t exactly at the interval end still hits the segment ending there.
+  assert.equal(segmentAtTime(tail, SEG_IV.start, SEG_IV.end, 100_000)?.kind, 'outline');
+  assert.equal(segmentAtTime(tail, SEG_IV.start, SEG_IV.end, 100_001), null);
+});
+
+test('segmentAtTime: draw-path clamps — starts floor to the interval, ends cap to it, outside phases skip', () => {
+  const segs = [
+    { start: -10_000, end: 20_000, kind: 'queued' }, // start clamps to 0
+    { start: 60_000, end: 500_000, kind: 'waiting' }, // end caps to the interval
+    { start: 150_000, end: 160_000, kind: 'dim' }, // fully outside — never matches
+  ];
+  assert.deepEqual(segmentAtTime(segs, SEG_IV.start, SEG_IV.end, 5_000), { index: 0, kind: 'queued', start: 0, end: 20_000 });
+  assert.deepEqual(segmentAtTime(segs, SEG_IV.start, SEG_IV.end, 99_000), { index: 1, kind: 'waiting', start: 60_000, end: 100_000 });
+  assert.equal(segmentAtTime(segs, SEG_IV.start, SEG_IV.end, 30_000), null);
+});
+
+test('segmentAtTime: accepts Date phase bounds (toMs like every API edge)', () => {
+  const segs = [{ start: new Date(10_000), end: new Date(20_000), kind: 'waiting' }];
+  assert.equal(segmentAtTime(segs, SEG_IV.start, SEG_IV.end, 15_000)?.index, 0);
+});
+
+// -- fitSpanView (single-span full-width fit) ------------------------------------------
+
+test('fitSpanView: pads the span by the fraction each side (default 0.05)', () => {
+  assert.deepEqual(fitSpanView(0, 100_000), { start: -5_000, end: 105_000 });
+  assert.deepEqual(fitSpanView(0, 100_000, 0.1), { start: -10_000, end: 110_000 });
+  // pad 0 = exact span; a padded window exactly at minSpan is NOT re-centered.
+  assert.deepEqual(fitSpanView(0, 100_000, 0), { start: 0, end: 100_000 });
+  assert.deepEqual(fitSpanView(0, MIN_SPAN_MS, 0), { start: 0, end: MIN_SPAN_MS });
+});
+
+test('fitSpanView: short spans and instants center in the minimum window', () => {
+  // 500ms padded (550ms) is under MIN_SPAN_MS — center, never left-anchor.
+  assert.deepEqual(fitSpanView(0, 500), { start: 250 - MIN_SPAN_MS / 2, end: 250 + MIN_SPAN_MS / 2 });
+  assert.deepEqual(fitSpanView(5_000, 5_000), { start: 5_000 - MIN_SPAN_MS / 2, end: 5_000 + MIN_SPAN_MS / 2 });
+});
+
+test('fitSpanView: order-tolerant, Date-tolerant, junk pad falls back to the default', () => {
+  assert.deepEqual(fitSpanView(100_000, 0), fitSpanView(0, 100_000));
+  assert.deepEqual(fitSpanView(new Date(0), new Date(100_000), 0.05), { start: -5_000, end: 105_000 });
+  assert.deepEqual(fitSpanView(0, 100_000, -1), fitSpanView(0, 100_000, 0.05));
+  assert.deepEqual(fitSpanView(0, 100_000, Number.NaN), fitSpanView(0, 100_000, 0.05));
 });
