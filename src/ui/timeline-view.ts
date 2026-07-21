@@ -37,10 +37,16 @@
  * consumed WHOLE — dx pans time, the minor vertical component nudges the
  * lane stack when it overflows and never leaks into page scroll (a real
  * swipe's jittery minority events are individually vertical-dominant); a
- * vertical-locked gesture (ties included) is never consumed — no
- * preventDefault, no zoom, its horizontal jitter never pans the chart —
- * so page scrolling always works across the chart (the lane stack scrolls
- * by drag or arrow keys instead); a DECISIVE opposite-axis event (>2x
+ * vertical-locked gesture (ties included) follows the NESTED-SCROLLER
+ * contract, latching its target from the lane stack's scrollability at
+ * lock time: while the stack can move in the wheel's direction the
+ * gesture SCROLLS THE STACK in place (consumed, clamped at its edges —
+ * browser-style scroll latching, so an edge hit mid-swipe never janks
+ * into page scroll; drag and arrow keys still scroll it too), and when
+ * it cannot — already at that edge, or no overflow — nothing is
+ * consumed, its horizontal jitter never pans the chart, and the page
+ * scrolls normally, so the page is always reachable past a tall
+ * chart; a DECISIVE opposite-axis event (>2x
  * dominance, ≥24px) re-locks mid-gesture, so a genuine direction change
  * never waits out the gap; ctrl/meta+wheel = smooth zoom anchored
  * under the cursor (discrete wheel steps glide; trackpad pinch arrives
@@ -199,6 +205,7 @@ import {
   type HitRect,
   type PackItem,
 } from './timeline-view-math.ts';
+import type { LaneScrollable } from './timeline-view-math.ts';
 
 import { FADE_TAIL_CHARS, FadeTextPainter, deriveLabelTiers, fitTieredText } from './canvas-text.ts';
 
@@ -2065,6 +2072,17 @@ export class TimelineViewElement extends HTMLElement {
     return Math.max(0, this.layout.totalHeight - this.plotHeight());
   }
 
+  /**
+   * Direction-aware lane-stack scrollability for wheel routing: which way
+   * the stack can actually move right now. Feeding this (rather than the
+   * old bare overflow bit) is what lets a plain vertical wheel scroll an
+   * overflowing stack in place while still handing the page every wheel
+   * the stack cannot use — routeWheel's nested-scroller contract.
+   */
+  private laneScrollability(): LaneScrollable {
+    return { up: this.laneScroll > 0, down: this.laneScroll < this.maxLaneScroll() };
+  }
+
   private clampLaneScroll(): void {
     this.laneScroll = Math.max(0, Math.min(this.laneScroll, this.maxLaneScroll()));
   }
@@ -2673,13 +2691,15 @@ export class TimelineViewElement extends HTMLElement {
     // that axis (e.timeStamp bounds the gesture — WHEEL_GESTURE_GAP_MS of
     // silence ends it). Consume (preventDefault) ONLY when the gesture
     // routes to the chart: a horizontal-locked stream is consumed whole
-    // (its vertical jitter must never creep the page), a vertical-locked
-    // stream — plain vertical wheels included — routes nowhere regardless
-    // of lane overflow, so it reaches the page and scrolls it normally;
+    // (its vertical jitter must never creep the page); a vertical-locked
+    // stream latches lane-stack-vs-page from the stack's scrollability in
+    // the wheel's direction (the nested-scroller contract): with headroom
+    // it scrolls the stack in place, without — at an edge, or no
+    // overflow — it routes nowhere and the page scrolls normally;
     // ctrl/meta zooms and shift pans as per-event routeWheel, outside the
     // lock. (The listener stays {passive: false} so preventDefault
     // remains available for the consumed cases.)
-    const route = this.wheelGesture.route(e, this.maxLaneScroll() > 0, e.timeStamp);
+    const route = this.wheelGesture.route(e, this.laneScrollability(), e.timeStamp);
     if (!route.consumed) return;
     e.preventDefault();
     this.noteInput();
