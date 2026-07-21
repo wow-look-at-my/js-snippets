@@ -1378,6 +1378,130 @@ test('WheelGestureRouter: deltaMode-normalized classification — a line-mode st
   assert.equal(v.route(wheel({ deltaX: -1, deltaMode: 1 }), false, 2016).consumed, false, 'line-mode h jitter inside the v gesture');
 });
 
+// -- Direction-aware lane scrolling (the nested-scroller contract) ----------------
+
+// The LaneScrollable input form: a vertical wheel scrolls an overflowing
+// lane stack IN PLACE while the stack can actually move in the wheel's
+// direction, and passes to the page the moment it cannot — so a tall lane
+// stack is finally wheel-scrollable AND the page stays reachable past it.
+// The legacy boolean form keeps the pinned page-always-wins behavior
+// byte-for-byte (every test above this section runs on it, unchanged).
+
+test('routeWheel: direction-aware lanes — a vertical wheel scrolls the stack while it has headroom that way', () => {
+  // Parked at the top (headroom below): wheel-down scrolls the stack,
+  // wheel-up belongs to the page.
+  assert.deepEqual(routeWheel(wheel({ deltaY: 90 }), { up: false, down: true }), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: 90,
+    consumed: true,
+  });
+  assert.deepEqual(routeWheel(wheel({ deltaY: -90 }), { up: false, down: true }), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: 0,
+    consumed: false,
+  });
+  // Symmetric at the bottom.
+  assert.deepEqual(routeWheel(wheel({ deltaY: -90 }), { up: true, down: false }), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: -90,
+    consumed: true,
+  });
+  assert.deepEqual(routeWheel(wheel({ deltaY: 90 }), { up: true, down: false }), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: 0,
+    consumed: false,
+  });
+  // No headroom at all (a stack that fits): identical to the boolean
+  // form — the page owns every vertical wheel.
+  for (const dy of [90, -90]) {
+    assert.equal(routeWheel(wheel({ deltaY: dy }), { up: false, down: false }).consumed, false);
+  }
+  // The consumed-horizontal route's minor-dy nudge keys off OVERFLOW
+  // (either direction), exactly like the boolean form — clamping owns the
+  // edges inside an already-consumed gesture.
+  assert.deepEqual(routeWheel(wheel({ deltaX: -60, deltaY: 4 }), { up: false, down: true }), {
+    zoomPx: 0,
+    panPx: -60,
+    laneScrollPx: 4,
+    consumed: true,
+  });
+  assert.deepEqual(routeWheel(wheel({ deltaX: -60, deltaY: 4 }), { up: false, down: false }), {
+    zoomPx: 0,
+    panPx: -60,
+    laneScrollPx: 0,
+    consumed: true,
+  });
+});
+
+test('WheelGestureRouter: a v gesture latches lane-vs-page from scrollability at lock time', () => {
+  // Downward headroom at lock time: the WHOLE gesture belongs to the
+  // stack — including after the stack reports its edge mid-gesture
+  // (browser-style scroll latching: no mid-swipe handoff jank; the
+  // element's clamp owns the edge) — and its horizontal jitter is
+  // consumed as lane scroll, never a chart pan.
+  const r = new WheelGestureRouter();
+  let ts = 1000;
+  assert.deepEqual(r.route(wheel({ deltaY: 100 }), { up: false, down: true }, ts), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: 100,
+    consumed: true,
+  });
+  ts += 16;
+  assert.deepEqual(
+    r.route(wheel({ deltaY: 100 }), { up: true, down: false }, ts),
+    { zoomPx: 0, panPx: 0, laneScrollPx: 100, consumed: true },
+    'edge reached mid-gesture: still latched to the stack',
+  );
+  ts += 16;
+  const jitter = r.route(wheel({ deltaX: -12, deltaY: 5 }), { up: true, down: false }, ts);
+  assert.equal(jitter.consumed, true, 'h jitter under the flip floor stays in the lane gesture');
+  assert.equal(jitter.panPx, 0);
+  assert.equal(jitter.laneScrollPx, 5);
+  // After the gesture gap, a fresh wheel-down against the exhausted stack
+  // belongs to the page: the page is always reachable past a tall chart.
+  ts += WHEEL_GESTURE_GAP_MS + 1;
+  assert.deepEqual(r.route(wheel({ deltaY: 100 }), { up: true, down: false }, ts), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: 0,
+    consumed: false,
+  });
+  // And a page-latched gesture never grabs the stack mid-stream, even if
+  // headroom appears under it (a re-layout mid-scroll): latched until the
+  // gap, then the next gesture re-evaluates.
+  ts += 16;
+  assert.equal(r.route(wheel({ deltaY: 100 }), { up: true, down: true }, ts).consumed, false);
+  ts += WHEEL_GESTURE_GAP_MS + 1;
+  assert.equal(r.route(wheel({ deltaY: 100 }), { up: true, down: true }, ts).consumed, true, 'fresh gesture takes the now-scrollable stack');
+});
+
+test('WheelGestureRouter: a FRESH router equals routeWheel on direction-aware inputs too', () => {
+  const scrolls = [
+    { up: false, down: false },
+    { up: true, down: false },
+    { up: false, down: true },
+    { up: true, down: true },
+  ];
+  for (const lanes of scrolls) {
+    for (const deltaY of [-90, -1, 0, 1, 90]) {
+      for (const deltaX of [0, -4, 120]) {
+        const e = wheel({ deltaX, deltaY });
+        const fresh = new WheelGestureRouter();
+        assert.deepEqual(
+          fresh.route(e, lanes, 500),
+          routeWheel(e, lanes),
+          `dx=${deltaX} dy=${deltaY} lanes=${JSON.stringify(lanes)}`,
+        );
+      }
+    }
+  }
+});
+
 // -- Now-line x ------------------------------------------------------------------
 
 test('nowLineX: rock-steady while follow-now pins the view (the wiggle regression)', () => {
