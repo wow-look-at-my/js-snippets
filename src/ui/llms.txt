@@ -636,10 +636,15 @@ is a stream whose jittery minority events are individually
 opposite-dominant; per-event routing leaked them). An 'h' gesture is
 consumed WHOLE: deltaX pans time and the minor vertical component
 nudges the lane stack when it overflows the host — it never creeps the
-page. A 'v' gesture is NEVER consumed, whether or not the lanes
-overflow (no preventDefault, no zoom: the page scrolls normally over
-the chart, its horizontal jitter never pans the chart sideways, and
-the lane stack scrolls by pointer drag or arrow keys instead). A
+page. A 'v' gesture follows the NESTED-SCROLLER contract, latching its
+target from the lane stack's scrollability at lock time: while the
+stack can move in the wheel's direction the whole gesture SCROLLS THE
+STACK in place (consumed, clamped at its edges — browser-style scroll
+latching; drag and arrow keys still scroll it too), and when it cannot
+— already at that edge, or no overflow — NOTHING is consumed for the
+gesture (no preventDefault, no zoom: the page scrolls normally over
+the chart, its horizontal jitter never pans the chart sideways), so
+the page is always reachable past a tall chart. A
 DECISIVE opposite-axis event mid-gesture — beating the locked axis by
 more than WHEEL_AXIS_FLIP_RATIO (2x) with at least
 WHEEL_AXIS_FLIP_MIN_PX (24px) — re-locks on the spot (proportional
@@ -732,24 +737,34 @@ Exports:
     wheelDeltaToPixels(delta, deltaMode, lineHeight?, pageHeight?)
     (deltaMode 0/1/2 → px), zoomFactorForWheel(deltaPx) (exponential,
     composable; ZOOM_PX_PER_DOUBLE px per doubling),
-    routeWheel(WheelInput, lanesOverflow) → WheelRoute {zoomPx, panPx,
-    laneScrollPx, consumed} (the PER-EVENT router — exact for a
+    routeWheel(WheelInput, lanes: LaneScrollInput) → WheelRoute {zoomPx,
+    panPx, laneScrollPx, consumed} (the PER-EVENT router — exact for a
     fresh/isolated event: ctrl/meta = zoom, always consumed; shift =
     time pan; else the DOMINANT axis decides — horizontal-dominant
     (|dx| > |dy|) pans time, consumed, with the minor deltaY nudging
-    lanes only when they overflow; vertical-dominant incl. ties routes
-    NOWHERE regardless of overflow, and consumed=false means DO NOT
-    preventDefault, let the page scroll; deltaMode normalized),
+    lanes only when they overflow; vertical-dominant incl. ties follows
+    the nested-scroller rule with the direction-aware LaneScrollable
+    {up, down} form — consumed with laneScrollPx = dy exactly while the
+    stack can move in dy's direction, else routes NOWHERE — and with the
+    legacy boolean overflow form NEVER consumes vertical wheels;
+    consumed=false means DO NOT preventDefault, let the page scroll;
+    deltaMode normalized), interface LaneScrollable {up, down} + type
+    LaneScrollInput = boolean | LaneScrollable,
     classifyWheel(WheelInput) → WheelClass 'zoom' | 'pan' |
     'passthrough' (the per-event routing decision without magnitudes,
-    normalized the same way; lanesOverflow deliberately has no input — a
-    test-pinned invariant guarantees routeWheel(e, o).consumed ===
-    (classifyWheel(e) !== 'passthrough') for ALL inputs and overflow),
-    class WheelGestureRouter — route(WheelInput, lanesOverflow, ts) →
+    normalized the same way; the lanes input deliberately has no input
+    here — a test-pinned invariant guarantees routeWheel(e, o).consumed
+    === (classifyWheel(e) !== 'passthrough') for every no-headroom o:
+    the boolean form and {up:false, down:false}),
+    class WheelGestureRouter — route(WheelInput, lanes, ts) →
     WheelRoute (the STREAM-level router the element feeds every wheel
     event through: the first decisive unmodified event locks the
     gesture's axis — 'h' consumes every unmodified event, dx pans /
-    overflow-gated dy lane-scrolls; 'v' consumes nothing — until
+    overflow-gated dy lane-scrolls; 'v' latches lane-vs-page from the
+    stack's scrollability at lock time and holds it for the gesture
+    (lane: every event consumed as laneScrollPx, edges clamped by the
+    element; page: nothing consumed — always the verdict for boolean
+    lanes input) — until
     unmodified events pause longer than the gap, or a mid-gesture event
     beats the locked axis by more than WHEEL_AXIS_FLIP_RATIO with at
     least WHEEL_AXIS_FLIP_MIN_PX and re-locks on the spot; ts is the

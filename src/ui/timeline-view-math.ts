@@ -252,6 +252,44 @@ export interface WheelRoute {
 }
 
 /**
+ * Direction-aware lane-stack scrollability: whether the stack can move
+ * up (toward earlier lanes; scroll offset > 0) and/or down (offset <
+ * max) RIGHT NOW. Feeding this — rather than a bare overflow bit — is
+ * what lets a plain vertical wheel scroll an overflowing stack IN PLACE
+ * while still handing the page every wheel the stack cannot use (the
+ * standard nested-scroller contract).
+ */
+export interface LaneScrollable {
+  up: boolean;
+  down: boolean;
+}
+
+/**
+ * routeWheel/WheelGestureRouter's lane-stack input: the legacy boolean
+ * ("lanes overflow" — vertical wheels then NEVER consumed, the pinned
+ * page-scroll-always-wins behavior) or the direction-aware LaneScrollable
+ * form, which additionally lets vertical-dominant wheels scroll the stack
+ * while it can actually move in the wheel's direction.
+ */
+export type LaneScrollInput = boolean | LaneScrollable;
+
+/** Whether the stack overflows at all — gates the minor-dy nudge inside a
+ * consumed horizontal gesture (clamping owns the edges there). */
+function laneOverflows(lanes: LaneScrollInput): boolean {
+  return typeof lanes === 'boolean' ? lanes : lanes.up || lanes.down;
+}
+
+/** Whether the stack can take a vertical delta: moves in dy's direction
+ * with headroom. Always false for the legacy boolean form (vertical
+ * wheels then belong to the page unconditionally) and for a zero dy. */
+function laneCanTake(lanes: LaneScrollInput, dy: number): boolean {
+  if (typeof lanes === 'boolean') return false;
+  if (dy > 0) return lanes.down;
+  if (dy < 0) return lanes.up;
+  return false;
+}
+
+/**
  * Route a wheel/trackpad gesture: ctrl/meta+wheel zooms (always consumed —
  * a pinch stream must never leak browser page-zoom, even on a zero-delta
  * tick); shift+wheel pans time (a vertical wheel pans horizontally);
@@ -260,12 +298,19 @@ export interface WheelRoute {
  * component still nudges the lane stack when it overflows the host (a
  * diagonal two-finger pan moves both axes; the event is consumed either
  * way, so nothing is half-forwarded). Vertical-dominant — ties included —
- * routes NOTHING, whether or not the lanes overflow: a plain vertical
- * wheel belongs to the PAGE (no preventDefault, no zoom, no lane scroll),
- * so page scrolling always works across the chart; the lane stack scrolls
- * by pointer drag or arrow keys instead. (An overflowing lane stack used
- * to capture plain deltaY here, which ate the page's vertical scroll on
- * exactly the busy multi-lane charts that always overflow.)
+ * follows the NESTED-SCROLLER contract when given the direction-aware
+ * LaneScrollable form: the stack takes the wheel (consumed,
+ * laneScrollPx = dy) exactly while it can actually move in the wheel's
+ * direction, and the moment it cannot — at its edge, or no overflow —
+ * the event routes NOTHING and the page scrolls normally, so a tall lane
+ * stack is scrollable in place and the page is always reachable past it.
+ * With the legacy boolean overflow form, vertical-dominant NEVER
+ * consumes, whether or not the lanes overflow — the pinned behavior that
+ * keeps mere overflow from eating page scroll (an overflowing stack once
+ * captured plain deltaY unconditionally, which ate the page's vertical
+ * scroll on exactly the busy charts that always overflow; the
+ * direction-aware form cannot regress into that, because consumption
+ * requires headroom, which scrolling exhausts).
  *
  * This is the PER-EVENT rule — exact for a FRESH/ISOLATED event. A real
  * trackpad swipe is a STREAM of events whose jittery minority are
@@ -273,7 +318,7 @@ export interface WheelRoute {
  * WheelGestureRouter, which applies this rule to a gesture's first
  * decisive event and then holds that axis for the whole stream.
  */
-export function routeWheel(e: WheelInput, lanesOverflow: boolean): WheelRoute {
+export function routeWheel(e: WheelInput, lanes: LaneScrollInput): WheelRoute {
   const dx = wheelDeltaToPixels(e.deltaX, e.deltaMode);
   const dy = wheelDeltaToPixels(e.deltaY, e.deltaMode);
   if (e.ctrlKey || e.metaKey) return { zoomPx: dy, panPx: 0, laneScrollPx: 0, consumed: true };
@@ -281,8 +326,11 @@ export function routeWheel(e: WheelInput, lanesOverflow: boolean): WheelRoute {
     const pan = dy || dx;
     return { zoomPx: 0, panPx: pan, laneScrollPx: 0, consumed: pan !== 0 };
   }
-  if (!(Math.abs(dx) > Math.abs(dy))) return { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false };
-  return { zoomPx: 0, panPx: dx, laneScrollPx: lanesOverflow ? dy : 0, consumed: true };
+  if (!(Math.abs(dx) > Math.abs(dy))) {
+    if (laneCanTake(lanes, dy)) return { zoomPx: 0, panPx: 0, laneScrollPx: dy, consumed: true };
+    return { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false };
+  }
+  return { zoomPx: 0, panPx: dx, laneScrollPx: laneOverflows(lanes) ? dy : 0, consumed: true };
 }
 
 /** The three wheel-routing outcomes, without magnitudes (see classifyWheel). */
@@ -300,12 +348,17 @@ export type WheelClass = 'zoom' | 'pan' | 'passthrough';
  * identically to its pixel-mode equivalent.
  *
  * A readability/test wrapper over routeWheel's `consumed` contract — the
- * pinned invariant (see the test suite): for all e and lanesOverflow o,
+ * pinned invariant (see the test suite): for all e and every lanes input
+ * o that gives the stack no vertical headroom (the legacy boolean form,
+ * or a LaneScrollable with neither direction available),
  * routeWheel(e, o).consumed === (classifyWheel(e) !== 'passthrough').
- * `lanesOverflow` deliberately has NO input here: it only scales
- * laneScrollPx inside an already-consumed horizontal-dominant route and
- * must never influence consumption — an overflowing lane stack capturing
- * plain vertical wheels is exactly the regression this pins out.
+ * The lanes input deliberately has NO input here: mere OVERFLOW must
+ * never influence consumption — an overflowing lane stack capturing
+ * plain vertical wheels unconditionally is exactly the regression this
+ * pins out. (The direction-aware LaneScrollable form consumes vertical
+ * wheels ONLY while the stack has headroom in the wheel's direction —
+ * headroom that scrolling exhausts — which is a scroll TARGET decision,
+ * not the overflow capture: classifyWheel stays the no-headroom table.)
  *
  * Like routeWheel, this describes a FRESH/ISOLATED event only: within a
  * live gesture, WheelGestureRouter's axis lock governs consumption, so a
@@ -358,9 +411,18 @@ export const WHEEL_AXIS_FLIP_MIN_PX = 24;
  *       — dx pans time and dy nudges the lane stack when it overflows
  *       (the per-event horizontal-dominant route, applied stream-wide),
  *       so the incidental vertical component never reaches the page.
- *   'v' (ties included): NOTHING is consumed for the rest of the gesture
- *       — the page scrolls, and a horizontal-jitter event never pans the
- *       chart.
+ *   'v' (ties included): the gesture's TARGET latches from the lane
+ *       stack's scrollability at lock time (routeWheel's nested-scroller
+ *       rule). Stack can move in the initial direction → a LANE-SCROLL
+ *       gesture: every unmodified event is consumed with
+ *       laneScrollPx = dy for the rest of the gesture (the element clamps
+ *       at the edges — hitting an edge mid-swipe does NOT hand the tail
+ *       to the page, exactly the browser's own scroll-latching behavior;
+ *       the NEXT gesture re-evaluates and passes through). Stack cannot
+ *       move that way (at its edge, no overflow, or the legacy boolean
+ *       input) → a PAGE gesture: NOTHING is consumed for the rest of the
+ *       gesture — the page scrolls, and a horizontal-jitter event never
+ *       pans the chart.
  *
  * A gap of more than WHEEL_GESTURE_GAP_MS since the gesture's last
  * unmodified event ends it; the next unmodified event re-classifies
@@ -394,6 +456,16 @@ export const WHEEL_AXIS_FLIP_MIN_PX = 24;
  */
 export class WheelGestureRouter {
   private axis: 'h' | 'v' | null = null;
+  /**
+   * A 'v'-locked gesture's latched target: true = the lane stack (every
+   * unmodified event consumed, laneScrollPx = dy, the element clamps at
+   * edges), false = the page (nothing consumed). Latched from
+   * scrollability when the 'v' lock is taken — at gesture start or on a
+   * decisive flip — and held for the whole gesture, so a stack that hits
+   * its edge mid-swipe never janks the tail into page scroll; the next
+   * gesture re-evaluates against fresh scrollability.
+   */
+  private vLane = false;
   private lastTs = -Infinity;
 
   /**
@@ -402,22 +474,29 @@ export class WheelGestureRouter {
    * semantics — `consumed` is the preventDefault contract — are
    * unchanged from routeWheel.
    */
-  route(e: WheelInput, lanesOverflow: boolean, ts: number): WheelRoute {
-    if (e.ctrlKey || e.metaKey || e.shiftKey) return routeWheel(e, lanesOverflow);
+  route(e: WheelInput, lanes: LaneScrollInput, ts: number): WheelRoute {
+    if (e.ctrlKey || e.metaKey || e.shiftKey) return routeWheel(e, lanes);
     const dx = wheelDeltaToPixels(e.deltaX, e.deltaMode);
     const dy = wheelDeltaToPixels(e.deltaY, e.deltaMode);
     if (dx === 0 && dy === 0) return { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false };
     if (this.axis === null || ts - this.lastTs > WHEEL_GESTURE_GAP_MS) {
-      // Fresh gesture: the per-event dominant-axis rule locks the stream.
+      // Fresh gesture: the per-event dominant-axis rule locks the stream,
+      // and a 'v' lock latches its target (lane stack vs page) from the
+      // stack's CURRENT scrollability in the initial direction.
       this.axis = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
+      if (this.axis === 'v') this.vLane = laneCanTake(lanes, dy);
     } else if (this.axis === 'h' && Math.abs(dy) > WHEEL_AXIS_FLIP_RATIO * Math.abs(dx) && Math.abs(dy) >= WHEEL_AXIS_FLIP_MIN_PX) {
       this.axis = 'v';
+      this.vLane = laneCanTake(lanes, dy);
     } else if (this.axis === 'v' && Math.abs(dx) > WHEEL_AXIS_FLIP_RATIO * Math.abs(dy) && Math.abs(dx) >= WHEEL_AXIS_FLIP_MIN_PX) {
       this.axis = 'h';
     }
     this.lastTs = ts;
-    if (this.axis === 'v') return { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false };
-    return { zoomPx: 0, panPx: dx, laneScrollPx: lanesOverflow ? dy : 0, consumed: true };
+    if (this.axis === 'v') {
+      if (this.vLane) return { zoomPx: 0, panPx: 0, laneScrollPx: dy, consumed: true };
+      return { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false };
+    }
+    return { zoomPx: 0, panPx: dx, laneScrollPx: laneOverflows(lanes) ? dy : 0, consumed: true };
   }
 }
 
