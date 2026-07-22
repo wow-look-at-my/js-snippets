@@ -43,7 +43,7 @@ import * as mat4 from 'https://sites.pazer.build/js-snippets/branch/library/math
 | `webgpu/hdr-loader.js` | Parses Radiance RGBE (`.hdr`) files with RLE support. Returns `rgba32float` pixel data. |
 | `webgpu/mip-generator.js` | AMD Single Pass Downsampler — generates a full mip chain in two compute dispatches. |
 | `webgpu/env-prefilter.js` | IBL environment map prefiltering with GGX importance sampling for PBR split-sum. |
-| `webgpu/geometry.js` | Procedural mesh generators: cube, sphere, cylinder, plane. |
+| `webgpu/geometry.js` | Procedural mesh generators: cube, box, sphere, cylinder, plane, torus. All wind CCW viewed from outside; `flipWinding` for interiors/mirrored draws. |
 | `webgpu/buffer.js` | GPU buffer creation helper with `mappedAtCreation`. |
 | `webgpu/context.js` | WebGPU device + canvas context initialization. |
 | `webgpu/sky.js` | Equirectangular HDRI sky renderer with Reinhard tonemapping. |
@@ -75,7 +75,9 @@ The build also emits a TypeScript declaration sibling for every module — `dist
 
 ## Deploy
 
-CI runs on every push (`.github/workflows/deploy.yml`). Every push publishes `dist/` to buildhost sites: `master` → the stable `library` site (the base URL above), any other branch → `library-<branch>` for pre-merge verification. The legacy GitHub Pages site serves frozen 2026-07-15 content (the org Actions artifact quota killed its deploys).
+CI runs on every push (`.github/workflows/deploy.yml`). Every push publishes `dist/` to buildhost sites: `master` → the stable `library` site (the base URL above), any other branch → `library-<branch>` for pre-merge verification.
+
+The legacy GitHub Pages site was unpublished 2026-07-20 in the org-wide GitHub Pages shutdown; buildhost is the only host. The `github.io` origin is dead — do not import from or reintroduce it.
 
 Branches that touch the timeline chart (`src/ui/`) or `showcase/` also publish a live single-file demo of `<timeline-view>` (fake local data, every visual looping) to buildhost: `https://sites.pazer.build/js-snippets/branch/<branch>/` (`/` in branch names flattened to `-`). The preview is private/token-gated by operator decision — do not add `public: 'true'` to the publish step. Build it locally with `pnpm build:showcase` → `showcase/dist/index.html`.
 
