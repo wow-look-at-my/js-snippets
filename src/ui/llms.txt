@@ -409,6 +409,9 @@ Element <timeline-view> — data API (properties/methods, never attributes):
   mergeData(data)   — merge into the current set: lanes/intervals dedupe by
     id (intervals replace in place), connectors by (from, to, kind),
     markers by (time, label, kind). How loadRange results are supplied.
+    Re-layout is COALESCED to one rAF (like drawing): a burst of merges —
+    or a backlog flushed on tab wake — costs one O(N) rebuild per frame,
+    not one per call, so it's safe to hammer without freezing the page.
   setLanes(lanes) / setIntervals(intervals) / setConnectors(connectors) /
   setMarkers(markers) — replace one slice of the data.
   clear()           — drop everything.
