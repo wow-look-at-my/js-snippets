@@ -99,8 +99,13 @@
  * stops padding its lane once off-screen; height changes tween ~150ms,
  * honoring prefers-reduced-motion).
  *
- * Cheap by construction: draws only when dirty (one rAF at a time), and a
- * rAF loop runs only while something on screen actually moves — follow-now
+ * Cheap by construction: draws only when dirty (one rAF at a time), and
+ * data ingest coalesces the same way — mergeData/setData/setLanes/
+ * setIntervals mark the layout dirty and re-lay-out ONCE on the next rAF
+ * (scheduleRebuild), so a consumer hammering mergeData in a loop, or a
+ * backlog of deltas flushed on tab wake, pays one O(N) rebuild per frame
+ * instead of one per call. A rAF loop runs only while something on screen
+ * actually moves — follow-now
  * scroll, visible ongoing bars, tweens/gestures — and the element is
  * visible; a parked static chart schedules nothing and draws nothing.
  * While animating, frames are paced adaptively — full rate while
@@ -734,6 +739,10 @@ export class TimelineViewElement extends HTMLElement {
   private patternCache = new Map<string, CanvasPattern>();
 
   private raf = 0;
+  // Coalesced rebuild: data-ingest marks layout dirty and schedules ONE
+  // rebuild() per animation frame rather than re-laying-out synchronously per
+  // call (0 = none scheduled). See scheduleRebuild.
+  private rebuildRaf = 0;
   private dirty = false;
   // Due timestamp of the next clock-paced draw — the even-spacing grid
   // used while the only motion is clock-driven and slower than the tier
@@ -874,6 +883,10 @@ export class TimelineViewElement extends HTMLElement {
     this.syncScrollLock(); // an already-fullscreen element locks on (re)connect
     this.resizeBackingStore();
     this.syncChrome();
+    // A rebuild coalesced-but-pending at disconnect was parked; if we hold
+    // data, re-lay-out on reconnect so a moved element never shows stale
+    // layout (a fresh connect with no data is a cheap no-op).
+    if (this.byId.size > 0) this.scheduleRebuild();
     this.invalidate();
   }
 
@@ -910,6 +923,10 @@ export class TimelineViewElement extends HTMLElement {
     if (this.raf !== 0) {
       cancelAnimationFrame(this.raf);
       this.raf = 0;
+    }
+    if (this.rebuildRaf !== 0) {
+      cancelAnimationFrame(this.rebuildRaf);
+      this.rebuildRaf = 0;
     }
     this.clockDrawDue = 0;
     // Park any in-flight minimap rebuild; a reconnect's first frame
@@ -1135,7 +1152,7 @@ export class TimelineViewElement extends HTMLElement {
       this.markers.sort((a, b) => a.time - b.time);
     }
     if (data.coverage) this.coverage.addCovered(toMs(data.coverage.start), toMs(data.coverage.end));
-    this.rebuild();
+    this.scheduleRebuild();
     // Every delivery proves the feed is alive — stamp freshness (and exit
     // stale mode; a full setData mid-stale is the documented resync path).
     this.markFresh();
@@ -1208,7 +1225,7 @@ export class TimelineViewElement extends HTMLElement {
     this.mmTexDirty = true;
     this.mmPendingNew.length = 0;
     for (const iv of intervals) this.ingestInterval(iv);
-    this.rebuild();
+    this.scheduleRebuild();
   }
 
   setConnectors(connectors: TimelineConnector[]): void {
@@ -1432,6 +1449,28 @@ export class TimelineViewElement extends HTMLElement {
    * heights come from the VISIBLE window (updateVisibleLayout), so a
    * historical parallelism burst stops padding its lane once off-screen.
    */
+  /**
+   * Coalesce rebuild() to ONE run per animation frame. Every data-ingest
+   * path (mergeData / setData / setLanes / setIntervals) marks the layout
+   * dirty via this instead of re-laying-out synchronously — so a consumer
+   * feeding a BURST of merges pays a single O(N) rebuild on the next frame,
+   * not one per call (the per-merge rebuild is the historical "5s merge
+   * spike"; 6k merges in one task froze a real dashboard for 15s). rAF is
+   * parked while the tab is backgrounded, so a backlog buffered while hidden
+   * collapses into a single rebuild on foreground instead of freezing the
+   * main thread when it flushes. The draw is already coalesced the same way
+   * (invalidate → dirty → one rAF); this gives the layout the same treatment.
+   * No caller reads layout synchronously after ingest — the draw, hit-tests,
+   * and minimap all read it on the frame, after this runs.
+   */
+  private scheduleRebuild(): void {
+    if (this.rebuildRaf !== 0) return;
+    this.rebuildRaf = requestAnimationFrame(() => {
+      this.rebuildRaf = 0;
+      this.rebuild();
+    });
+  }
+
   private rebuild(): void {
     // Re-sort only lanes that actually fell out of (start, id) order: a
     // live merge APPENDS near-now intervals, leaving most lanes already
