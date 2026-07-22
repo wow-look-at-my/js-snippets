@@ -77,7 +77,9 @@ The build also emits a TypeScript declaration sibling for every module — `dist
 
 ## Deploy
 
-CI runs on every push (`.github/workflows/deploy.yml`). Every push publishes `dist/` to buildhost sites: `master` → the stable `library` site (the base URL above), any other branch → `library-<branch>` for pre-merge verification. The legacy GitHub Pages site was unpublished 2026-07-20 and is dead — do not import from or reintroduce the `github.io` origin.
+CI runs on every push (`.github/workflows/deploy.yml`). Every push publishes `dist/` to buildhost sites: `master` → the stable `library` site (the base URL above), any other branch → `library-<branch>` for pre-merge verification.
+
+The legacy GitHub Pages site was unpublished 2026-07-20 in the org-wide GitHub Pages shutdown; buildhost is the only host. The `github.io` origin is dead — do not import from or reintroduce it.
 
 Branches that touch the timeline chart (`src/ui/`) or `showcase/` also publish a live single-file demo of `<timeline-view>` (fake local data, every visual looping) to buildhost: `https://sites.pazer.build/js-snippets/branch/<branch>/` (`/` in branch names flattened to `-`). The preview is private/token-gated by operator decision — do not add `public: 'true'` to the publish step. Build it locally with `pnpm build:showcase` → `showcase/dist/index.html`.
 

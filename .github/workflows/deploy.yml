@@ -63,8 +63,9 @@ jobs:
       # mechanism) opens just these library site branches for anonymous
       # reads — consumers (the webhook-runner dashboard) import the
       # component at runtime with no credential, exactly like the old
-      # github.io URL. The legacy GitHub Pages site keeps serving its
-      # frozen 2026-07-15 content — nothing is deleted here.
+      # github.io URL. The legacy GitHub Pages site was unpublished on
+      # 2026-07-20 in the org-wide GitHub Pages shutdown — these buildhost
+      # sites are now the library's only host.
       - name: Library site name
         id: sitename
         uses: wow-look-at-my/actions@typescript#latest
