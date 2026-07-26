@@ -14,6 +14,9 @@ permissions:
   # part of publishing rather than a separate best-effort step, so a publish
   # now FAILS without this rather than skipping the recording.
   artifact-metadata: write
+  # Same story, one step further along the same publish chain: registering
+  # the publish as a GitHub Deployment is also part of publishing now.
+  deployments: write
 
 env:
   COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
@@ -112,6 +115,7 @@ jobs:
       actions: read
       checks: read
       artifact-metadata: write
+      deployments: write
     steps:
       - uses: actions/checkout@v4
         with:
