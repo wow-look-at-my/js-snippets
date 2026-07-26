@@ -98,6 +98,105 @@ cost; only FadeTextPainter touches a canvas. Generic — no timeline types;
 
 Types: MeasureText, FittedText, FitTieredOptions
 
+### ui/markdown.js
+Markdown -> DOM renderer for untrusted prose (a PR description, an issue
+body, a comment). Parsing is micromark via mdast-util-from-markdown with GFM
+on, so coverage is real CommonMark + tables, task lists, strikethrough and
+literal autolinks — nested lists nest, a destination with balanced parens
+survives whole. Rendering builds elements with createElement/createTextNode
+and textContent only.
+
+There is NO HTML string anywhere in the pipeline: source -> mdast -> DOM. So
+there is also no innerHTML and no sanitizer to configure — the usual "render
+to HTML, then scrub the HTML" round trip, and every mis-scrub bug that comes
+with it, does not exist here. Safety instead lives in ui/markdown-parse.js's
+sanitizeTree, which runs on the tree before any node reaches this walker:
+raw HTML becomes literal text, and unsafe link/image URLs lose their link.
+This module is therefore mechanical — it maps node types to elements and
+cannot reintroduce either problem.
+
+Images render as their alt text linked to the source, NOT loaded, because
+fetching a remote image named by untrusted markdown leaks the reader's IP and
+referrer to whoever wrote it; opt in with renderImages for markdown you
+trust. Re-exports everything from ui/markdown-parse.js so one import is
+enough.
+
+Cost: the micromark/mdast payload is ~37 KB gzipped, code-split into its own
+chunk that only these two modules import — nothing else in the library pays
+for it. Want different output (a framework's virtual DOM, linked #123
+references, custom table markup)? Walk parseMarkdown()'s mdast tree yourself
+rather than post-processing these elements.
+
+  import { renderMarkdown } from '.../ui/markdown.js';
+  const el = renderMarkdown(pr.body, { headingOffset: 2 });
+  if (el) host.appendChild(el);   // null === nothing to show
+
+Exports:
+  renderMarkdown(source, options?: RenderMarkdownOptions) → HTMLElement | null
+    A fresh container div, or null when source is absent/empty/whitespace —
+    so a caller can tell "no content" from "content that rendered to
+    nothing" and show its own empty state.
+
+Elements produced: p, h1-h6, ul/ol/li (ordered lists carry `start` when it
+  is not 1), blockquote, pre>code (code[data-lang] when the fence names a
+  language), strong, em, del, a, img (only with renderImages), hr, br,
+  table>thead/tbody>tr>th/td (cells carry style.textAlign from the column
+  alignment), and a disabled checkbox input for a GFM task item.
+  Footnotes and link definitions render nothing.
+
+Options (RenderMarkdownOptions), all optional:
+  classPrefix (default 'md') — root class, plus <prefix>-code on the code
+    block's <pre>, <prefix>-task on a task checkbox, <prefix>-table on a
+    table. Nothing else is classed; style by element.
+  headingOffset (default 0) — added to every heading level, clamped to
+    h1..h6. Pass a positive offset when the page owns its own headings: a
+    description's '# Title' is a section of that description and should not
+    outrank the page's real heading.
+  linkTarget (default '_blank', null for same-tab) — when set, rel is
+    'noopener noreferrer' too; never hand an untrusted link a live opener.
+  renderImages (default false) — emit real <img> instead of a link.
+  document (default globalThis.document) — render into another document.
+
+### ui/markdown-parse.js
+The renderer's pure half: markdown text -> a SAFE mdast tree. No DOM
+(unit-tested under node). Parsing is micromark's job; this module's job is
+the step after, and it is the safety boundary — everything it guarantees
+holds for ui/markdown.js's output too, because the walker only ever sees a
+sanitized tree.
+
+Two things make untrusted markdown dangerous, and both are closed in the
+tree: CommonMark says `<script>alert(1)</script>` in the source IS html (and
+mdast faithfully reports an `html` node), and `[x](javascript:alert(1))` is a
+perfectly well-formed link whose danger is entirely its URL.
+
+Exports:
+  parseMarkdown(source) → Root | null
+    A GFM mdast Root, already sanitized. null for absent/empty/whitespace-
+    only input, or a tree with no content.
+  sanitizeTree(tree) → Root
+    Rewrites in place; idempotent. `html` nodes become `text` nodes carrying
+    the same characters (nothing is dropped — the reader sees exactly what
+    the author typed, as text). link/image URLs go through safeHref: a
+    refused link is REPLACED BY ITS OWN CHILDREN, so its visible label
+    survives unlinked, and a refused image becomes its alt text. Reference-
+    style links/images whose definition is refused are flattened the same
+    way — the destination lives in a separate node, so a check that only
+    looked at `link` nodes would miss them entirely.
+  safeHref(raw) → string | null
+    The href to use, or null if it must not become a link. Absolute URLs
+    only on http/https/mailto; relative URLs (including protocol-relative
+    '//host/path') have no scheme of their own and pass through. Scheme
+    detection is the URL parser's, not a string match, so the usual evasions
+    are already handled: it lowercases the scheme and strips leading
+    whitespace and embedded tab/newline/CR, making 'JaVaScRiPt:',
+    ' javascript:' and 'java<TAB>script:' all resolve to javascript: and be
+    refused.
+  markdownToText(source) → string
+    Plain-text flattening for a tooltip or one-line summary: markup removed,
+    block-level nodes newline-separated. Pure — no DOM.
+
+Types: re-exports mdast's Root, Nodes, RootContent.
+
 ### ui/perf-graph.js
 Compact, stackable, canvas-rendered performance graph as a <perf-graph>
 custom element. One element = one scrolling metric strip (frame time, fps,

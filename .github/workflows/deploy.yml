@@ -10,6 +10,10 @@ permissions:
   # head commit's check runs — it FAILS CLOSED without these two reads.
   actions: read
   checks: read
+  # buildhost#193 made recording an upload on the org's linked artifacts page
+  # part of publishing rather than a separate best-effort step, so a publish
+  # now FAILS without this rather than skipping the recording.
+  artifact-metadata: write
 
 env:
   COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
@@ -103,10 +107,11 @@ jobs:
       id-token: write # buildhost OIDC auth
       contents: read
       # Job-level permissions REPLACE the workflow-level block, so the
-      # publish guard's two reads (see the workflow-level comment) must be
-      # re-granted here too.
+      # publish guard's two reads and the recording write (see the
+      # workflow-level comments) must all be re-granted here too.
       actions: read
       checks: read
+      artifact-metadata: write
     steps:
       - uses: actions/checkout@v4
         with:
