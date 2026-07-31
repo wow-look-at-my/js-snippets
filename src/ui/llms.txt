@@ -1,3 +1,89 @@
+### ui/activity-feed.js
+Filterable activity/event log table as an <activity-feed> custom element.
+One element = one feed of timestamped, kinded events. It renders the rows
+and owns the filtering UI: a free-text query plus severity toggle chips
+(optionally family chips) with live counts, a "showing N of M" readout and
+a clear-filter button. Dependency-free; re-exports ui/activity-feed-math.js
+so one import serves both.
+
+COLOR IS DERIVED, NEVER ENUMERATED: severity comes from the ACTION half of
+a dotted kind ("manager.inbox_dropped" -> bad) and tints the badge pill;
+family comes from the NAMESPACE half and picks a stable hue for the badge's
+leading dot. A kind the producer adds tomorrow is styled the first time it
+appears — a stylesheet enumerating known kinds drifts silently, and
+everything unlisted shares one grey.
+
+Entry text is rendered as TEXT NODES, never innerHTML, so producer strings
+cannot inject markup; `messageRenderer` is the opt-in hook for richer
+message DOM (the consumer owns that DOM's safety).
+
+  <activity-feed empty-text="Nothing yet." storage-key="app.activity"
+                 family-chips placeholder="filter activity...">
+    <p>loading activity...</p>   <!-- light DOM: shown until upgrade -->
+  </activity-feed>
+
+Properties (all settable BEFORE the module loads — connectedCallback
+performs the standard property upgrade, so a consumer script that ran first
+never loses its values):
+  entries: ActivityEntry[]        rows, rendered in the given order
+  messageRenderer: (message, entry) => Node | string | null
+  timeFormatter: (time, entry) => string   (default: locale date-time)
+  familyAliases: Record<string,string>     e.g. {hooks: 'hook'}
+  columns: Partial<ColumnLabels>           {time, kind, message} headings
+  emptyText / storageKey / familyChips     mirror the attributes
+  filter: StoredFilter                     get/set the whole filter
+  clearFilter()                            drop query + every facet
+
+Attributes: empty-text, storage-key (localStorage key for the filter;
+unset = no persistence), family-chips (boolean), placeholder.
+
+Event: `activity-filter-change` (bubbles, composed) — detail is the
+StoredFilter; fired on every query/chip/clear change, never on data
+changes.
+
+Theme via --activity-* custom properties (activity-feed.css), which fall
+back to generic --fg/--muted/--border/--panel/--accent plus
+--failure/--running/--success/--skipped, so a host that already defines a
+status palette needs no configuration.
+
+Exports: class ActivityFeedElement, familyHue(family) -> number (0..359,
+stable per name), types MessageRenderer, ColumnLabels — plus everything
+from ui/activity-feed-math.js.
+
+### ui/activity-feed-math.js
+The feed's pure half. No DOM (unit-tested under node).
+
+Exports:
+  SEVERITIES — ['bad','warn','skip','good','info'], loudest-first (the
+    chip order).
+  SEVERITY_RULES — ordered [severity, RegExp] pairs matched against the
+    action half, FIRST match wins. The order is load-bearing:
+    'hook.disabled_rejected' must be bad (not warn on "disabled") and
+    'reload.unverified' must be warn (not good on "verified").
+  severityOf(kind) -> Severity — anything unclaimed is 'info' (ordinary
+    lifecycle chatter). Degenerate kinds ('', no dot, undefined) -> 'info'.
+  familyOf(kind, aliases?) -> string — the namespace half; `aliases` folds
+    spellings ({hooks:'hook'}). Explicitly a map, not automatic plural
+    stripping, which would turn the ordinary family 'status' into 'statu'.
+  messageOf(entry) / timeOf(entry) — the message (accepts `message` or the
+    `msg` alias) and epoch ms (NaN when absent/unparseable).
+  matchesQuery(entry, query) -> boolean — case-insensitive over kind,
+    message and field VALUES; whitespace-separated terms are ANDed.
+  selectEntries(entries, filter?) -> FeedSelection — { shown,
+    severityCounts, familyCounts, hiddenCount }. Counts cover the WHOLE
+    input (a chip must keep showing what it hides) while `shown` is what
+    survives every facet; input order is preserved.
+  isFiltering(filter?) -> boolean — is the feed actually narrowed
+    (whitespace-only queries are not).
+  toStoredFilter(filter?) / parseStoredFilter(raw) -> StoredFilter —
+    stable sorted {query, hiddenSeverities, hiddenFamilies} for
+    persistence and the change event; parsing degrades to "no filter" on
+    anything malformed rather than throwing.
+  formatTimestamp(value) -> string — locale date-time; '' for a
+    missing/unparseable time, so a row never shows "Invalid Date".
+
+Types: ActivityEntry, Severity, FeedFilter, FeedSelection, StoredFilter
+
 ### ui/canvas-text.js
 Responsive multi-tier canvas text with alpha-fade truncation. A label is an
 ordered list of TIERS, fullest → most compact; the largest tier that fits
