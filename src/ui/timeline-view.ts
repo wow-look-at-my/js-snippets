@@ -369,6 +369,9 @@ interface ResolvedStyle {
 const LAYOUT_TWEEN_MS = 150; // lane-height ease on visible-track-count AND fit-height change
 const AXIS_H = 22;
 const LANE_LABEL_MIN_PX = 10; // below this lane height the gutter label is tooltip-only
+// Floor for the compact-lane label font. Also the bottom of the range the
+// cold surface warms, so keep the two together.
+const LANE_LABEL_MIN_FONT_PX = 7;
 const HIT_MIN_W = 9; // widened hit target for instants (px)
 const CONNECTOR_TOL = 4;
 const CLICK_SLOP = 4;
@@ -3388,12 +3391,19 @@ export class TimelineViewElement extends HTMLElement {
       // that for the axis ticks and every lane label inside the first REAL
       // draw is what pushed that frame to 9-10 ms. A cold frame that has
       // nothing else to do is exactly where it belongs.
-      ctx.font = this.fontBar;
+      // Every size a lane label can be drawn at, not just the base one: a
+      // compact lane picks its font from its own height, so the first draw
+      // that lands with lanes at mixed heights shapes glyphs at several sizes
+      // at once (measured: drawLanes 8 ms on that one frame).
       ctx.textBaseline = 'middle';
-      ctx.measureText('0123456789:.-/{}_ abcdefghijklmnopqrstuvwxyz');
-      ctx.measureText('ABCDEFGHIJKLMNOPQRSTUVWXYZ\u21d0\u21d2\u2026');
-      ctx.fillStyle = t.bg; // paint one warm glyph offscreen-left, invisible
-      ctx.fillText('0', -100, -100);
+      ctx.fillStyle = t.bg; // paint warm glyphs offscreen-left, invisible
+      for (let fs = LANE_LABEL_MIN_FONT_PX; fs <= t.fontSize; fs++) {
+        ctx.font = `${fs}px ${t.font}`;
+        ctx.measureText('0123456789:.-/{}_ abcdefghijklmnopqrstuvwxyz');
+        ctx.measureText('ABCDEFGHIJKLMNOPQRSTUVWXYZ\u21d0\u21d2\u2026');
+        ctx.fillText('0', -100, -100);
+      }
+      ctx.font = this.fontBar;
       this.dirty = true;
       this.schedule();
       return;
@@ -3972,7 +3982,8 @@ export class TimelineViewElement extends HTMLElement {
       // height, so adjacent lanes' labels can never overlap.
       if (lh >= LANE_LABEL_MIN_PX && top + lh / 2 > AXIS_H + 4 && top + lh / 2 < h - 2) {
         const full = lh >= t.fontSize + 5;
-        const fs = full ? t.fontSize : Math.max(7, Math.min(t.fontSize - 2, Math.floor(lh - 3)));
+        const fs = full ? t.fontSize
+          : Math.max(LANE_LABEL_MIN_FONT_PX, Math.min(t.fontSize - 2, Math.floor(lh - 3)));
         const charW = full ? this.charW : (this.charW * fs) / t.fontSize;
         this.measureCharW = charW;
         // fitTieredText measures text, which is the dearest thing a frame
