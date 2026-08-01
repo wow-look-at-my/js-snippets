@@ -75,3 +75,100 @@ main code {
 	--timeline-cat-lightness: 0.55;
 	--timeline-cat-chroma: 0.12;
 }
+
+/* -- Gallery chrome ---------------------------------------------------------
+ *
+ * The page grew from one timeline demo into a gallery, so `main` is no
+ * longer a single flexed chart: sections stack and the page scrolls. Only
+ * the timeline section keeps the "fill the viewport" behaviour it needs to
+ * be usable — every other component sizes to its content.
+ */
+main {
+	overflow-y: auto;
+}
+main section {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding-bottom: 20px;
+	border-bottom: 1px solid rgba(200, 205, 216, 0.1);
+}
+main section:last-child {
+	border-bottom: 0;
+}
+/* Only the chart stretches; the tables and feeds are content-sized. */
+#timeline-view {
+	flex: 1;
+	min-height: 520px;
+}
+main section h2 {
+	margin: 16px 0 0;
+	font-size: 14px;
+	color: #e8ecf4;
+	scroll-margin-top: 12px;
+}
+main section h3 {
+	margin: 12px 0 0;
+	font-size: 12px;
+	font-weight: 600;
+	color: #9aa3b2;
+}
+main section .hint {
+	margin: 0;
+	color: #6b7280;
+	font-size: 11px;
+	max-width: 90ch;
+	line-height: 1.5;
+}
+.toc {
+	display: flex;
+	gap: 12px;
+	margin-top: 6px;
+	font-size: 11px;
+}
+.toc a {
+	color: #7aa2f7;
+	text-decoration: none;
+}
+.toc a:hover {
+	text-decoration: underline;
+}
+/* Light-DOM placeholder: visible until the element upgrades, so a broken
+   component reads as "loading", not as a blank gap. */
+.loading {
+	margin: 0;
+	color: #6b7280;
+	font-size: 11px;
+	font-style: italic;
+}
+.click-readout {
+	margin: 0;
+	color: #9aa3b2;
+	font-size: 11px;
+	font-family: inherit;
+}
+
+/* The demo tables and feeds inherit the page palette through the shadow
+   boundary: the components read --table-*/--activity-*, each falling back
+   to these generics, so theming them is setting five variables once. */
+data-table,
+activity-feed {
+	--fg: #e8ecf4;
+	--muted: #6b7280;
+	--border: rgba(200, 205, 216, 0.14);
+	--panel: #11141b;
+	--accent: #7aa2f7;
+	--failure: #f85149;
+	--running: #d29922;
+	--success: #3fb950;
+	--skipped: #a371f7;
+	--pending: #6b7280;
+	display: block;
+	font-size: 12px;
+}
+
+/* NOTE: the demo's status cells are rendered INSIDE the component's shadow
+   root, so no rule in this file can reach them — that styling is passed in
+   through the element's styleText hatch (see data-table-demo.ts). What the
+   page CAN do from out here is set the custom properties above, because
+   those inherit through the boundary. */

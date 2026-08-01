@@ -31,6 +31,22 @@ src/
 │                            noise / sampling / gaussian-kernel)
 ├── ui/
 │   ├── llms.txt           ← docs for ui modules
+│   ├── data-table-math.ts ← pure table logic: column value/text resolution,
+│   │                        blank-last comparison, stable sort, the
+│   │                        asc→desc→unsorted cycle, multi-group facet
+│   │                        selection, stored-filter parse/serialize
+│   ├── data-table-math.test.ts ← colocated node:test tests for the math
+│   ├── data-table.ts      ← <data-table> custom element (declarative
+│   │                        filterable/sortable table; re-exports the math)
+│   ├── data-table.css     ← its shadow-DOM styles (text import)
+│   ├── activity-feed-math.ts ← pure feed logic: severity/family derivation
+│   │                        from a dotted kind, query + facet selection
+│   ├── activity-feed-math.test.ts ← colocated node:test tests for the math
+│   ├── activity-feed.ts   ← <activity-feed> custom element — a THIN WRAPPER
+│   │                        over <data-table> (three columns + the kind
+│   │                        badge); no table logic of its own
+│   ├── activity-feed.css  ← its shadow-DOM styles, passed INTO the inner
+│   │                        table via that element's styleText escape hatch
 │   ├── markdown.ts        ← markdown -> DOM renderer (re-exports markdown-parse)
 │   ├── markdown-parse.ts  ← its pure half: micromark/GFM -> mdast + the
 │   │                        sanitizeTree safety transform + safeHref
@@ -92,11 +108,13 @@ src/
 │   ├── *.test.ts          ← colocated node:test tests (program / mesh / fbo)
 │   └── shaders/
 │       └── fullscreen.vert.glsl
-showcase/                  ← timeline-view demo page (its own nested ts0 project — NOT part of the library build; see "Showcase")
+showcase/                  ← the COMPONENT GALLERY: one section per DOM-bound ui/ component, published per branch. Its own nested ts0 project — NOT part of the library build; see "Showcase"
 ├── ts0.json               ← single-HTML-file target (entry index.html → dist/index.html; esbuild loader override for the .css text import)
-├── index.html             ← page shell (title bar + two <timeline-view>s)
-├── main.ts                ← wiring: styles/legend/tooltip + the live feed
-├── fake-data.ts           ← deterministic fake-run generator (pure fn of absolute time)
+├── index.html             ← page shell: header + table of contents + one <section> per component
+├── main.ts                ← gallery entry: adopts page.css, mounts the static sections, owns the live <timeline-view> feed
+├── data-table-demo.ts     ← <data-table> section (three instances: full / minimal / filtered-to-nothing)
+├── activity-feed-demo.ts  ← <activity-feed> section (kinds the severity rules know, and kinds they do not)
+├── fake-data.ts           ← deterministic fake-run generator (pure fn of absolute time) + mulberry32, shared by every section
 ├── page.css               ← page chrome (adopted from main.ts as a text import)
 └── assets.d.ts            ← ambient *.css/*.wgsl/*.glsl decls for the nested project's own type-check
 llms-header.txt            ← preamble for combined llms.txt
@@ -145,26 +163,63 @@ Conventions:
 - Each test file uses `import { test } from 'node:test'` + `import assert from 'node:assert/strict'`, imports the **source** module directly with the `.ts` extension (e.g. `import { … } from './mat4.ts'`), and uses `import type { … }` for type-only symbols — Node's strip-types loader elides `import type` but would fail to import a type as a value at runtime.
 - Source modules import sibling modules with the `.ts` extension on **value** imports (e.g. `import { lookAt } from '../math/mat4.ts'`) and `import type` for type-only ones. Both esbuild (the build) and Node's runtime ESM resolver accept this; an extensionless **value** import resolves under esbuild but NOT under `node --test`, so keep the extension.
 - Pure/algorithmic modules are unit-tested here; several tests are ports of the proven `smoke.mjs` oracles from the `scratch` repo (`sdf` from distance-field-shadows, `gaussian-kernel` from local-contrast).
-- **DOM/fetch/GPU-bound modules are NOT unit-tested under node** — `webgpu/shaders.ts`, `webgpu/canvas.ts`, `webgpu/context.ts`, `webgpu/buffer.ts`, `webgpu/sky.ts`, `webgpu/mip-generator.ts`, `webgpu/env-prefilter.ts`, `webgpu/hdr-loader.ts`, `webgl2/video-texture.ts`, `webgl2/fullscreen.ts` (its `.glsl` import also only resolves under the build's text loader, not `node --test`), `editor/code-editor.ts`, and `auto-refresh/` need a real browser/GPU, so they're left to manual/integration testing. Modules mixing pure + bound code are split: `webgpu/camera.ts` tests `orbitEye`/`dirFromAzEl`/`applyLookDrag` but not the DOM-bound controllers; `webgpu/fly-camera.ts` tests `flyMoveDelta`/`dollyDelta` but not `createFlyController`; `webgl2/program.ts` tests `annotateShaderLog` and `injectChunk`; `webgl2/mesh.ts` tests `chooseIndexArray`; `webgl2/fbo.ts` tests `makePingPong` but not the GL-bound `createFloatFbo`/`createPingPong`; `webgpu/scan.ts` splits its pure half into `webgpu/scan-plan.ts` (planScan level math, tested incl. a plan-driven JS emulation of the WGSL) because scan.ts's own `.wgsl` import cannot load under node — the GPU wrapper (`createScan`) is covered by consumer browser harnesses; `ui/perf-graph.ts` is DOM/canvas-bound (the `<perf-graph>` element), so its logic lives in `ui/perf-graph-math.ts` (ring buffer / stats / range / ticks / binning / formatting), which is its fully node-tested pure half; `ui/timeline-view.ts` (the `<timeline-view>` element — its `.css` text import also only resolves under the build's loader) splits its logic into `ui/timeline-view-math.ts` (scales / zoom / ticks / packing / label fit / hit tests / hues / coverage) the same way; `ui/canvas-text.ts` tests its pure fitting surface (deriveLabelTiers / selectTier / clipToWidth / fitTieredText) but not the canvas-bound `FadeTextPainter`; `ui/markdown.ts` is the DOM walker (createElement/createTextNode) and is not node-tested, with its logic in `ui/markdown-parse.ts` — and because that module's `sanitizeTree` runs BEFORE any node reaches the walker, the safety properties proved there hold for the rendered output too, which is the reason the sanitizing lives in the tree rather than in the renderer.
+- **DOM/fetch/GPU-bound modules are NOT unit-tested under node** — `webgpu/shaders.ts`, `webgpu/canvas.ts`, `webgpu/context.ts`, `webgpu/buffer.ts`, `webgpu/sky.ts`, `webgpu/mip-generator.ts`, `webgpu/env-prefilter.ts`, `webgpu/hdr-loader.ts`, `webgl2/video-texture.ts`, `webgl2/fullscreen.ts` (its `.glsl` import also only resolves under the build's text loader, not `node --test`), `editor/code-editor.ts`, and `auto-refresh/` need a real browser/GPU, so they're left to manual/integration testing. Modules mixing pure + bound code are split: `webgpu/camera.ts` tests `orbitEye`/`dirFromAzEl`/`applyLookDrag` but not the DOM-bound controllers; `webgpu/fly-camera.ts` tests `flyMoveDelta`/`dollyDelta` but not `createFlyController`; `webgl2/program.ts` tests `annotateShaderLog` and `injectChunk`; `webgl2/mesh.ts` tests `chooseIndexArray`; `webgl2/fbo.ts` tests `makePingPong` but not the GL-bound `createFloatFbo`/`createPingPong`; `webgpu/scan.ts` splits its pure half into `webgpu/scan-plan.ts` (planScan level math, tested incl. a plan-driven JS emulation of the WGSL) because scan.ts's own `.wgsl` import cannot load under node — the GPU wrapper (`createScan`) is covered by consumer browser harnesses; `ui/perf-graph.ts` is DOM/canvas-bound (the `<perf-graph>` element), so its logic lives in `ui/perf-graph-math.ts` (ring buffer / stats / range / ticks / binning / formatting), which is its fully node-tested pure half; `ui/timeline-view.ts` (the `<timeline-view>` element — its `.css` text import also only resolves under the build's loader) splits its logic into `ui/timeline-view-math.ts` (scales / zoom / ticks / packing / label fit / hit tests / hues / coverage) the same way; `ui/canvas-text.ts` tests its pure fitting surface (deriveLabelTiers / selectTier / clipToWidth / fitTieredText) but not the canvas-bound `FadeTextPainter`; `ui/data-table.ts` (the `<data-table>` element — its `.css` text import also only resolves under the build's loader) and `ui/activity-feed.ts` (a thin wrapper over it) are DOM-bound and not node-tested, with their logic in `ui/data-table-math.ts` (comparison / stable sort / the sort cycle / multi-group facet selection / stored-filter parsing) and `ui/activity-feed-math.ts` (severity + family derivation, query and facet selection) respectively — note that a group declared `local: false` is filtered by the HOST, so `selectRows` deliberately never sees it; `ui/markdown.ts` is the DOM walker (createElement/createTextNode) and is not node-tested, with its logic in `ui/markdown-parse.ts` — and because that module's `sanitizeTree` runs BEFORE any node reaches the walker, the safety properties proved there hold for the rendered output too, which is the reason the sanitizing lives in the tree rather than in the renderer.
 
 ## Deploy
 
-GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` job enables pnpm via corepack, runs `pnpm test` (type-check + `node --test`), then `pnpm build` (ts0 type-checks + compiles, then `dist/llms.txt` is assembled). A failing test fails CI and gates the publish (same job, later step). The `build` job then publishes `dist/` to buildhost sites via `wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master` (OIDC, project `js-snippets`, `public: 'true'` so consumers keep importing anonymously): `master` → the stable `library` site branch (the canonical base URL), any other branch → `library-<flattened-branch>` so a change is verifiable from a real URL before merge. This replaced the GitHub Pages deploy 2026-07-20 (mirroring webhook-runner#93) after the org's Actions artifact-storage quota froze Pages at its 07-15 content — the Pages site itself was unpublished the same day in the org-wide GitHub Pages shutdown, leaving buildhost as the library's only host; the `library-` prefix keeps the library sites clear of the showcase previews, which publish under the bare flattened branch name. The `showcase` job publishes the timeline demo page to buildhost per branch (see "Showcase" below); it self-gates on chart/showcase paths and succeeds as a no-op otherwise, so it never blocks the org's all-builds aggregation.
+GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` job enables pnpm via corepack, runs `pnpm test` (type-check + `node --test`), then `pnpm build` (ts0 type-checks + compiles, then `dist/llms.txt` is assembled). A failing test fails CI and gates the publish (same job, later step). The `build` job then publishes `dist/` to buildhost sites via `wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master` (OIDC, project `js-snippets`, `public: 'true'` so consumers keep importing anonymously): `master` → the stable `library` site branch (the canonical base URL), any other branch → `library-<flattened-branch>` so a change is verifiable from a real URL before merge. This replaced the GitHub Pages deploy 2026-07-20 (mirroring webhook-runner#93) after the org's Actions artifact-storage quota froze Pages at its 07-15 content — the Pages site itself was unpublished the same day in the org-wide GitHub Pages shutdown, leaving buildhost as the library's only host; the `library-` prefix keeps the library sites clear of the showcase previews, which publish under the bare flattened branch name. The `showcase` job publishes the component gallery to buildhost per branch (see "Showcase" below); it self-gates on `src/ui/`+`showcase/` paths — watched WHOLE, since every UI component has a gallery section — and succeeds as a no-op otherwise, so it never blocks the org's all-builds aggregation.
 
 Org CI facts that govern this workflow: the org's required `all-builds` merge gate is a **commit status** posted automatically by the required-builds-manager app, which aggregates every build on the SHA itself — no job here needs to be named for it, and NO job or check may ever be named `all-builds` (the buildhost publish actions fail the whole run when anything by that name exists on the SHA; the error says to rename — if a fan-in/aggregator job is ever needed, use a neutral name like `aggregate`). The buildhost-publish-site steps require the calling job to hold `actions: read` + `checks: read` and fail closed without them — deploy.yml grants both at the workflow level and re-grants them in the `showcase` job, because a job-level `permissions:` block REPLACES the workflow-level one (the canonical explanation lives in deploy.yml's comments). Org CI also runs without GitHub Actions artifacts (the exhausted org artifact quota is what froze the old Pages deploy) — never add `actions/upload-artifact` steps; buildhost is the artifact transport.
 
-## Showcase (`showcase/`)
+## Showcase (`showcase/`) — the component gallery
 
-A live demo page for `<timeline-view>`: ONE self-contained HTML file whose
-fake, local, infinite feed keeps every visual treatment of the chart on
-screen — queued lead-ins, declared-wait hatching with ⧗/⏳ labels, failures,
-timeouts (a consumer style-map key), cancelled runs with kill tails of
-cycling sizes, instant-pip bursts, a viewport-crossing long span, packing
-bursts, markers, connectors, lazy backward history with an end-of-history
-boundary, plus a second compact instance demoing `--timeline-*` retheming and
-auto-fit. No network: data is generated deterministically as a pure function
-of absolute time (`fake-data.ts`), so live ticks, lazy history, and resyncs
-always agree, and the demo never runs dry.
+**WHAT IT IS FOR.** Every DOM-bound component in `src/ui/` is deliberately
+NOT node-tested (see "Testing"): the pure half is unit-tested and the
+ELEMENT is not, because nothing under `node --test` can render one. The
+gallery is where they are actually exercised — ONE self-contained HTML file,
+published per branch, so a change is verifiable from a real URL before it
+merges. It is not a marketing page and not a timeline demo that grew: it is
+the only place a rendering regression can be caught at all.
+
+**ADDING A UI COMPONENT MEANS ADDING A SECTION HERE.** That is the contract,
+not a nicety. A section's job is to put the treatments that are EASY TO GET
+WRONG on screen at once — the states a happy-path instance hides. Existing
+sections show the pattern: blank cells that must sort last in both
+directions, a display string that sorts differently from its real value, a
+filter-hides-everything empty state that must not read as "no data", a
+component with no listener wired (bar hidden, rows out of the tab order),
+and kinds no severity rule has ever heard of.
+
+**A type-only import registers nothing.** A demo that references a component
+only as a TYPE (`el as DataTableElement`) has its import ELIDED, so the
+module never evaluates, the element never upgrades, and the section sits on
+its light-DOM "loading…" line — with the build green throughout. Every demo
+module therefore carries an explicit side-effect import
+(`import '../src/ui/data-table.ts';`) next to its `import type`. This is
+exactly the class of failure the gallery exists to surface, and it is
+invisible to `pnpm build`.
+
+Sections, in page order:
+
+- **`<timeline-view>`** — the live one: a fake, local, infinite feed keeping
+  every visual treatment of the chart on screen (queued lead-ins,
+  declared-wait hatching with ⧗/⏳ labels, failures, timeouts as a consumer
+  style-map key, cancelled runs with kill tails of cycling sizes,
+  instant-pip bursts, a viewport-crossing long span, packing bursts,
+  markers, connectors, lazy backward history with an end-of-history
+  boundary), plus a second compact instance demoing `--timeline-*`
+  retheming and auto-fit. Data is generated deterministically as a pure
+  function of absolute time (`fake-data.ts`), so live ticks, lazy history
+  and resyncs always agree and the demo never runs dry.
+- **`<data-table>`** (`data-table-demo.ts`) — three instances: full
+  (query + two chip groups + sorting + keyboard-reachable rows), minimal,
+  and filtered-to-nothing. Fixed-seed fixture, so a visual change is a real
+  change and never the generator reshuffling.
+- **`<activity-feed>`** (`activity-feed-demo.ts`) — a `<data-table>`
+  underneath; the fixture mixes kinds the severity rules claim with kinds
+  no rule mentions, which is the derived-not-enumerated claim made visible.
+
+No network anywhere: every fixture is generated locally.
 
 - **Build**: `pnpm build:showcase` → `showcase/dist/index.html` (gitignored via
   the root `dist/` pattern). `showcase/ts0.json` selects ts0's single-HTML

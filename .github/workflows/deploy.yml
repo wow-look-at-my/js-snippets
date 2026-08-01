@@ -94,15 +94,18 @@ jobs:
           source_dir: dist
           public: 'true' # the library must stay anonymously importable
 
-  # Publish the timeline showcase — showcase/'s single self-contained HTML
-  # demo of <timeline-view> on fake local data — to buildhost as a per-branch
-  # static site: https://sites.pazer.build/js-snippets/branch/<branch>/.
+  # Publish the component gallery — showcase/'s single self-contained HTML
+  # page demoing every DOM-bound src/ui/ component on fake local data — to
+  # buildhost as a per-branch static site:
+  # https://sites.pazer.build/js-snippets/branch/<branch>/. Those components
+  # are not node-tested, so this preview is the only place a rendering
+  # regression can be seen before merge.
   # The project MUST be "js-snippets": buildhost's OIDC auto-provisioning
   # authorizes a repo's identity only for the project named after the repo
   # (or its slash-namespace), and the sites router takes single-segment
   # project names only — any other name 404s ("project not found").
-  # Publishes only when the BRANCH touches the chart or the showcase (always
-  # on master); otherwise the steps no-op and the job still succeeds, so the
+  # Publishes only when the BRANCH touches src/ui/ or the showcase (always on
+  # master); otherwise the steps no-op and the job still succeeds, so the
   # org's all-builds aggregation never trips over it.
   showcase:
     runs-on: ubuntu-latest
@@ -121,15 +124,18 @@ jobs:
         with:
           fetch-depth: 0 # the gate diffs against the merge-base with origin/master
 
-      - name: Gate on chart/showcase paths
+      - name: Gate on ui/showcase paths
         id: gate
         uses: wow-look-at-my/actions@typescript#latest
         with:
           script: |
             // The preview reflects BRANCH state, so the gate is branch-level:
-            // publish when the branch's diff vs origin/master touches the
-            // chart or the showcase (any later push to such a branch
+            // publish when the branch's diff vs origin/master touches any UI
+            // component or the gallery (any later push to such a branch
             // refreshes its preview). Master itself always publishes.
+            // src/ui/ is watched WHOLE, not per-component: every component
+            // has a gallery section, so any of them changing is a reason to
+            // republish the page.
             const watched = /^(src\/ui\/|showcase\/|\.github\/workflows\/deploy\.yml$)/;
             // buildhost serves sites under a single path segment — flatten
             // anything outside [A-Za-z0-9._-] out of the branch name.
@@ -146,8 +152,8 @@ jobs:
             const hit = files.filter((f) => watched.test(f));
             core.setOutput('publish', String(hit.length > 0));
             core.info(hit.length > 0
-              ? `chart/showcase paths touched:\n  ${hit.join('\n  ')}`
-              : `no chart/showcase paths among ${files.length} changed file(s) — skipping publish`);
+              ? `ui/showcase paths touched:\n  ${hit.join('\n  ')}`
+              : `no ui/showcase paths among ${files.length} changed file(s) — skipping publish`);
 
       - uses: actions/setup-node@v4
         if: steps.gate.outputs.publish == 'true'
