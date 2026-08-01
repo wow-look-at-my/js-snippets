@@ -405,6 +405,7 @@ const EDGE_SHADOW_ALPHA = 0.85;
 // fully-uncapped perf cliff on 4k+ screens.
 const MAX_DPR = 3;
 // Cluster 3-stack ghost alphas (front draws at 1).
+const LANE_FIT_CACHE_MAX = 512;
 const CLUSTER_MID_ALPHA = 0.65;
 const CLUSTER_BACK_ALPHA = 0.35;
 // The minimap strip's height (CSS px) — the plot canvas cedes this band
@@ -683,7 +684,20 @@ export class TimelineViewElement extends HTMLElement {
   // (epoch bump), and an item sliding in over a stale row for under a
   // quantum is invisible in practice. layoutLanes/auto-fit stay per-frame
   // (O(lanes), the tweens need them).
+  // Memoized lane-label fitting (drawLanes). Bounded, and keyed by
+  // everything the answer depends on, so it self-invalidates.
+  private laneFitCache = new Map<string, { text: string; width: number; faded: boolean } | null>();
   private packEpoch = 0; // bumped on data changes; forces a re-pack
+  // INCREMENTAL REBUILD. A data change used to cost O(all lanes) — re-sort
+  // check, metadata scan, re-cluster and re-assign, for every lane whether or
+  // not it changed. A consumer that streams its history in batches (so each
+  // batch stays inside a frame budget) therefore paid that whole-chart cost
+  // once PER BATCH. These track which lanes an ingest actually touched, so the
+  // rebuild visits those and leaves the rest exactly as they were.
+  private dirtyLanes = new Set<number>();
+  private rebuildAll = true; // first rebuild, and any wholesale replace
+  private laneMaxEnd: number[] = []; // per-lane latest terminated end
+  private laneOngoing: NInterval[][] = []; // per-lane ongoing intervals
   private clusteredEpoch = -1;
   private clusteredSpanKey = NaN; // log-quantized span bucket (spanBucket)
   private clusteredPlotW = NaN; // clustering is scale-aware: a resize re-derives it
@@ -1104,6 +1118,10 @@ export class TimelineViewElement extends HTMLElement {
     this.connectors = [];
     this.markers = [];
     this.coverage = new CoverageTracker();
+    // Lane indices are about to be renumbered from scratch — any dirt
+    // recorded against the old numbering is meaningless.
+    this.dirtyLanes.clear();
+    this.rebuildAll = true;
     this.loadTick++;
     // A full replace invalidates every mark the minimap density texture
     // baked — the incremental queue only covers additions.
@@ -1212,6 +1230,10 @@ export class TimelineViewElement extends HTMLElement {
     this.perLane = [];
     this.connectors = [];
     this.markers = markers;
+    // Lane indices are about to be renumbered from scratch — any dirt
+    // recorded against the old numbering is meaningless.
+    this.dirtyLanes.clear();
+    this.rebuildAll = true;
     // Lane replacement can renumber every row — the baked marks are stale.
     this.mmTexDirty = true;
     this.mmPendingNew.length = 0;
@@ -1221,6 +1243,10 @@ export class TimelineViewElement extends HTMLElement {
   setIntervals(intervals: TimelineInterval[]): void {
     this.byId.clear();
     this.perLane = this.lanes.map(() => []);
+    // Lane indices are about to be renumbered from scratch — any dirt
+    // recorded against the old numbering is meaningless.
+    this.dirtyLanes.clear();
+    this.rebuildAll = true;
     // Full interval replace — the baked density marks are all stale.
     this.mmTexDirty = true;
     this.mmPendingNew.length = 0;
@@ -1389,6 +1415,7 @@ export class TimelineViewElement extends HTMLElement {
       this.lanes.push({ id: iv.laneId, label: iv.laneId });
       this.perLane.push([]);
     }
+    this.dirtyLanes.add(laneIdx);
     const lane = this.lanes[laneIdx];
     const start = toMs(iv.start);
     const end = iv.end == null ? null : toMs(iv.end);
@@ -1411,6 +1438,8 @@ export class TimelineViewElement extends HTMLElement {
     };
     const prev = this.byId.get(iv.id);
     if (prev) {
+      // A replace can MOVE an interval between lanes: both ends changed.
+      this.dirtyLanes.add(prev.laneIdx);
       const arr = this.perLane[prev.laneIdx];
       arr.splice(arr.indexOf(prev), 1);
       // Replacing an already-TERMINATED interval can rewrite a mark the
@@ -1472,11 +1501,23 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   private rebuild(): void {
+    // The lanes this pass has to look at: everything on a wholesale replace,
+    // otherwise exactly the ones an ingest touched. Streaming a window in
+    // batches used to re-scan, re-cluster and re-assign the WHOLE chart per
+    // batch; now each batch costs its own lanes.
+    const visit: number[] = [];
+    if (this.rebuildAll) {
+      for (let i = 0; i < this.perLane.length; i++) visit.push(i);
+    } else {
+      for (const i of this.dirtyLanes) if (i < this.perLane.length) visit.push(i);
+    }
+
     // Re-sort only lanes that actually fell out of (start, id) order: a
     // live merge APPENDS near-now intervals, leaving most lanes already
     // sorted — the O(n) plain-compare check replaces an O(n log n)
     // comparator sort per lane per merge (the 5s merge spike).
-    for (const per of this.perLane) {
+    for (const li of visit) {
+      const per = this.perLane[li];
       let sorted = true;
       for (let i = 1; i < per.length; i++) {
         const a = per[i - 1];
@@ -1500,25 +1541,39 @@ export class TimelineViewElement extends HTMLElement {
       const laneN = this.perLane.length;
       this.laneMaxDur.length = laneN;
       this.laneOngoingStart.length = laneN;
-      this.mmOngoing.length = 0;
-      let latest = -Infinity;
-      for (let li = 0; li < laneN; li++) {
+      this.laneMaxEnd.length = laneN;
+      this.laneOngoing.length = laneN;
+      for (const li of visit) {
         const per = this.perLane[li];
         let maxDur = 0;
         let ongoing = Infinity;
+        let maxEnd = -Infinity;
+        const ongoingList: NInterval[] = [];
         for (let i = 0; i < per.length; i++) {
           const n = per[i];
           if (n.end === null) {
             if (n.start < ongoing) ongoing = n.start;
-            this.mmOngoing.push(n);
+            ongoingList.push(n);
           } else {
             const dur = n.end - n.start;
             if (dur > maxDur) maxDur = dur;
-            if (n.end > latest) latest = n.end;
+            if (n.end > maxEnd) maxEnd = n.end;
           }
         }
         this.laneMaxDur[li] = maxDur;
         this.laneOngoingStart[li] = ongoing;
+        this.laneMaxEnd[li] = maxEnd;
+        this.laneOngoing[li] = ongoingList;
+      }
+      // The two GLOBAL aggregates fold from the per-lane ones, so an
+      // unchanged lane is never re-scanned to compute them.
+      this.mmOngoing.length = 0;
+      let latest = -Infinity;
+      for (let li = 0; li < laneN; li++) {
+        const e = this.laneMaxEnd[li];
+        if (e !== undefined && e > latest) latest = e;
+        const list = this.laneOngoing[li];
+        if (list !== undefined) for (let i = 0; i < list.length; i++) this.mmOngoing.push(list[i]);
       }
       this.mmLatestEnd = latest;
     }
@@ -1529,7 +1584,9 @@ export class TimelineViewElement extends HTMLElement {
       if (!this.laneIdxById.has(key)) this.allocators.delete(key);
     }
     this.packEpoch++;
-    this.updateVisibleLayout();
+    this.updateVisibleLayout(); // reads dirtyLanes/rebuildAll
+    this.dirtyLanes.clear();
+    this.rebuildAll = false;
     this.autoGutter();
     this.clampLaneScroll();
     // The minimap shows iff data exists; only the emptiness EDGE re-runs
@@ -1573,6 +1630,13 @@ export class TimelineViewElement extends HTMLElement {
     // re-cluster. Zooming crosses span buckets and re-clusters at once.
     const needCluster =
       this.clusteredEpoch !== this.packEpoch || this.clusteredSpanKey !== spanKey || this.clusteredPlotW !== plotW || structure;
+    // A DATA-ONLY pass (the epoch moved; span, width and lane set did not)
+    // can only have changed the lanes the ingest touched — every other lane's
+    // clusters are still exactly right, because membership is a function of
+    // (that lane's data, span, plotW). Re-clustering them was the whole-chart
+    // cost a batched history load paid once per batch.
+    const dataOnly =
+      !structure && !this.rebuildAll && this.clusteredSpanKey === spanKey && this.clusteredPlotW === plotW;
     if (needCluster) {
       // A pure zoom/resize re-cluster sees the exact objects of the last
       // pass — clusterLane's membership-identical fast path may reuse its
@@ -1585,7 +1649,12 @@ export class TimelineViewElement extends HTMLElement {
       this.lanePackItems.length = this.perLane.length;
       this.lanePackTargets.length = this.perLane.length;
       this.laneUnclustered.length = this.perLane.length;
-      for (let i = 0; i < this.perLane.length; i++) this.clusterLane(i, rv, plotW, sameData);
+      if (dataOnly) {
+        // sameData is false for these by definition: their data just changed.
+        for (const i of this.dirtyLanes) if (i < this.perLane.length) this.clusterLane(i, rv, plotW, false);
+      } else {
+        for (let i = 0; i < this.perLane.length; i++) this.clusterLane(i, rv, plotW, sameData);
+      }
     }
     // TRACK ASSIGNMENT — re-runs with the clustering, and additionally
     // once the window start has drifted a quantum since the last pass.
@@ -1596,16 +1665,34 @@ export class TimelineViewElement extends HTMLElement {
       this.assignedPlotW !== plotW ||
       !(Math.abs(rv.start - this.assignedStart) < span * ASSIGN_QUANTUM_FRAC);
     if (needAssign) {
+      // The same argument as the clustering above, one step further: when the
+      // ONLY thing that moved is the data (window, width and lane set all
+      // unchanged), an untouched lane's visible count cannot have changed, so
+      // its previous count stands.
+      const assignDataOnly =
+        dataOnly &&
+        this.assignedSpanKey === spanKey &&
+        this.assignedPlotW === plotW &&
+        Math.abs(rv.start - this.assignedStart) < span * ASSIGN_QUANTUM_FRAC &&
+        this.targetCounts.length === this.perLane.length;
       this.assignedEpoch = this.packEpoch;
       this.assignedSpanKey = spanKey;
       this.assignedPlotW = plotW;
       this.assignedStart = rv.start;
       const prev = this.targetCounts;
-      const next = new Array<number>(this.perLane.length);
+      const next = assignDataOnly ? prev.slice() : new Array<number>(this.perLane.length);
       changed = structure;
-      for (let i = 0; i < this.perLane.length; i++) {
-        next[i] = this.assignLane(i, rv);
-        if (!changed && prev[i] !== next[i]) changed = true;
+      if (assignDataOnly) {
+        for (const i of this.dirtyLanes) {
+          if (i >= this.perLane.length) continue;
+          next[i] = this.assignLane(i, rv);
+          if (!changed && prev[i] !== next[i]) changed = true;
+        }
+      } else {
+        for (let i = 0; i < this.perLane.length; i++) {
+          next[i] = this.assignLane(i, rv);
+          if (!changed && prev[i] !== next[i]) changed = true;
+        }
       }
       this.targetCounts = next;
     }
@@ -3795,6 +3882,7 @@ export class TimelineViewElement extends HTMLElement {
     ctx.font = this.fontBar;
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
+    const separators: number[] = [];
     for (let i = 0; i < this.lanes.length; i++) {
       const top = AXIS_H + tops[i] - this.laneScroll;
       const lh = heights[i];
@@ -3804,14 +3892,10 @@ export class TimelineViewElement extends HTMLElement {
         ctx.fillRect(0, Math.max(AXIS_H, top), w, Math.min(top + lh, h) - Math.max(AXIS_H, top));
       }
       const yBottom = snap(top + lh, dpr);
-      if (yBottom > AXIS_H && yBottom < h) {
-        ctx.strokeStyle = t.hairline;
-        ctx.lineWidth = hairline;
-        ctx.beginPath();
-        ctx.moveTo(0, yBottom);
-        ctx.lineTo(w, yBottom);
-        ctx.stroke();
-      }
+      // Collected, not stroked here: one path for every lane separator beats
+      // a beginPath/stroke pair per lane (49 lanes = 49 rasterizer round
+      // trips per frame, for identical 1px lines).
+      if (yBottom > AXIS_H && yBottom < h) separators.push(yBottom);
       // Gutter label, graded by the lane's CURRENT height: full while the
       // lane comfortably fits the base font; smaller + faded while it
       // doesn't (compact lanes); skipped entirely below legibility
@@ -3823,7 +3907,18 @@ export class TimelineViewElement extends HTMLElement {
         const fs = full ? t.fontSize : Math.max(7, Math.min(t.fontSize - 2, Math.floor(lh - 3)));
         const charW = full ? this.charW : (this.charW * fs) / t.fontSize;
         this.measureCharW = charW;
-        const fit = fitTieredText(this.lanes[i].label, this.gutterW - 16, this.measureLabel);
+        // fitTieredText measures text, which is the dearest thing a frame
+        // does per lane — and the answer only changes when the label, the
+        // gutter width or the font does. All three are in the key, so the
+        // cache needs no invalidation hook.
+        const label = this.lanes[i].label;
+        const fitKey = `${label}\u0000${this.gutterW}\u0000${fs}\u0000${t.font}`;
+        let fit = this.laneFitCache.get(fitKey);
+        if (fit === undefined) {
+          fit = fitTieredText(label, this.gutterW - 16, this.measureLabel);
+          if (this.laneFitCache.size > LANE_FIT_CACHE_MAX) this.laneFitCache.clear();
+          this.laneFitCache.set(fitKey, fit);
+        }
         if (fit !== null) {
           ctx.font = full ? this.fontBar : `${fs}px ${t.font}`;
           const color = full ? t.muted : withAlpha(t.muted, 0.7);
@@ -3839,10 +3934,14 @@ export class TimelineViewElement extends HTMLElement {
       }
     }
     ctx.font = this.fontBar; // undo any compact-label font downshift
-    // Gutter | plot separator.
+    // Every lane separator plus the gutter | plot rule: ONE path, one stroke.
     ctx.strokeStyle = t.hairline;
     ctx.lineWidth = hairline;
     ctx.beginPath();
+    for (const y of separators) {
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+    }
     const xg = snap(this.gutterW, dpr);
     ctx.moveTo(xg, AXIS_H);
     ctx.lineTo(xg, h);
@@ -3951,7 +4050,7 @@ export class TimelineViewElement extends HTMLElement {
       }
       // The lane's cluster stack markers, over its bars.
       const ncs = this.laneClusters[laneIdx];
-      if (ncs) for (const c of ncs) this.drawCluster(ctx, c);
+      if (ncs) this.drawClusters(ctx, ncs);
     }
     void dpr;
     void t;
@@ -4301,6 +4400,71 @@ export class TimelineViewElement extends HTMLElement {
    * Like pips, clusters get no edge-continuation treatment — a point
    * marker has no clipped extent.
    */
+  /**
+   * A lane's cluster markers, BATCHED. Each marker is a 3-diamond stack, so
+   * the obvious loop issues six canvas path operations per cluster — and a
+   * dense hour of traffic puts ~400 clusters on screen, which measured as the
+   * single largest slice of frame time (31 ms of a 59 ms draw budget across a
+   * load, ~5 us per cluster).
+   *
+   * A lane's markers almost always share ONE resolved style, and the three
+   * stack layers are three globalAlpha values, so the whole lane can be drawn
+   * as (layers x styles) paths instead of (layers x clusters): one beginPath
+   * per layer collecting every diamond, then a single fill and stroke.
+   *
+   * Only the plain case batches. A hovered marker, an emphasis stem or a
+   * dashed outline is per-marker geometry, so those fall back to drawCluster —
+   * and draw AFTER the batch, which is where they belong anyway (a hover ring
+   * under a neighbour's ghost was always a latent glitch).
+   */
+  private drawClusters(ctx: CanvasRenderingContext2D, ncs: NCluster[]): void {
+    if (ncs.length === 0) return;
+    const t = this.theme;
+    let batched: Map<ResolvedStyle, { cx: number; cy: number; r: number; rx: number; s: number }[]> | null = null;
+    let fallback: NCluster[] | null = null;
+    for (const c of ncs) {
+      const style = this.resolved(c.catKey, c.state, null);
+      const emphasis = style.glyph === 'bang' || style.border === t.emphasis;
+      const dashed = style.dash !== null && style.dash.length > 0;
+      if (emphasis || dashed || this.hoverClusterId === c.members[0].id) {
+        (fallback ??= []).push(c);
+        continue;
+      }
+      const p = this.clusterPos(c);
+      if (!p) continue;
+      const r = Math.max(2, Math.min(p.th * 0.42, 8));
+      const map = (batched ??= new Map());
+      let list = map.get(style);
+      if (list === undefined) map.set(style, (list = []));
+      list.push({ cx: p.cx, cy: p.cy, r, rx: r * 0.78, s: Math.max(1, Math.min(2, p.r * 0.35)) });
+    }
+    if (batched) {
+      for (const [style, items] of batched) {
+        ctx.fillStyle = style.pattern === 'outline' ? withAlpha(style.fill, 0.15) : style.fill;
+        ctx.strokeStyle = style.border;
+        ctx.lineWidth = 1;
+        // Back and mid ghosts first (offset right, faded), then the fronts —
+        // so a front is never covered by a neighbour's ghost.
+        for (const [alpha, off] of [[CLUSTER_BACK_ALPHA, 2], [CLUSTER_MID_ALPHA, 1], [1, 0]] as const) {
+          ctx.globalAlpha = alpha;
+          ctx.beginPath();
+          for (const it of items) {
+            const cx = it.cx + off * it.s;
+            ctx.moveTo(cx, it.cy - it.r);
+            ctx.lineTo(cx + it.rx, it.cy);
+            ctx.lineTo(cx, it.cy + it.r);
+            ctx.lineTo(cx - it.rx, it.cy);
+            ctx.closePath();
+          }
+          ctx.fill();
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+      }
+    }
+    if (fallback) for (const c of fallback) this.drawCluster(ctx, c);
+  }
+
   private drawCluster(ctx: CanvasRenderingContext2D, c: NCluster): void {
     const p = this.clusterPos(c);
     if (!p) return;
