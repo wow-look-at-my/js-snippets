@@ -31,6 +31,22 @@ src/
 │                            noise / sampling / gaussian-kernel)
 ├── ui/
 │   ├── llms.txt           ← docs for ui modules
+│   ├── data-table-math.ts ← pure table logic: column value/text resolution,
+│   │                        blank-last comparison, stable sort, the
+│   │                        asc→desc→unsorted cycle, multi-group facet
+│   │                        selection, stored-filter parse/serialize
+│   ├── data-table-math.test.ts ← colocated node:test tests for the math
+│   ├── data-table.ts      ← <data-table> custom element (declarative
+│   │                        filterable/sortable table; re-exports the math)
+│   ├── data-table.css     ← its shadow-DOM styles (text import)
+│   ├── activity-feed-math.ts ← pure feed logic: severity/family derivation
+│   │                        from a dotted kind, query + facet selection
+│   ├── activity-feed-math.test.ts ← colocated node:test tests for the math
+│   ├── activity-feed.ts   ← <activity-feed> custom element — a THIN WRAPPER
+│   │                        over <data-table> (three columns + the kind
+│   │                        badge); no table logic of its own
+│   ├── activity-feed.css  ← its shadow-DOM styles, passed INTO the inner
+│   │                        table via that element's styleText escape hatch
 │   ├── markdown.ts        ← markdown -> DOM renderer (re-exports markdown-parse)
 │   ├── markdown-parse.ts  ← its pure half: micromark/GFM -> mdast + the
 │   │                        sanitizeTree safety transform + safeHref

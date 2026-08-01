@@ -2,10 +2,9 @@
  * <activity-feed> — a filterable activity/event log table.
  *
  * One element = one feed of timestamped, kinded events ("what has this
- * service been doing?"). It renders the rows, derives each row's severity
- * and family from its kind string, and owns the filtering UI: a free-text
- * query plus severity (and optionally family) toggle chips with live
- * counts. Dependency-free.
+ * service been doing?"). It derives each row's severity and family from its
+ * kind string and presents a query box plus severity (and optionally
+ * family) chips.
  *
  *   import 'https://…/js-snippets/ui/activity-feed.js'; // registers <activity-feed>
  *
@@ -16,6 +15,13 @@
  *   const feed = document.querySelector('activity-feed');
  *   feed.entries = [{ time: '2026-07-31T10:00:00Z', kind: 'manager.inbox_dropped',
  *                     message: 'gha-coordinator: inbox full…' }];
+ *
+ * IT IS A <data-table> UNDERNEATH. Rows, chips, counts, the two empty
+ * states and the filter plumbing are that component's; this file supplies
+ * only what is specific to an event feed — three columns, the kind badge,
+ * and the severity/family derivation. Nothing about tables is implemented
+ * twice, which is the point: drift between two hand-rolled tables is
+ * invisible until one of them is quietly wrong.
  *
  * COLOR IS DERIVED, NEVER ENUMERATED. Severity comes from the action half
  * of the kind ("manager.inbox_dropped" → bad) and family from the namespace
@@ -36,18 +42,15 @@
  */
 
 import ACTIVITY_CSS from './activity-feed.css';
+import { DataTableElement, type FacetGroup, type TableColumn } from './data-table.ts';
 import {
   SEVERITIES,
   familyOf,
   formatTimestamp,
-  isFiltering,
   messageOf,
   parseStoredFilter,
-  selectEntries,
   severityOf,
-  toStoredFilter,
   type ActivityEntry,
-  type Severity,
   type StoredFilter,
 } from './activity-feed-math.ts';
 
@@ -65,6 +68,10 @@ export interface ColumnLabels {
 
 const DEFAULT_COLUMNS: ColumnLabels = { time: 'Time', kind: 'Kind', message: 'What happened' };
 const DEFAULT_EMPTY = 'Nothing yet.';
+
+/** Facet group keys. Internal: the persisted shape keeps its own names. */
+const SEV_GROUP = 'severity';
+const FAM_GROUP = 'family';
 
 /**
  * A stable hue per family name (0..359). A tiny FNV-ish string hash: the
@@ -85,21 +92,9 @@ export class ActivityFeedElement extends HTMLElement {
   static observedAttributes = ['empty-text', 'storage-key', 'family-chips', 'placeholder'];
 
   private root: ShadowRoot;
-  private barEl: HTMLDivElement;
-  private queryEl: HTMLInputElement;
-  private sevChipsEl: HTMLDivElement;
-  private famChipsEl: HTMLDivElement;
-  private countEl: HTMLSpanElement;
-  private clearEl: HTMLButtonElement;
-  private tableEl: HTMLTableElement;
-  private headEl: HTMLTableSectionElement;
-  private bodyEl: HTMLTableSectionElement;
-  private emptyEl: HTMLParagraphElement;
+  private table: DataTableElement<ActivityEntry>;
 
   private _entries: ActivityEntry[] = [];
-  private _query = '';
-  private _hiddenSeverities = new Set<string>();
-  private _hiddenFamilies = new Set<string>();
   private _messageRenderer: MessageRenderer | null = null;
   private _familyAliases: Record<string, string> = {};
   private _columns: ColumnLabels = DEFAULT_COLUMNS;
@@ -109,58 +104,29 @@ export class ActivityFeedElement extends HTMLElement {
   constructor() {
     super();
     this.root = this.attachShadow({ mode: 'open' });
-    try {
-      const sheet = new CSSStyleSheet();
-      sheet.replaceSync(ACTIVITY_CSS);
-      this.root.adoptedStyleSheets = [sheet];
-    } catch {
-      const style = document.createElement('style');
-      style.textContent = ACTIVITY_CSS;
-      this.root.append(style);
-    }
 
-    this.barEl = document.createElement('div');
-    this.barEl.className = 'bar';
-
-    this.queryEl = document.createElement('input');
-    this.queryEl.className = 'q';
-    this.queryEl.type = 'search';
-    this.queryEl.placeholder = this.getAttribute('placeholder') ?? 'filter activity…';
-    this.queryEl.setAttribute('aria-label', 'Filter activity');
-    this.queryEl.addEventListener('input', () => {
-      this._query = this.queryEl.value;
-      this.filterChanged();
+    this.table = document.createElement('data-table') as DataTableElement<ActivityEntry>;
+    this.table.searchable = true;
+    // The feed's own sheet rides INTO the table's shadow root: the kind
+    // badge and the row severity rule are rendered in there, out of reach
+    // of any outer stylesheet. Applied after the table's own sheet, so
+    // where the two overlap the feed's look wins.
+    this.table.styleText = ACTIVITY_CSS;
+    this.table.filteredEmptyText = (total) => `No entries match the filter (${total} hidden).`;
+    // The feed owns persistence: its stored shape predates the generic
+    // table's and is what consumers already have in localStorage, so the
+    // inner table is left storage-less and this element translates.
+    this.table.addEventListener('table-filter-change', (e) => {
+      e.stopPropagation();
+      this.persistFilter();
+      this.dispatchEvent(
+        new CustomEvent('activity-filter-change', { detail: this.filter, bubbles: true, composed: true }),
+      );
     });
 
-    this.sevChipsEl = document.createElement('div');
-    this.sevChipsEl.className = 'chips';
-    this.famChipsEl = document.createElement('div');
-    this.famChipsEl.className = 'chips';
-    this.famChipsEl.hidden = true;
-
-    this.countEl = document.createElement('span');
-    this.countEl.className = 'count';
-
-    this.clearEl = document.createElement('button');
-    this.clearEl.className = 'clear';
-    this.clearEl.type = 'button';
-    this.clearEl.textContent = 'clear filter';
-    this.clearEl.hidden = true;
-    this.clearEl.addEventListener('click', () => this.clearFilter());
-
-    this.barEl.append(this.queryEl, this.sevChipsEl, this.famChipsEl, this.countEl, this.clearEl);
-
-    this.tableEl = document.createElement('table');
-    this.headEl = document.createElement('thead');
-    this.bodyEl = document.createElement('tbody');
-    this.tableEl.append(this.headEl, this.bodyEl);
-
-    this.emptyEl = document.createElement('p');
-    this.emptyEl.className = 'empty';
-    this.emptyEl.hidden = true;
-
-    this.root.append(this.barEl, this.tableEl, this.emptyEl);
-    this.renderHead();
+    this.applyColumns();
+    this.applyFacets();
+    this.root.append(this.table);
   }
 
   // -- Properties -----------------------------------------------------------
@@ -171,7 +137,7 @@ export class ActivityFeedElement extends HTMLElement {
   }
   set entries(v: ActivityEntry[] | null | undefined) {
     this._entries = Array.isArray(v) ? v : [];
-    this.render();
+    this.table.rows = this._entries;
   }
 
   /** Per-row message renderer (linkification hook). */
@@ -180,7 +146,7 @@ export class ActivityFeedElement extends HTMLElement {
   }
   set messageRenderer(fn: MessageRenderer | null) {
     this._messageRenderer = typeof fn === 'function' ? fn : null;
-    this.render();
+    this.applyColumns();
   }
 
   /** Per-row time formatter; defaults to the host locale's date-time. */
@@ -189,7 +155,7 @@ export class ActivityFeedElement extends HTMLElement {
   }
   set timeFormatter(fn: ((t: ActivityEntry['time'], e: ActivityEntry) => string) | null) {
     this._timeFormatter = typeof fn === 'function' ? fn : null;
-    this.render();
+    this.applyColumns();
   }
 
   /** Singular/plural family folding, e.g. {hooks: 'hook'}. */
@@ -198,7 +164,8 @@ export class ActivityFeedElement extends HTMLElement {
   }
   set familyAliases(v: Record<string, string> | null | undefined) {
     this._familyAliases = v && typeof v === 'object' ? { ...v } : {};
-    this.render();
+    this.applyColumns();
+    this.applyFacets();
   }
 
   get columns(): ColumnLabels {
@@ -206,7 +173,7 @@ export class ActivityFeedElement extends HTMLElement {
   }
   set columns(v: Partial<ColumnLabels> | null | undefined) {
     this._columns = { ...DEFAULT_COLUMNS, ...(v ?? {}) };
-    this.renderHead();
+    this.applyColumns();
   }
 
   get emptyText(): string {
@@ -236,28 +203,25 @@ export class ActivityFeedElement extends HTMLElement {
 
   /** The current filter, as the stored/event shape. */
   get filter(): StoredFilter {
-    return toStoredFilter({
-      query: this._query,
-      hiddenSeverities: this._hiddenSeverities,
-      hiddenFamilies: this._hiddenFamilies,
-    });
+    const f = this.table.filter;
+    return {
+      query: f.query,
+      hiddenSeverities: [...(f.hidden[SEV_GROUP] ?? [])].sort(),
+      hiddenFamilies: [...(f.hidden[FAM_GROUP] ?? [])].sort(),
+    };
   }
   set filter(v: Partial<StoredFilter> | null | undefined) {
     const f = parseStoredFilter(JSON.stringify(v ?? {}));
-    this._query = f.query;
-    this._hiddenSeverities = new Set(f.hiddenSeverities);
-    this._hiddenFamilies = new Set(f.hiddenFamilies);
-    this.queryEl.value = this._query;
-    this.render();
+    this.table.filter = {
+      query: f.query,
+      hidden: { [SEV_GROUP]: f.hiddenSeverities, [FAM_GROUP]: f.hiddenFamilies },
+      sort: null,
+    };
   }
 
   /** Drop every facet and the query. */
   clearFilter(): void {
-    this._query = '';
-    this._hiddenSeverities.clear();
-    this._hiddenFamilies.clear();
-    this.queryEl.value = '';
-    this.filterChanged();
+    this.table.clearFilter();
   }
 
   // -- Lifecycle ------------------------------------------------------------
@@ -275,30 +239,99 @@ export class ActivityFeedElement extends HTMLElement {
         (this as ActivityFeedElement)[prop] = value as never;
       }
     }
+    this.syncAttributes();
     if (!this.restored) {
       this.restored = true;
       this.restoreFilter();
     }
-    this.render();
   }
 
   attributeChangedCallback(name: string): void {
-    if (name === 'placeholder') this.queryEl.placeholder = this.getAttribute('placeholder') ?? 'filter activity…';
+    this.syncAttributes();
     if (name === 'storage-key') this.restoreFilter();
-    this.render();
+    if (name === 'family-chips') this.applyFacets();
   }
 
-  // -- Filter plumbing ------------------------------------------------------
+  // -- Wiring ---------------------------------------------------------------
+
+  private syncAttributes(): void {
+    this.table.setAttribute('empty-text', this.emptyText);
+    this.table.setAttribute('placeholder', this.getAttribute('placeholder') ?? 'filter activity…');
+  }
+
+  /** The three columns, rebuilt whenever a renderer or label changes. */
+  private applyColumns(): void {
+    const cols: TableColumn<ActivityEntry>[] = [
+      {
+        key: 'time',
+        label: this._columns.time,
+        className: 'time',
+        // A feed is a chronology in the producer's order; offering to sort
+        // it by a rendered locale string would be worse than not sorting.
+        sortable: false,
+        // The query never searched the timestamp and shouldn't start:
+        // "2026" would match every row on the page.
+        searchable: false,
+        render: (e) => (this._timeFormatter ? this._timeFormatter(e.time, e) : formatTimestamp(e.time)),
+      },
+      {
+        key: 'kind',
+        label: this._columns.kind,
+        sortable: false,
+        render: (e) => {
+          const sev = severityOf(e.kind);
+          const fam = familyOf(e.kind, this._familyAliases);
+          const badge = document.createElement('span');
+          badge.className = `kind sev-${sev} fam-${fam}`;
+          badge.style.setProperty('--fam-hue', String(familyHue(fam)));
+          badge.textContent = e.kind ?? '';
+          return badge;
+        },
+      },
+      {
+        key: 'message',
+        label: this._columns.message,
+        className: 'msg',
+        sortable: false,
+        render: (e) => {
+          const message = messageOf(e);
+          return this._messageRenderer ? this._messageRenderer(message, e) : message;
+        },
+      },
+    ];
+    this.table.columns = cols;
+    // The haystack is the kind, the message and every field VALUE — typing
+    // a family, a status word or a repo slug all narrow the same box.
+    this.table.searchText = (e) => [e.kind ?? '', messageOf(e), ...Object.values(e.fields ?? {})].join(' ');
+    this.table.rowClass = (e) => `sev-${severityOf(e.kind)}`;
+  }
+
+  private applyFacets(): void {
+    const groups: FacetGroup<ActivityEntry>[] = [
+      {
+        key: SEV_GROUP,
+        label: 'entr(ies)',
+        of: (e) => severityOf(e.kind),
+        order: SEVERITIES,
+        chipClass: (b) => `sev-${b}`,
+      },
+      {
+        key: FAM_GROUP,
+        label: 'entr(ies)',
+        of: (e) => familyOf(e.kind, this._familyAliases),
+        chipClass: () => 'fam',
+        decorate: (chip, fam) => chip.style.setProperty('--fam-hue', String(familyHue(fam))),
+        hidden: !this.familyChips,
+      },
+    ];
+    this.table.facets = groups;
+  }
 
   private restoreFilter(): void {
     const key = this.storageKey;
     if (!key) return;
     try {
-      const f = parseStoredFilter(globalThis.localStorage?.getItem(key));
-      this._query = f.query;
-      this._hiddenSeverities = new Set(f.hiddenSeverities);
-      this._hiddenFamilies = new Set(f.hiddenFamilies);
-      this.queryEl.value = this._query;
+      this.filter = parseStoredFilter(globalThis.localStorage?.getItem(key));
     } catch {
       /* storage unavailable (private mode, sandboxed iframe): no persistence */
     }
@@ -311,125 +344,6 @@ export class ActivityFeedElement extends HTMLElement {
       globalThis.localStorage?.setItem(key, JSON.stringify(this.filter));
     } catch {
       /* storage unavailable: the choice just doesn't persist */
-    }
-  }
-
-  private filterChanged(): void {
-    this.persistFilter();
-    this.render();
-    this.dispatchEvent(
-      new CustomEvent('activity-filter-change', { detail: this.filter, bubbles: true, composed: true }),
-    );
-  }
-
-  private toggle(set: Set<string>, value: string): void {
-    if (set.has(value)) set.delete(value);
-    else set.add(value);
-    this.filterChanged();
-  }
-
-  // -- Rendering ------------------------------------------------------------
-
-  private renderHead(): void {
-    this.headEl.replaceChildren();
-    const tr = document.createElement('tr');
-    for (const key of ['time', 'kind', 'message'] as const) {
-      const th = document.createElement('th');
-      th.textContent = this._columns[key];
-      tr.append(th);
-    }
-    this.headEl.append(tr);
-  }
-
-  private chip(label: string, count: number, off: boolean, extraClass: string, onClick: () => void): HTMLButtonElement {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = `chip ${extraClass}${off ? ' off' : ''}`;
-    b.textContent = `${label} ×${count}`;
-    b.setAttribute('aria-pressed', String(!off));
-    b.title = off ? `${count} ${label} entr(ies) hidden — click to show` : `click to hide ${label} entries`;
-    b.addEventListener('click', onClick);
-    return b;
-  }
-
-  private render(): void {
-    const filter = {
-      query: this._query,
-      hiddenSeverities: this._hiddenSeverities,
-      hiddenFamilies: this._hiddenFamilies,
-      familyAliases: this._familyAliases,
-    };
-    const { shown, severityCounts, familyCounts } = selectEntries(this._entries, filter);
-
-    // Severity chips: every bucket that occurs, plus every hidden one (a
-    // chip must stay visible while it is hiding rows).
-    this.sevChipsEl.replaceChildren();
-    for (const sev of SEVERITIES) {
-      const n = severityCounts.get(sev) ?? 0;
-      if (n === 0 && !this._hiddenSeverities.has(sev)) continue;
-      this.sevChipsEl.append(
-        this.chip(sev, n, this._hiddenSeverities.has(sev), `sev-${sev}`, () => this.toggle(this._hiddenSeverities, sev)),
-      );
-    }
-
-    this.famChipsEl.hidden = !this.familyChips;
-    if (this.familyChips) {
-      this.famChipsEl.replaceChildren();
-      const fams = new Set([...familyCounts.keys(), ...this._hiddenFamilies]);
-      for (const fam of [...fams].sort()) {
-        const chip = this.chip(fam, familyCounts.get(fam) ?? 0, this._hiddenFamilies.has(fam), 'fam', () =>
-          this.toggle(this._hiddenFamilies, fam),
-        );
-        chip.style.setProperty('--fam-hue', String(familyHue(fam)));
-        this.famChipsEl.append(chip);
-      }
-    }
-
-    const total = this._entries.length;
-    const filtering = isFiltering(filter);
-    this.countEl.textContent = filtering ? `showing ${shown.length} of ${total}` : '';
-    this.clearEl.hidden = !filtering;
-
-    this.bodyEl.replaceChildren();
-    for (const entry of shown) {
-      const sev = severityOf(entry.kind);
-      const fam = familyOf(entry.kind, this._familyAliases);
-
-      const tr = document.createElement('tr');
-      tr.className = `sev-${sev}`;
-
-      const tdTime = document.createElement('td');
-      tdTime.className = 'time';
-      tdTime.textContent = this._timeFormatter ? this._timeFormatter(entry.time, entry) : formatTimestamp(entry.time);
-
-      const tdKind = document.createElement('td');
-      const badge = document.createElement('span');
-      badge.className = `kind sev-${sev} fam-${fam}`;
-      badge.style.setProperty('--fam-hue', String(familyHue(fam)));
-      badge.textContent = entry.kind ?? '';
-      tdKind.append(badge);
-
-      const tdMsg = document.createElement('td');
-      tdMsg.className = 'msg';
-      const message = messageOf(entry);
-      const rendered = this._messageRenderer ? this._messageRenderer(message, entry) : message;
-      // A string result becomes a TEXT node — producer strings can never be
-      // parsed as markup here. A Node result is the consumer's own DOM.
-      if (typeof rendered === 'string') tdMsg.append(document.createTextNode(rendered));
-      else if (rendered) tdMsg.append(rendered);
-
-      tr.append(tdTime, tdKind, tdMsg);
-      this.bodyEl.append(tr);
-    }
-
-    const nothing = shown.length === 0;
-    this.tableEl.hidden = nothing;
-    this.emptyEl.hidden = !nothing;
-    if (nothing) {
-      // Say WHICH emptiness this is. "Nothing yet" in front of a feed that
-      // holds 200 rows the filter is hiding is the bug worth avoiding.
-      this.emptyEl.textContent =
-        total > 0 && filtering ? `No entries match the filter (${total} hidden).` : this.emptyText;
     }
   }
 }
