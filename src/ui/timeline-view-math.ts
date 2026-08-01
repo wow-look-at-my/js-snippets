@@ -1755,7 +1755,7 @@ export function categoryHue(category: string): number {
  * separate by tone, while every category keeps one stable color forever.
  */
 export function categoryJitter(category: string): { dl: number; dc: number } {
-  const h = hashString(`${category} tone`);
+  const h = hashString(`${category}\u0000tone`);
   return {
     dl: ((h & 0xff) / 255 - 0.5) * 0.1,
     dc: (((h >>> 8) & 0xff) / 255 - 0.5) * 0.04,

@@ -763,6 +763,13 @@ export class TimelineViewElement extends HTMLElement {
   // rebuild() per animation frame rather than re-laying-out synchronously per
   // call (0 = none scheduled). See scheduleRebuild.
   private rebuildRaf = 0;
+  // Frame bookkeeping for the rebuild/paint split (see rebuild()): a paint may
+  // be pushed one frame past its rebuild, but never so far that the chart
+  // stops painting — the test is "did a paint happen in the last frame", not
+  // a one-shot flag, so a stream of merges alternates layout/paint instead of
+  // stalling after the first deferral.
+  private frameNo = 0;
+  private lastDrawFrame = -1;
   private dirty = false;
   // Due timestamp of the next clock-paced draw — the even-spacing grid
   // used while the only motion is clock-driven and slower than the tier
@@ -961,7 +968,18 @@ export class TimelineViewElement extends HTMLElement {
     if (name === 'fullscreen' && oldValue !== newValue) this.applyFullscreen(newValue !== null);
     if (name === 'no-minimap' && oldValue !== newValue) this.resizeBackingStore(); // strip visibility re-evaluates there
     this.syncChrome();
-    this.invalidate();
+    // A rebuild has already spent this frame on layout; stacking the paint on
+    // top of it is what makes a single frame cost layout PLUS draw (measured
+    // 8-10 ms together, either alone comfortably under). Hand the draw the
+    // next frame instead — but never twice running, so a stream of merges
+    // still animates: drawDeferred clears as soon as a draw actually renders.
+    this.dirty = true;
+    if (this.raf !== 0 && this.lastDrawFrame >= this.frameNo - 1) {
+      cancelAnimationFrame(this.raf);
+      this.raf = requestAnimationFrame(this.onFrame);
+    } else {
+      this.schedule();
+    }
   }
 
   // -- Fullscreen (viewport-fill) ---------------------------------------------------
@@ -1603,7 +1621,18 @@ export class TimelineViewElement extends HTMLElement {
       this.resizeBackingStore();
     }
     this.syncChrome();
-    this.invalidate();
+    // A rebuild has already spent this frame on layout; stacking the paint on
+    // top of it is what makes a single frame cost layout PLUS draw (measured
+    // 8-10 ms together, either alone comfortably under). Hand the draw the
+    // next frame instead — but never twice running, so a stream of merges
+    // still animates: drawDeferred clears as soon as a draw actually renders.
+    this.dirty = true;
+    if (this.raf !== 0 && this.lastDrawFrame >= this.frameNo - 1) {
+      cancelAnimationFrame(this.raf);
+      this.raf = requestAnimationFrame(this.onFrame);
+    } else {
+      this.schedule();
+    }
   }
 
   /**
@@ -2327,6 +2356,7 @@ export class TimelineViewElement extends HTMLElement {
 
   private onFrame = (t: number): void => {
     this.raf = 0;
+    this.frameNo++;
     // Adaptive pacing: a pure animation frame (nothing dirty) renders only
     // when its draw budget has elapsed. The budget is the tier's — full
     // rate while interacting, ~30fps idle, ~10fps idle on battery — and,
@@ -2387,6 +2417,7 @@ export class TimelineViewElement extends HTMLElement {
     this.updateVisibleLayout();
     if (this.dirty || this.animating()) {
       this.dirty = false;
+      this.lastDrawFrame = this.frameNo; // a paint is happening now
       this.draw();
     }
     if (this.animating()) this.schedule();
@@ -2438,7 +2469,12 @@ export class TimelineViewElement extends HTMLElement {
 
   // -- Sizing / theme ------------------------------------------------------------
 
+  // True while the plot canvas has been (re)sized but not yet painted; see
+  // the cold-surface split in draw().
+  private surfaceCold = true;
+
   private resizeBackingStore(): void {
+    this.surfaceCold = true;
     const raw = typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1;
     const dpr = Math.min(MAX_DPR, raw);
     const hostH = this.clientHeight;
@@ -3336,6 +3372,32 @@ export class TimelineViewElement extends HTMLElement {
 
     ctx.fillStyle = t.bg;
     ctx.fillRect(0, 0, w, h);
+
+    // A COLD SURFACE is a frame's worth of work by itself: allocating the
+    // backing store and first-touching ~11 MB of pixels costs several ms
+    // where the rasterizer is software, and doing it in the same frame as the
+    // first real render measured 8-11 ms — the one frame in a whole session
+    // that missed the budget. So the cold frame establishes the surface and
+    // stops; the next frame draws the chart into a surface that is already
+    // warm. Costs one extra frame after a create or a resize, and nothing
+    // afterwards.
+    if (this.surfaceCold) {
+      this.surfaceCold = false;
+      // Warm the text pipeline while this frame is otherwise idle. The first
+      // measureText/fillText with a given font shapes its glyphs, and paying
+      // that for the axis ticks and every lane label inside the first REAL
+      // draw is what pushed that frame to 9-10 ms. A cold frame that has
+      // nothing else to do is exactly where it belongs.
+      ctx.font = this.fontBar;
+      ctx.textBaseline = 'middle';
+      ctx.measureText('0123456789:.-/{}_ abcdefghijklmnopqrstuvwxyz');
+      ctx.measureText('ABCDEFGHIJKLMNOPQRSTUVWXYZ\u21d0\u21d2\u2026');
+      ctx.fillStyle = t.bg; // paint one warm glyph offscreen-left, invisible
+      ctx.fillText('0', -100, -100);
+      this.dirty = true;
+      this.schedule();
+      return;
+    }
 
     this.drawAxisAndGrid(ctx, now);
     this.drawLanes(ctx);
