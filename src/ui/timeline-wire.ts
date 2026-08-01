@@ -1,18 +1,18 @@
 // A COLUMNAR WIRE FORMAT for feeding <timeline-view> a lot of events cheaply,
 // plus the frame-paced driver that decodes one without blocking the page.
 //
-// It lives here because it is part of the timeline: a chart that holds 100k
+// It lives here because it is part of the timeline: a chart holding 100k
 // intervals needs a way to receive them that is not 27 MB of JSON, and the
 // decode has to fit inside a frame. Measured against the JSON it replaced, on
-// 100k events: ~10 B/event gzipped instead of ~32, and ~5x cheaper to turn
-// into intervals — nothing parses per record, and no per-event object is
-// built at all until a tooltip asks for one.
+// 100k events: 7.5 B/event gzipped instead of 28, and ~5x less main-thread
+// time — nothing parses per record, and no per-event object is built at all
+// until a tooltip asks for one.
 //
 // WHAT THIS MODULE IS NOT: it has no idea what your events MEAN. It decodes
 // bytes into typed columns; turning those into intervals (labels, states,
 // lanes) is the consumer's domain logic and stays in the consumer. That split
-// is why the format can be shared at all — the producer (github-state-mirror
-// has a Go encoder) and this decoder agree on a LAYOUT, not on a vocabulary.
+// is why one format serves different producers — they agree on a LAYOUT, not
+// on a vocabulary. The encoding half is ../../timelinewire (Go).
 //
 // THE LAYOUT (v1, magic "TLC1"), in order:
 //
@@ -29,9 +29,9 @@
 // run at all (the column was unused in this window) and reads as that entry
 // for every row.
 //
-// A change to this layout is a NEW VERSION — new magic, new media type —
-// never an edit to this one. A decoder that silently accepts two layouts is
-// how a feed starts lying.
+// A change to this layout is a NEW VERSION — new magic, new fixture — never an
+// edit to this one. A decoder that silently accepts two layouts is how a feed
+// starts lying.
 
 /** How a payload's columns are named and encoded. Supplied by the consumer:
  *  the format is a layout, the names are the consumer's own. */

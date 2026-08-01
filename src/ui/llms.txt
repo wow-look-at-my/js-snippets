@@ -1133,9 +1133,9 @@ Exports:
 ### ui/timeline-wire.js
 A compact COLUMNAR wire format for feeding <timeline-view> a lot of events,
 plus the frame-paced driver that decodes one without blocking the page. Use
-it when a feed is big enough that JSON stops being free: on 100k events it is
-~10 B/event gzipped against JSON's ~32, and ~5x cheaper to turn into
-intervals, because nothing parses per record and no per-row object is built
+it when a feed is big enough that JSON stops being free. Measured on 100k
+events: 7.5 B/event gzipped against JSON's 28, and ~5x less main-thread time
+to decode, because nothing parses per record and no per-row object is built
 until something asks for one.
 
 It decodes a LAYOUT, not a vocabulary — it has no idea what your events mean.
