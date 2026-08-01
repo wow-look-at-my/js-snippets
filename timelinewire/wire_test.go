@@ -3,6 +3,7 @@ package timelinewire
 import (
 	"encoding/base64"
 	"flag"
+	"github.com/stretchr/testify/require"
 	"os"
 	"strings"
 	"testing"
@@ -67,31 +68,23 @@ func goldenPage() Page {
 
 func TestEncodeMatchesGolden(t *testing.T) {
 	b, err := Encode(goldenPage(), goldenSchema())
-	if err != nil {
-		t.Fatalf("Encode: %v", err)
-	}
+	require.Nil(t, err)
+
 	got := base64.StdEncoding.EncodeToString(b)
 
 	if *update {
-		if err := os.WriteFile(goldenPath, []byte(got+"\n"), 0o644); err != nil {
-			t.Fatalf("write golden: %v", err)
-		}
+		require.NoError(t, os.WriteFile(goldenPath, []byte(got+"\n"), 0o644))
+
 		t.Logf("wrote %s (%d bytes)", goldenPath, len(b))
 		return
 	}
 
 	raw, err := os.ReadFile(goldenPath)
-	if err != nil {
-		t.Fatalf("read golden (regenerate with -update): %v", err)
-	}
+	require.Nil(t, err)
+
 	want := strings.TrimSpace(string(raw))
-	if got != want {
-		t.Fatalf("the v1 payload changed.\n\nThis fixture is also decoded by "+
-			"src/ui/timeline-wire.test.ts — it is what holds the encoder and the "+
-			"decoder together. If the wire genuinely changed, that is a NEW "+
-			"VERSION (new magic, new fixture), not an edit to this one.\n\n"+
-			"got:  %s\nwant: %s", got, want)
-	}
+	require.Equal(t, want, got)
+
 }
 
 func TestEncodeRejectsPageSchemaMismatch(t *testing.T) {
@@ -99,17 +92,15 @@ func TestEncodeRejectsPageSchemaMismatch(t *testing.T) {
 	// later as "trailing bytes", so it fails here instead.
 	p := goldenPage()
 	p.P["dur"] = []uint64{1}
-	if _, err := Encode(p, goldenSchema()); err == nil {
-		t.Fatal("expected an error for a short column")
-	}
+	_, err := Encode(p, goldenSchema())
+	require.NotNil(t, err)
 
 	p = goldenPage()
 	delete(p.S, "detail")
-	if _, err := Encode(p, goldenSchema()); err == nil {
-		t.Fatal("expected an error for a column the schema names but the page lacks")
-	}
+	_, err = Encode(p, goldenSchema())
+	require.NotNil(t, err)
 
-	if _, err := Encode(goldenPage(), Schema{Magic: "TL1"}); err == nil {
-		t.Fatal("expected an error for a magic that is not 4 bytes")
-	}
+	_, err = Encode(goldenPage(), Schema{Magic: "TL1"})
+	require.NotNil(t, err)
+
 }
