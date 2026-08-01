@@ -94,6 +94,26 @@ jobs:
           source_dir: dist
           public: 'true' # the library must stay anonymously importable
 
+  # timelinewire/ is the ENCODER half of src/ui/timeline-wire.ts, in Go — a
+  # nested module so the repo root stays TypeScript. It is a library (no main
+  # package), so autorelease is off: there is no binary to publish, and a
+  # consumer pulls it as a module, not a download.
+  go:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      actions: read
+      checks: read
+      artifact-metadata: write
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wow-look-at-my/go-toolchain@v1
+        with:
+          working-directory: timelinewire
+          autorelease: 'false'
+
   # Publish the component gallery — showcase/'s single self-contained HTML
   # page demoing every DOM-bound src/ui/ component on fake local data — to
   # buildhost as a per-branch static site:
