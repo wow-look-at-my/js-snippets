@@ -1,16 +1,15 @@
-// Package timelinewire encodes the columnar payload that ui/timeline-wire.js
-// decodes — the wire format for feeding <timeline-view> a large event feed.
+// Package timelinewire is the Go half of ../src/ui/timeline-wire.ts: the
+// columnar wire format for feeding <timeline-view> a large event feed.
 //
-// ONE IMPLEMENTATION, ONE REPO. The encoder and the decoder are the two halves
-// of a single format, so they live and version together, and testdata/ holds
-// ONE golden payload that both read: wire_test.go asserts this encoder emits
-// exactly those bytes, and timeline-wire.test.ts decodes exactly those bytes.
-// Nothing restates the layout anywhere else — a producer imports this package
-// rather than reimplementing it, which is how the format used to drift.
+// Both halves live in this repo so they version together, and testdata/ holds
+// ONE golden payload they share — wire_test.go asserts Encode emits exactly
+// those bytes, timeline-wire.test.ts decodes them. A producer imports this
+// package instead of restating the layout, so there is nothing to keep in
+// step by hand.
 //
-// Like the decoder, this knows a LAYOUT and not a vocabulary: the caller names
-// its own columns in a Schema. The names never reach the wire, so two
-// producers with different fields still speak the same format.
+// It knows a LAYOUT and not a vocabulary: the caller names its own columns in
+// a Schema and the names never reach the wire, so two producers with different
+// fields still speak one format.
 //
 // THE LAYOUT (v1, magic "TLC1"), in order:
 //
@@ -23,10 +22,11 @@
 //	<DeltaZ columns>  running deltas, zigzag-signed
 //	<Plain columns>   one uvarint per row
 //	<Bits columns>    ceil(n/8) bytes each
-//	<Strings columns> dictionary, then one index per row
+//	<Strings columns> dictionary, then one index per row — EXCEPT a dictionary
+//	                  of one, which carries no index run at all
 //
-// A change to this layout is a NEW VERSION — new magic, new media type — never
-// an edit to this one.
+// Changing any of that is a NEW VERSION — new magic, new fixture — never an
+// edit to this one.
 package timelinewire
 
 import (
