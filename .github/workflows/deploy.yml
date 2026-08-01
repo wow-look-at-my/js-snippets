@@ -109,10 +109,61 @@ jobs:
       deployments: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the tag step reads existing tags to pick the next one
       - uses: wow-look-at-my/go-toolchain@v1
         with:
           working-directory: timelinewire
           autorelease: 'false'
+
+      # A Go consumer cannot follow a branch: go.mod always records a concrete
+      # version. Left alone that means every consumer pins a pseudoversion --
+      # a bare commit sha that says nothing, goes stale the moment master
+      # moves, and (when it came from a PR branch that was squash-merged and
+      # deleted) points at a commit no clone can even name.
+      #
+      # So master PUBLISHES. Every push that changes the module cuts the next
+      # patch tag, and a consumer tracks the library with `go get ...@latest`
+      # instead of copying a sha. The tag is `timelinewire/vX.Y.Z` because Go
+      # requires a nested module's tags to carry its subdirectory prefix.
+      - name: Tag the Go module
+        if: github.ref_name == 'master'
+        uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            const prefix = "timelinewire/v";
+            const tags = (await exec.getExecOutput("git", ["tag", "--list", `${prefix}*`], { silent: true }))
+              .stdout.split("\n").map((t) => t.trim()).filter(Boolean);
+
+            // Highest existing release, by semver rather than by string order:
+            // v0.10.0 sorts before v0.9.0 alphabetically.
+            const parse = (t: string) => t.slice(prefix.length).split(".").map(Number);
+            let [major, minor, patch] = [0, 1, -1];
+            for (const t of tags) {
+              const v = parse(t);
+              if (v.length !== 3 || v.some(Number.isNaN)) continue;
+              if (v[0] > major || (v[0] === major && v[1] > minor) ||
+                  (v[0] === major && v[1] === minor && v[2] > patch)) {
+                [major, minor, patch] = v;
+              }
+            }
+            const next = `${prefix}${major}.${minor}.${patch + 1}`;
+
+            // Only cut a release when the module actually changed. A push that
+            // touches nothing under timelinewire/ would otherwise mint a tag
+            // identical to the last one.
+            const changed = (await exec.getExecOutput(
+              "git", ["diff", "--name-only", `${context.payload.before}..${context.sha}`], { silent: true }))
+              .stdout.split("\n").filter((f) => f.startsWith("timelinewire/"));
+            if (changed.length === 0 && tags.length > 0) {
+              core.info("no timelinewire/ changes in this push -- keeping the current release");
+              return;
+            }
+
+            await $`git tag ${next} ${context.sha}`;
+            await $`git push origin ${next}`;
+            core.info(`published ${next} at ${context.sha}`);
+            core.summary.addRaw(`Published \`${next}\`. Consumers: \`go get github.com/wow-look-at-my/js-snippets/timelinewire@latest\``).write();
 
   # Publish the component gallery — showcase/'s single self-contained HTML
   # page demoing every DOM-bound src/ui/ component on fake local data — to
