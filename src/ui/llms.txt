@@ -1230,8 +1230,12 @@ frame budget exists to avoid.
     });
   }
 
-A producer exists in Go: github-state-mirror encodes this layout, and both
-sides pin the same golden payload in their tests so neither can drift.
+THE ENCODER lives here too, in Go — `github.com/wow-look-at-my/js-snippets/
+timelinewire` (a nested module in this repo). Import it rather than writing a
+second encoder; that is what the format used to drift over. It is the same
+schema-driven shape (Schema/Page/Encode), and one fixture,
+timelinewire/testdata/golden-v1.b64, is written by its test and decoded by
+this module's, so neither half can move alone.
 
 ### ui/timeline-view-math.js
 The timeline's pure math. No DOM or browser APIs (unit-tested under

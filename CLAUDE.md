@@ -82,8 +82,8 @@ src/
 │   │                        names its own columns) + the one-chunk-per-frame
 │   │                        driver (runSliced/nextFrame). Decodes a LAYOUT,
 │   │                        never a vocabulary
-│   └── timeline-wire.test.ts ← colocated node:test tests, incl. the GOLDEN
-│                            payload github-state-mirror's Go encoder pins
+│   └── timeline-wire.test.ts ← colocated node:test tests; decodes the GOLDEN
+│                            payload timelinewire/ (the Go encoder) writes
 ├── webgpu/
 │   ├── llms.txt           ← docs for webgpu modules
 │   ├── hdr-loader.ts
@@ -123,6 +123,11 @@ src/
 │   ├── *.test.ts          ← colocated node:test tests (program / mesh / fbo)
 │   └── shaders/
 │       └── fullscreen.vert.glsl
+timelinewire/              ← the ENCODER half of ui/timeline-wire, in Go. A NESTED go module (github.com/wow-look-at-my/js-snippets/timelinewire) so the repo root stays TypeScript and a Go producer pulls only this
+├── go.mod
+├── wire.go                ← Schema/Page/Encode: the same schema-driven layout, encoding side
+├── wire_test.go           ← asserts the encoder still emits testdata/golden-v1.b64 (`go test -update ./...` rewrites it)
+└── testdata/golden-v1.b64 ← THE contract: written here, decoded by src/ui/timeline-wire.test.ts
 showcase/                  ← the COMPONENT GALLERY: one section per DOM-bound ui/ component, published per branch. Its own nested ts0 project — NOT part of the library build; see "Showcase"
 ├── ts0.json               ← single-HTML-file target (entry index.html → dist/index.html; esbuild loader override for the .css text import)
 ├── index.html             ← page shell: header + table of contents + one <section> per component
@@ -316,4 +321,4 @@ If you are reading any `llms.txt` and notice ANY inaccuracy, missing module, wro
 - Shaders (WGSL and GLSL) live in `src/<category>/shaders/` alongside the `.ts` that imports them; both import as text (`ts0.json` loaders, ambient decls in `wgsl.d.ts`/`glsl.d.ts`)
 - Keep modules self-contained — a consumer should only need one import
 - **No TypeScript parameter properties** (`constructor(private x: T)`) anywhere under `src/`: `pnpm test` runs the `.ts` through node's STRIP-ONLY type removal, which rejects any syntax that emits code. Declare the field and assign it.
-- `ui/timeline-wire.ts`'s v1 layout is pinned by a GOLDEN PAYLOAD shared with its Go producer: `timeline-wire.test.ts` decodes the same base64 that github-state-mirror's `TestTimelineWireGoldenBytes` asserts its encoder emits. Two implementations, two repos, one contract — the bytes. Changing the layout is a NEW VERSION (new magic) with its own fixture, never an edit to that one.
+- `ui/timeline-wire.ts` (decoder) and `timelinewire/` (Go encoder) are the two halves of ONE format and live together here — a producer imports the package instead of restating the layout, which is how it used to drift. They are held in step by ONE fixture, `timelinewire/testdata/golden-v1.b64`: the Go test asserts the encoder still emits it, the TS test decodes it. Changing the layout is a NEW VERSION (new magic, new media type) with its own fixture, never an edit to that one.
