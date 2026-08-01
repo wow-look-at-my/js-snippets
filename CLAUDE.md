@@ -130,6 +130,7 @@ timelinewire/              ← the ENCODER half of ui/timeline-wire, in Go. A NE
 ├── wire_test.go           ← asserts the encoder still emits testdata/golden-v1.b64 (`go test -update ./...` rewrites it)
 ├── decode_test.go         ← decodes that same fixture + round-trip + corruption rejection
 └── testdata/golden-v1.b64 ← THE contract: written here, decoded by src/ui/timeline-wire.test.ts
+RELEASES: every master push that changes `timelinewire/` cuts the next `timelinewire/vX.Y.Z` tag (deploy.yml's `go` job). A Go consumer runs `go get github.com/wow-look-at-my/js-snippets/timelinewire@latest` and pins a RELEASE -- a pseudoversion copies a commit sha that says nothing and rots when the branch it came from is deleted.
 showcase/                  ← the COMPONENT GALLERY: one section per DOM-bound ui/ component, published per branch. Its own nested ts0 project — NOT part of the library build; see "Showcase"
 ├── ts0.json               ← single-HTML-file target (entry index.html → dist/index.html; esbuild loader override for the .css text import)
 ├── index.html             ← page shell: header + table of contents + one <section> per component
