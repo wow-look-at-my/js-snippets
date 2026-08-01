@@ -90,6 +90,7 @@ import {
   fitSpanView,
   segmentAtTime,
   CLUSTER_JOIN_PX,
+  CLUSTER_MAX_SPAN_PX,
   CLUSTER_ZOOM_FILL_FRAC,
   minimapExtent,
   minimapWindowRect,
@@ -2401,14 +2402,53 @@ test('clusterInstants: threshold boundary — a gap exactly at joinPx merges, ju
   assert.deepEqual(past.memberOf, [-1, -1]);
 });
 
-test('clusterInstants: transitive chain — pairwise-close pips merge even when the ends are far apart', () => {
-  // 10px apart each (join 12px): a↔d are 30px apart, still ONE cluster.
+test('clusterInstants: a transitive chain merges only up to the width cap', () => {
+  // 10px apart each (join 12px, cap 24px): a..c fit the cap; d would make
+  // the chain 30px wide, so it breaks there instead of dragging d in.
   const view: TimeView = { start: 0, end: 100_000 }; // 100ms/px
   const items = [pip('a', 10_000), pip('b', 11_000), pip('c', 12_000), pip('d', 13_000)];
   const r = clusterInstants(items, view, 1000);
   assert.equal(r.clusters.length, 1);
-  assert.deepEqual(r.clusters[0].indices, [0, 1, 2, 3]);
-  assert.deepEqual(r.clusters[0].extent, { start: 10_000, end: 13_000 });
+  assert.deepEqual(r.clusters[0].indices, [0, 1, 2]);
+  assert.deepEqual(r.clusters[0].extent, { start: 10_000, end: 12_000 });
+  assert.equal(r.memberOf[3], -1, 'the pip past the cap keeps its own timestamp');
+});
+
+test('clusterInstants: a dense run stays a ROW of markers at any zoom — never one blob', () => {
+  // 4000 instants, 1s apart: over an hour-wide window they are ~0.28px
+  // apart, so the un-capped transitive chain swallowed the whole track
+  // into ONE cluster and the densely populated lane rendered as a single
+  // pip at the midpoint.
+  const items = Array.from({ length: 4000 }, (_, i) => pip(`s${String(i).padStart(4, '0')}`, i * 1_000));
+  const plotWidth = 1000;
+  for (const span of [4_000_000, 40_000_000, 400_000_000]) {
+    const view: TimeView = { start: 0, end: span };
+    const r = clusterInstants(items, view, plotWidth);
+    const msPerPx = span / plotWidth;
+    const dataPx = (items[items.length - 1].start - items[0].start) / msPerPx;
+    // The run's markers still span its real extent, at roughly one per cap.
+    assert.ok(
+      r.clusters.length >= Math.floor(dataPx / CLUSTER_MAX_SPAN_PX) - 1,
+      `span ${span}: ${r.clusters.length} clusters across ${dataPx.toFixed(1)}px`,
+    );
+    for (const c of r.clusters) {
+      assert.ok(
+        (c.extent.end - c.extent.start) / msPerPx <= CLUSTER_MAX_SPAN_PX + 1e-9,
+        'no cluster is wider than the cap',
+      );
+    }
+    // Every input is accounted for, and none is displaced by more than
+    // half a cap from the marker that represents it.
+    const seen = new Set<number>();
+    for (const c of r.clusters) for (const i of c.indices) seen.add(i);
+    for (let i = 0; i < items.length; i++) {
+      const ci = r.memberOf[i];
+      assert.equal(ci >= 0, seen.has(i));
+      if (ci < 0) continue;
+      const mid = (r.clusters[ci].extent.start + r.clusters[ci].extent.end) / 2;
+      assert.ok(Math.abs(items[i].start - mid) / msPerPx <= CLUSTER_MAX_SPAN_PX / 2 + 1e-9);
+    }
+  }
 });
 
 test('clusterInstants: bars and ongoing intervals never cluster', () => {
