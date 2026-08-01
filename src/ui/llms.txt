@@ -700,7 +700,10 @@ deltas and the scale, so panning never re-clusters (no jitter — the
 marker sits at the member extent's midpoint, sliding along the visible
 slice at a window edge instead of hiding off-screen), while ZOOMING IN
 progressively splits every cluster until each pip stands at its true
-timestamp. A cluster styles by its members' shared state where uniform
+timestamp. A cluster is also capped at CLUSTER_MAX_SPAN_PX (24) wide,
+so no pip is compacted more than ~12px from where it belongs and a
+densely populated track keeps rendering as a row of markers however far
+you zoom out — it never chains into a single marker at the midpoint. A cluster styles by its members' shared state where uniform
 (an all-'dim' cluster stays dim-flavored; mixed states fall back to the
 neutral default) and hits as {type: 'cluster', intervals, lane}:
 hovering shows a COMPONENT-BUILT summary tooltip (count, time extent,
@@ -1273,12 +1276,16 @@ Exports:
     visible part reaches through fadePx; pass the live edge as endMs for
     ongoing intervals — drives the element's edge shadow).
   Instant clustering: clusterInstants(items, view, plotWidth, joinPx?,
-    instantPx?) → {clusters: InstantCluster[], memberOf: number[]} (the
-    scale-aware greedy transitive sweep behind the element's stacked
-    cluster markers:
+    instantPx?, maxSpanPx?) → {clusters: InstantCluster[], memberOf:
+    number[]} (the scale-aware greedy transitive sweep behind the
+    element's stacked cluster markers:
     terminal items whose duration maps under instantPx merge while their
     starts sit within joinPx (CLUSTER_JOIN_PX = 12) of a neighbor at
-    this scale; clusters have >= 2 members, everything else gets
+    this scale, up to a cluster width of maxSpanPx
+    (CLUSTER_MAX_SPAN_PX = 24) — the cap bounds how far a pip is
+    compacted from its true time (half that) and is what keeps a dense
+    run a ROW of markers instead of one chained blob at wide zooms;
+    clusters have >= 2 members, everything else gets
     memberOf -1; membership depends only on time deltas + scale — pans
     never re-cluster, zooming in splits; deterministic under input
     re-ordering; InstantCluster = {indices, extent} with extent the
