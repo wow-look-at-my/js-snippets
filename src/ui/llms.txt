@@ -132,6 +132,19 @@ performs the standard property upgrade):
   rowClass / rowId           per-row class; stable id echoed in row-click
   searchText: (row)=>string  overrides what the query searches
   filteredEmptyText: (total)=>string   own noun for the filtered-empty state
+  detailFor: (row)=>Node|Promise<Node>|null
+                             per-row expandable detail; null = that row has
+                             none. Requires rowId (expansion is tracked by
+                             ID, so it survives the row objects being
+                             replaced on every refresh). A Promise renders a
+                             placeholder and paints when it resolves -- and
+                             a rejection paints the error, because a row
+                             that opens onto nothing looks broken. Rows with
+                             a detail become disclosure controls
+                             (aria-expanded, Enter/Space).
+  expanded: string[]         the open rows' ids; assign to restore or
+                             collapse ([] closes everything)
+  toggleDetail(row)          open/close one row's detail
   styleText: string          extra CSS applied INSIDE the shadow root (the
                              escape hatch for styling rendered cells)
   emptyText / storageKey / searchable / placeholder   mirror the attributes
@@ -142,8 +155,8 @@ Attributes: empty-text, storage-key (localStorage key for query+chips+sort;
 unset = no persistence), searchable (boolean), placeholder.
 
 Events: `table-filter-change` (detail StoredTableFilter), `table-sort-change`
-(detail SortState|null), `row-click` (detail {row, id}) -- all bubble and
-compose. Adding a `row-click` listener is also what makes rows INTERACTIVE:
+(detail SortState|null), `row-click` (detail {row, id}), `detail-toggle`
+(detail {row, id, open}) -- all bubble and compose. Adding a `row-click` listener is also what makes rows INTERACTIVE:
 they gain tabindex/role=button/Enter+Space and a focus ring. Derived from
 the listener rather than a separate flag so "clicking a row does something"
 and "a keyboard can reach a row" cannot be set inconsistently; a table with

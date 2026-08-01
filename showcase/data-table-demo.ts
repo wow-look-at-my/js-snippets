@@ -145,6 +145,17 @@ export function mountDataTableDemo(now: number): void {
     full.facets = FACETS;
     full.rows = rows;
     full.rowId = (r) => r.id;
+    // Expandable detail: click (or Enter) a row to reveal it. One row's
+    // detail is deliberately ASYNC so the placeholder-then-paint path is on
+    // screen too — a detail that has to be fetched is the common case, and
+    // it is the one that looks broken if the component gets it wrong.
+    full.detailFor = (r) => {
+      const box = document.createElement('div');
+      box.className = 'demo-detail';
+      box.textContent = `${r.id} · ${r.hook} · ${r.status} · ${fmtMs(r.ms)}`;
+      if (!r.status.startsWith('f')) return box;
+      return new Promise<Node>((resolve) => setTimeout(() => resolve(box), 400));
+    };
     // Adding this listener is ALSO what makes rows keyboard-reachable —
     // try tabbing into the body and pressing Enter.
     full.addEventListener('row-click', (e) => {
