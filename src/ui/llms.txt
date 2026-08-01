@@ -238,6 +238,107 @@ cost; only FadeTextPainter touches a canvas. Generic — no timeline types;
 
 Types: MeasureText, FittedText, FitTieredOptions
 
+### ui/combobox.js
+Custom `<select>` dropdown replacement for browsers whose native dropdown is
+broken or unusable — the motivating case is Tesla's in-car browser, which
+renders the native dropdown in a separate OS window the page never captures, so
+the option list is invisible. Replaces a `<select>` with an in-page popup
+listbox built from ordinary DOM and appended to `<body>`, so no native dropdown
+is ever opened. The original `<select>` stays in the DOM as the model: it is
+hidden but keeps its value, and choosing an option sets that value and
+dispatches `input` + `change`, so any existing listener (or framework, e.g.
+lil-gui) runs unchanged. Options are read live at open time, so a select whose
+`<option>`s are repopulated later keeps working. Keyboard: arrows/Home/End move,
+Enter/Space choose, Escape close, type-ahead. Rendered in the light DOM; injects
+its own themeable stylesheet once (compiled in — no CSS file to ship). No
+dependencies. Re-exports everything from ui/combobox-logic.js so one import is
+enough.
+
+Importing the module auto-registers `<combo-box>` (unless that tag is taken).
+
+  import { installSelectFallback } from '.../ui/combobox.js';
+  installSelectFallback();              // Tesla UA by default; { force: true } for any browser
+
+  import '.../ui/combobox.js';          // registers <combo-box>
+  //  <combo-box><select>…</select></combo-box>
+
+Activation (installSelectFallback / shouldEnable): the UA gate matches Tesla by
+default; override with `match: (ua) => boolean`, bypass with `force: true`, or
+force at runtime via `?combobox=force`, `localStorage['js-combobox']='force'`,
+or `globalThis.__JS_COMBOBOX_FORCE__ = true`.
+
+Exports:
+  installSelectFallback(opts?) → () => void
+    Upgrade all current <select>s and (unless observe:false) watch for new ones
+    via a MutationObserver. No-op unless shouldEnable(opts) passes. Returns a
+    disposer that stops observing. Opts: force, match, root (ParentNode,
+    default document), observe (default true), existingTrigger.
+  upgradeSelect(select, opts?) → void
+    Upgrade one <select>. Idempotent; skips multi-selects. opts.existingTrigger
+    (select) => HTMLElement|null lets you reuse a host's own trigger that
+    already paints the value (e.g. a lil-gui .widget whose .display stays in
+    sync) instead of generating one.
+  upgradeAll(root?, opts?) → void
+    Upgrade every <select> under root (default document).
+  openPopup(select, trigger, syncLabel?) → void
+    Open the popup for a (hidden) select anchored to a trigger element.
+  closePopup() → void
+    Close the open popup, if any (one is open at a time).
+  injectStyles() → void
+    Inject the component stylesheet once (idempotent; no-op without a DOM).
+    Called automatically by upgradeSelect.
+  COMBOBOX_CSS: string
+    The stylesheet source. Theme by overriding the --cb-* custom properties
+    (--cb-bg, --cb-fg, --cb-border, --cb-accent, --cb-radius, --cb-popup-bg,
+    --cb-popup-fg, --cb-popup-border, --cb-active).
+  class ComboBox extends HTMLElement
+    Backs <combo-box>; upgrades its child <select> on connect (no UA gate).
+    Exported so you can register under another name.
+  Plus everything re-exported from ui/combobox-logic.js (shouldEnable and the
+  other pure helpers below).
+
+Types: UpgradeOptions, FallbackOptions (extends EnableOptions + UpgradeOptions
+with root?: ParentNode, observe?: boolean).
+
+### ui/combobox-logic.js
+The combobox's pure logic. No DOM or browser APIs (unit-tested under node);
+ui/combobox.js is the DOM-bound half that consumes it.
+
+Exports:
+  shouldEnable(opts?: EnableOptions) → boolean
+    Whether the fallback should activate: true if opts.force, the UA matches
+    (opts.match, default isBrokenDropdownUA), or a manual override is set
+    (?combobox=force, localStorage['js-combobox']='force', or
+    globalThis.__JS_COMBOBOX_FORCE__ = true). Reads only guarded globals, so
+    it is safe (and false by default) outside a browser.
+  isBrokenDropdownUA(ua) → boolean
+    The default UA gate: /Tesla|QtCarBrowser/i.
+  hasForceParam(search) → boolean
+    Whether a location.search-style string carries combobox=force.
+  optionText(opt) → string
+    An option's display text: textContent, else value, else ''. Structural —
+    takes a real HTMLOptionElement or any { textContent?, value? }.
+  firstEnabledIndex(options) / lastEnabledIndex(options) → number
+    First/last non-disabled index (0 / length-1 fallback when none).
+  stepActiveIndex(current, dir, options) → number
+    Next active index stepping ±1 with wrap-around, skipping disabled
+    options; all-disabled or empty lists leave `current` unchanged.
+  typeAheadTarget(buffer, activeIndex, options) → number
+    First enabled option whose text starts with buffer (case-insensitive),
+    searching forward with wrap-around — a fresh single-character buffer
+    starts after the active option (repeats walk the matches), a longer
+    buffer includes it; -1 when nothing matches.
+  computePopupPlacement({trigger, viewport, popup}) → PopupPlacement
+    Fixed-position placement for a popup anchored to a trigger rect: prefers
+    below, flips above when below can't fit the (320px-capped) height and
+    above is roomier; maxHeight fits the chosen side within [80, 320];
+    minWidth = trigger width, maxWidth = min(max(width, 200), viewport - 16);
+    left keeps a 4px viewport inset. Returns {top, left, maxHeight, minWidth,
+    maxWidth, openUp}.
+
+Types: EnableOptions {force?, match?}, OptionLike {text, disabled?},
+PlacementInput, PopupPlacement
+
 ### ui/markdown.js
 Markdown -> DOM renderer for untrusted prose (a PR description, an issue
 body, a comment). Parsing is micromark via mdast-util-from-markdown with GFM
