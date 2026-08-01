@@ -1,10 +1,16 @@
 ### ui/activity-feed.js
 Filterable activity/event log table as an <activity-feed> custom element.
-One element = one feed of timestamped, kinded events. It renders the rows
-and owns the filtering UI: a free-text query plus severity toggle chips
-(optionally family chips) with live counts, a "showing N of M" readout and
-a clear-filter button. Dependency-free; re-exports ui/activity-feed-math.js
-so one import serves both.
+One element = one feed of timestamped, kinded events, presented with a
+free-text query plus severity toggle chips (optionally family chips) with
+live counts, a "showing N of M" readout and a clear-filter button.
+Dependency-free; re-exports ui/activity-feed-math.js so one import serves
+both.
+
+IT IS A <data-table> UNDERNEATH (ui/data-table.js): rows, chips, counts,
+the two empty states and the filter plumbing are that component's, and
+this module supplies only what is feed-specific — three columns, the kind
+badge, and the severity/family derivation. The public API below is
+unchanged, including the persisted filter shape.
 
 COLOR IS DERIVED, NEVER ENUMERATED: severity comes from the ACTION half of
 a dotted kind ("manager.inbox_dropped" -> bad) and tints the badge pill;
@@ -142,6 +148,113 @@ Exports:
     Exported so you can register under another name.
 
 Types: EnableOptions, UpgradeOptions, FallbackOptions.
+
+### ui/data-table.js
+Declarative filterable/sortable table as a <data-table> custom element.
+You declare columns and hand over rows; it owns the header and sort cycle,
+the free-text query, the facet chip groups, the "showing N of M" readout
+and the two distinct empty states. Dependency-free; re-exports
+ui/data-table-math.js so one import serves both. <activity-feed> is built
+on it -- nothing about tables is implemented twice.
+
+VALUE vs RENDER vs TEXT is the column contract: `value` SORTS, `render`
+DISPLAYS, `text` SEARCHES (defaulting to value's string). A duration column
+sorts by milliseconds, shows "1.2s" and is searched as "1.2s"; collapse
+them and the table sorts "10s" before "9s".
+
+A `render` returning a string is appended as a TEXT NODE, never innerHTML,
+so producer strings cannot inject markup. Returning a Node is the opt-in
+for richer cells, and that DOM's safety is the consumer's.
+
+  <data-table empty-text="No runs yet." storage-key="app.runs" searchable>
+    <p>loading...</p>            <!-- light DOM: shown until upgrade -->
+  </data-table>
+
+Properties (all settable BEFORE the module loads -- connectedCallback
+performs the standard property upgrade):
+  columns: TableColumn[]     {key, label, value?, render?, text?, sortable?,
+                              searchable?, align?: 'start'|'end', className?}
+  rows: Row[]                rendered in the given order unless sorted
+  facets: FacetGroup[]       {key, label?, of, order?, chipClass?,
+                              decorate?, hidden?, local?, counts?, always?}
+                             -- one chip row per group. local:false means
+                             the HOST filters (server-side, before its own
+                             row cap): chips still toggle/persist/emit but
+                             the table drops nothing locally, and the group
+                             MUST supply `counts` (its rows no longer
+                             contain the hidden buckets, so derived counts
+                             read x0 on exactly the chips needing a number).
+                             Re-filtering a server-filtered window is how a
+                             table empties itself and reports "nothing
+                             matches" with the wanted rows just past the cap.
+  sort: {key, dir} | null    null = the consumer's order
+  rowClass / rowId           per-row class; stable id echoed in row-click
+  searchText: (row)=>string  overrides what the query searches
+  filteredEmptyText: (total)=>string   own noun for the filtered-empty state
+  styleText: string          extra CSS applied INSIDE the shadow root (the
+                             escape hatch for styling rendered cells)
+  emptyText / storageKey / searchable / placeholder   mirror the attributes
+  filter: StoredTableFilter  get/set query + hidden buckets + sort
+  clearFilter()              drop query + every hidden bucket (sort stays)
+
+Attributes: empty-text, storage-key (localStorage key for query+chips+sort;
+unset = no persistence), searchable (boolean), placeholder.
+
+Events: `table-filter-change` (detail StoredTableFilter), `table-sort-change`
+(detail SortState|null), `row-click` (detail {row, id}) -- all bubble and
+compose. Adding a `row-click` listener is also what makes rows INTERACTIVE:
+they gain tabindex/role=button/Enter+Space and a focus ring. Derived from
+the listener rather than a separate flag so "clicking a row does something"
+and "a keyboard can reach a row" cannot be set inconsistently; a table with
+no listener leaves its rows out of the tab order entirely.
+
+Accessibility: headers carry scope=col and aria-sort, sortable headers are
+focusable and activate on Enter/Space, and the "showing N of M" readout is
+an aria-live=polite region so a query narrowing the table is announced.
+
+Theme via --table-* custom properties (data-table.css), falling back to
+generic --fg/--muted/--border/--panel/--accent.
+
+Exports: class DataTableElement, types CellRenderer, TableColumn, FacetGroup
+-- plus everything from ui/data-table-math.js.
+
+### ui/data-table-math.js
+The table's pure half. No DOM (unit-tested under node).
+
+Exports:
+  valueOf(row, col) / textOf(row, col) -- resolve a column's sort value and
+    its searchable text.
+  isBlank(v) -- null/undefined/'' -- the "absent" test the ordering uses.
+  compareValues(a, b) -- numbers numerically, Dates chronologically, the
+    rest as numeric-aware locale strings. BLANK ALWAYS SORTS LAST.
+  sortRows(rows, columns, sort) -- STABLE copy; ties keep input order, and
+    blanks stay last in BOTH directions (folding them into the signed
+    compare is the classic bug: descending then answers a click with a
+    screen of blank rows).
+  nextSortState(current, key) -- the header cycle asc -> desc -> UNSORTED.
+    Returning to unsorted is how the producer's order becomes reachable
+    again; no asc/desc pair reproduces it.
+  matchesQuery(haystack, query) -- every whitespace term must match (AND).
+  selectRows(rows, columns, filter) -> {shown, facetCounts, total}. Facet
+    counts cover EVERY supplied row, not the survivors: a chip reading "x0"
+    the moment you hide its rows is exactly the number you needed in order
+    to decide whether to unhide. Row order is preserved (sorting is a
+    separate step).
+  isFiltering(filter) -- is anything actually narrowed?
+  toStoredTableFilter / parseStoredTableFilter / hiddenFromStored -- the
+    persisted shape; parse degrades to "no filter" on anything malformed,
+    so a stale localStorage value can never leave a table silently hiding
+    rows.
+
+NOTE the cap ordering this cannot fix for you: if the producer caps a page
+BEFORE applying the same exclusions, a burst of unwanted rows fills the
+page, this filter empties it, and the table reports "nothing here" while
+the rows you want sit just past the window. Filter first, cap second, on
+whichever side owns the data.
+
+Types: DataRow (= object, NOT Record<string,unknown> -- a declared row
+interface has no index signature), DataColumn, SortState, SortDir,
+FacetGroupSpec, HiddenFacets, TableFilter, Selection, StoredTableFilter
 
 ### ui/canvas-text.js
 Responsive multi-tier canvas text with alpha-fade truncation. A label is an
