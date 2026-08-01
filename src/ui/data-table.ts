@@ -147,6 +147,11 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
   private _styleText = '';
   private styleEl: HTMLStyleElement | null = null;
   private _interactiveRows = false;
+  private _detailFor: ((row: Row) => Node | Promise<Node> | null) | null = null;
+  /** Row ids whose detail is open. Ids, not rows: the row OBJECTS are
+   * replaced wholesale on every data refresh, so identity would lose the
+   * operator's expansion on the next poll. */
+  private _expanded = new Set<string>();
   private restored = false;
 
   constructor() {
@@ -342,6 +347,98 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     this._hidden.clear();
     this.queryEl.value = '';
     this.filterChanged();
+  }
+
+  /**
+   * Per-row expandable detail. Return the content for a row, or null for a
+   * row that has none (its row then stays non-expandable). A Promise is
+   * awaited with a placeholder in place, so a detail that has to be fetched
+   * — a stored value, a drill-down — does not block the click.
+   *
+   * Requires `rowId`: expansion is tracked by id so it survives the row
+   * objects being replaced on every refresh.
+   */
+  get detailFor(): ((row: Row) => Node | Promise<Node> | null) | null {
+    return this._detailFor;
+  }
+  set detailFor(fn: ((row: Row) => Node | Promise<Node> | null) | null) {
+    this._detailFor = fn;
+    this.render();
+  }
+
+  /** The open rows' ids. Assigning replaces the set, so a consumer can
+   * restore expansion (or collapse everything with []). */
+  get expanded(): string[] {
+    return [...this._expanded];
+  }
+  set expanded(ids: string[]) {
+    this._expanded = new Set(ids);
+    this.render();
+  }
+
+  /** Open/close one row's detail by id. */
+  toggleDetail(row: Row): void {
+    if (this._rowId === null || this._detailFor === null) return;
+    const id = this._rowId(row);
+    if (this._expanded.has(id)) this._expanded.delete(id);
+    else this._expanded.add(id);
+    this.dispatchEvent(
+      new CustomEvent('detail-toggle', {
+        detail: { row, id, open: this._expanded.has(id) },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+    this.render();
+  }
+
+  /**
+   * Appends the detail row under `tr` when that row is expanded. The detail
+   * spans every column, so it stays aligned with the table however many
+   * columns the consumer declared.
+   */
+  private renderDetail(tr: HTMLTableRowElement, row: Row): void {
+    if (this._detailFor === null || this._rowId === null) return;
+    if (!this._expanded.has(this._rowId(row))) return;
+    const content = this._detailFor(row);
+    if (content === null) return;
+    const td = document.createElement('td');
+    td.colSpan = Math.max(1, this._columns.length);
+    const detail = document.createElement('tr');
+    detail.className = 'detail-row';
+    detail.append(td);
+    tr.classList.add('has-open-detail');
+    this.bodyEl.append(detail);
+    if (content instanceof Promise) {
+      // Placeholder first: an awaited detail that renders nothing until it
+      // resolves reads as a click that did not register.
+      const pending = document.createElement('span');
+      pending.className = 'detail-pending';
+      pending.textContent = 'loading…';
+      td.append(pending);
+      const openFor = this._rowId(row);
+      void content.then(
+        (node) => {
+          // The table may have re-rendered (or the row collapsed) while the
+          // promise was in flight; only paint into a detail still on screen.
+          if (!td.isConnected || !this._expanded.has(openFor)) return;
+          td.replaceChildren(node);
+        },
+        (err: unknown) => {
+          if (!td.isConnected) return;
+          // A failure is the detail — swallowing it leaves a row that opens
+          // onto nothing and looks broken.
+          td.replaceChildren(
+            Object.assign(document.createElement('span'), {
+              className: 'detail-error',
+              textContent: `failed to load: ${err instanceof Error ? err.message : String(err)}`,
+            }),
+          );
+        },
+      );
+    } else {
+      td.append(content);
+    }
   }
 
   /**
@@ -585,19 +682,35 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
           }),
         );
       };
-      tr.addEventListener('click', activate);
+      // A row that HAS a detail toggles it on click, in addition to
+      // dispatching row-click. Expansion lives in the component, not the
+      // consumer: every hand-rolled version of this kept an "open id"
+      // variable and re-fetched the whole page to expand a row, which is
+      // both slower and a way to lose the operator's place.
+      const expandable = this._detailFor !== null && this._rowId !== null;
+      tr.addEventListener('click', () => {
+        if (expandable) this.toggleDetail(row);
+        activate();
+      });
       // A row is only interactive when someone is listening. Rows are
       // reachable by KEYBOARD when they are — a click-only row that opens a
       // detail view is unusable without a mouse, and an unconditional
       // tabindex would be worse: it puts every row of a purely presentational
       // table into the tab order for nothing.
-      if (this._interactiveRows) {
+      if (this._interactiveRows || expandable) {
         tr.tabIndex = 0;
         tr.setAttribute('role', 'button');
         tr.classList.add('interactive');
+        if (expandable) {
+          // The row is a disclosure control, and must say so: a screen
+          // reader has no other way to learn that activating it reveals
+          // content, or whether that content is currently showing.
+          tr.setAttribute('aria-expanded', String(this._expanded.has(this._rowId!(row))));
+        }
         tr.addEventListener('keydown', (e: KeyboardEvent) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
+            if (expandable) this.toggleDetail(row);
             activate();
           }
         });
@@ -614,6 +727,7 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
         tr.append(td);
       }
       this.bodyEl.append(tr);
+      this.renderDetail(tr, row);
     }
 
     const nothing = ordered.length === 0;
