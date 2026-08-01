@@ -143,7 +143,15 @@ unset = no persistence), searchable (boolean), placeholder.
 
 Events: `table-filter-change` (detail StoredTableFilter), `table-sort-change`
 (detail SortState|null), `row-click` (detail {row, id}) -- all bubble and
-compose.
+compose. Adding a `row-click` listener is also what makes rows INTERACTIVE:
+they gain tabindex/role=button/Enter+Space and a focus ring. Derived from
+the listener rather than a separate flag so "clicking a row does something"
+and "a keyboard can reach a row" cannot be set inconsistently; a table with
+no listener leaves its rows out of the tab order entirely.
+
+Accessibility: headers carry scope=col and aria-sort, sortable headers are
+focusable and activate on Enter/Space, and the "showing N of M" readout is
+an aria-live=polite region so a query narrowing the table is announced.
 
 Theme via --table-* custom properties (data-table.css), falling back to
 generic --fg/--muted/--border/--panel/--accent.

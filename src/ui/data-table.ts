@@ -146,6 +146,7 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
   private _filteredEmptyText: ((total: number) => string) | null = null;
   private _styleText = '';
   private styleEl: HTMLStyleElement | null = null;
+  private _interactiveRows = false;
   private restored = false;
 
   constructor() {
@@ -179,6 +180,11 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
 
     this.countEl = document.createElement('span');
     this.countEl.className = 'count';
+    // Typing in the query box changes how many rows exist, and a sighted
+    // user sees that instantly. polite (not assertive) so it reports after
+    // the keystroke rather than interrupting it.
+    this.countEl.setAttribute('aria-live', 'polite');
+    this.countEl.setAttribute('aria-atomic', 'true');
 
     this.clearEl = document.createElement('button');
     this.clearEl.className = 'clear';
@@ -338,6 +344,25 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     this.filterChanged();
   }
 
+  /**
+   * Rows become keyboard-reachable exactly when someone is listening for
+   * `row-click`. Detecting it from the listener rather than exposing yet
+   * another flag keeps the two facts that must agree — "clicking a row does
+   * something" and "a keyboard can reach a row" — impossible to set
+   * inconsistently.
+   */
+  addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: boolean | AddEventListenerOptions,
+  ): void {
+    if (listener !== null) super.addEventListener(type, listener, options);
+    if (type === 'row-click' && !this._interactiveRows) {
+      this._interactiveRows = true;
+      this.render();
+    }
+  }
+
   // -- Lifecycle ------------------------------------------------------------
 
   connectedCallback(): void {
@@ -426,6 +451,10 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     for (const col of this._columns) {
       const th = document.createElement('th');
       th.textContent = col.label;
+      // Column headers are headers, not decoration: without scope a screen
+      // reader cannot say which column a cell belongs to, which is most of
+      // what makes a table readable non-visually.
+      th.scope = 'col';
       if (col.align === 'end') th.classList.add('end');
       if (col.className) th.classList.add(col.className);
       const sortable = col.sortable !== false;
@@ -547,7 +576,7 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
       const cls = this._rowClass?.(row);
       if (cls) tr.className = cls;
       if (this._rowId) tr.dataset.rowId = this._rowId(row);
-      tr.addEventListener('click', () => {
+      const activate = () => {
         this.dispatchEvent(
           new CustomEvent('row-click', {
             detail: { row, id: this._rowId?.(row) ?? null },
@@ -555,7 +584,24 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
             composed: true,
           }),
         );
-      });
+      };
+      tr.addEventListener('click', activate);
+      // A row is only interactive when someone is listening. Rows are
+      // reachable by KEYBOARD when they are — a click-only row that opens a
+      // detail view is unusable without a mouse, and an unconditional
+      // tabindex would be worse: it puts every row of a purely presentational
+      // table into the tab order for nothing.
+      if (this._interactiveRows) {
+        tr.tabIndex = 0;
+        tr.setAttribute('role', 'button');
+        tr.classList.add('interactive');
+        tr.addEventListener('keydown', (e: KeyboardEvent) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            activate();
+          }
+        });
+      }
       for (const col of this._columns) {
         const td = document.createElement('td');
         if (col.align === 'end') td.classList.add('end');
