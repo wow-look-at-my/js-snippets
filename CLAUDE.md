@@ -126,7 +126,9 @@ src/
 timelinewire/              ← the ENCODER half of ui/timeline-wire, in Go. A NESTED go module (github.com/wow-look-at-my/js-snippets/timelinewire) so the repo root stays TypeScript and a Go producer pulls only this
 ├── go.mod
 ├── wire.go                ← Schema/Page/Encode: the same schema-driven layout, encoding side
+├── decode.go              ← Decode: the inverse, so a Go producer reads its own payload instead of writing a second reader
 ├── wire_test.go           ← asserts the encoder still emits testdata/golden-v1.b64 (`go test -update ./...` rewrites it)
+├── decode_test.go         ← decodes that same fixture + round-trip + corruption rejection
 └── testdata/golden-v1.b64 ← THE contract: written here, decoded by src/ui/timeline-wire.test.ts
 showcase/                  ← the COMPONENT GALLERY: one section per DOM-bound ui/ component, published per branch. Its own nested ts0 project — NOT part of the library build; see "Showcase"
 ├── ts0.json               ← single-HTML-file target (entry index.html → dist/index.html; esbuild loader override for the .css text import)
