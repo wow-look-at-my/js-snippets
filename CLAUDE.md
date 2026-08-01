@@ -108,11 +108,13 @@ src/
 │   ├── *.test.ts          ← colocated node:test tests (program / mesh / fbo)
 │   └── shaders/
 │       └── fullscreen.vert.glsl
-showcase/                  ← timeline-view demo page (its own nested ts0 project — NOT part of the library build; see "Showcase")
+showcase/                  ← the COMPONENT GALLERY: one section per DOM-bound ui/ component, published per branch. Its own nested ts0 project — NOT part of the library build; see "Showcase"
 ├── ts0.json               ← single-HTML-file target (entry index.html → dist/index.html; esbuild loader override for the .css text import)
-├── index.html             ← page shell (title bar + two <timeline-view>s)
-├── main.ts                ← wiring: styles/legend/tooltip + the live feed
-├── fake-data.ts           ← deterministic fake-run generator (pure fn of absolute time)
+├── index.html             ← page shell: header + table of contents + one <section> per component
+├── main.ts                ← gallery entry: adopts page.css, mounts the static sections, owns the live <timeline-view> feed
+├── data-table-demo.ts     ← <data-table> section (three instances: full / minimal / filtered-to-nothing)
+├── activity-feed-demo.ts  ← <activity-feed> section (kinds the severity rules know, and kinds they do not)
+├── fake-data.ts           ← deterministic fake-run generator (pure fn of absolute time) + mulberry32, shared by every section
 ├── page.css               ← page chrome (adopted from main.ts as a text import)
 └── assets.d.ts            ← ambient *.css/*.wgsl/*.glsl decls for the nested project's own type-check
 llms-header.txt            ← preamble for combined llms.txt
@@ -165,22 +167,59 @@ Conventions:
 
 ## Deploy
 
-GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` job enables pnpm via corepack, runs `pnpm test` (type-check + `node --test`), then `pnpm build` (ts0 type-checks + compiles, then `dist/llms.txt` is assembled). A failing test fails CI and gates the publish (same job, later step). The `build` job then publishes `dist/` to buildhost sites via `wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master` (OIDC, project `js-snippets`, `public: 'true'` so consumers keep importing anonymously): `master` → the stable `library` site branch (the canonical base URL), any other branch → `library-<flattened-branch>` so a change is verifiable from a real URL before merge. This replaced the GitHub Pages deploy 2026-07-20 (mirroring webhook-runner#93) after the org's Actions artifact-storage quota froze Pages at its 07-15 content — the Pages site itself was unpublished the same day in the org-wide GitHub Pages shutdown, leaving buildhost as the library's only host; the `library-` prefix keeps the library sites clear of the showcase previews, which publish under the bare flattened branch name. The `showcase` job publishes the timeline demo page to buildhost per branch (see "Showcase" below); it self-gates on chart/showcase paths and succeeds as a no-op otherwise, so it never blocks the org's all-builds aggregation.
+GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` job enables pnpm via corepack, runs `pnpm test` (type-check + `node --test`), then `pnpm build` (ts0 type-checks + compiles, then `dist/llms.txt` is assembled). A failing test fails CI and gates the publish (same job, later step). The `build` job then publishes `dist/` to buildhost sites via `wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master` (OIDC, project `js-snippets`, `public: 'true'` so consumers keep importing anonymously): `master` → the stable `library` site branch (the canonical base URL), any other branch → `library-<flattened-branch>` so a change is verifiable from a real URL before merge. This replaced the GitHub Pages deploy 2026-07-20 (mirroring webhook-runner#93) after the org's Actions artifact-storage quota froze Pages at its 07-15 content — the Pages site itself was unpublished the same day in the org-wide GitHub Pages shutdown, leaving buildhost as the library's only host; the `library-` prefix keeps the library sites clear of the showcase previews, which publish under the bare flattened branch name. The `showcase` job publishes the component gallery to buildhost per branch (see "Showcase" below); it self-gates on `src/ui/`+`showcase/` paths — watched WHOLE, since every UI component has a gallery section — and succeeds as a no-op otherwise, so it never blocks the org's all-builds aggregation.
 
 Org CI facts that govern this workflow: the org's required `all-builds` merge gate is a **commit status** posted automatically by the required-builds-manager app, which aggregates every build on the SHA itself — no job here needs to be named for it, and NO job or check may ever be named `all-builds` (the buildhost publish actions fail the whole run when anything by that name exists on the SHA; the error says to rename — if a fan-in/aggregator job is ever needed, use a neutral name like `aggregate`). The buildhost-publish-site steps require the calling job to hold `actions: read` + `checks: read` and fail closed without them — deploy.yml grants both at the workflow level and re-grants them in the `showcase` job, because a job-level `permissions:` block REPLACES the workflow-level one (the canonical explanation lives in deploy.yml's comments). Org CI also runs without GitHub Actions artifacts (the exhausted org artifact quota is what froze the old Pages deploy) — never add `actions/upload-artifact` steps; buildhost is the artifact transport.
 
-## Showcase (`showcase/`)
+## Showcase (`showcase/`) — the component gallery
 
-A live demo page for `<timeline-view>`: ONE self-contained HTML file whose
-fake, local, infinite feed keeps every visual treatment of the chart on
-screen — queued lead-ins, declared-wait hatching with ⧗/⏳ labels, failures,
-timeouts (a consumer style-map key), cancelled runs with kill tails of
-cycling sizes, instant-pip bursts, a viewport-crossing long span, packing
-bursts, markers, connectors, lazy backward history with an end-of-history
-boundary, plus a second compact instance demoing `--timeline-*` retheming and
-auto-fit. No network: data is generated deterministically as a pure function
-of absolute time (`fake-data.ts`), so live ticks, lazy history, and resyncs
-always agree, and the demo never runs dry.
+**WHAT IT IS FOR.** Every DOM-bound component in `src/ui/` is deliberately
+NOT node-tested (see "Testing"): the pure half is unit-tested and the
+ELEMENT is not, because nothing under `node --test` can render one. The
+gallery is where they are actually exercised — ONE self-contained HTML file,
+published per branch, so a change is verifiable from a real URL before it
+merges. It is not a marketing page and not a timeline demo that grew: it is
+the only place a rendering regression can be caught at all.
+
+**ADDING A UI COMPONENT MEANS ADDING A SECTION HERE.** That is the contract,
+not a nicety. A section's job is to put the treatments that are EASY TO GET
+WRONG on screen at once — the states a happy-path instance hides. Existing
+sections show the pattern: blank cells that must sort last in both
+directions, a display string that sorts differently from its real value, a
+filter-hides-everything empty state that must not read as "no data", a
+component with no listener wired (bar hidden, rows out of the tab order),
+and kinds no severity rule has ever heard of.
+
+**A type-only import registers nothing.** A demo that references a component
+only as a TYPE (`el as DataTableElement`) has its import ELIDED, so the
+module never evaluates, the element never upgrades, and the section sits on
+its light-DOM "loading…" line — with the build green throughout. Every demo
+module therefore carries an explicit side-effect import
+(`import '../src/ui/data-table.ts';`) next to its `import type`. This is
+exactly the class of failure the gallery exists to surface, and it is
+invisible to `pnpm build`.
+
+Sections, in page order:
+
+- **`<timeline-view>`** — the live one: a fake, local, infinite feed keeping
+  every visual treatment of the chart on screen (queued lead-ins,
+  declared-wait hatching with ⧗/⏳ labels, failures, timeouts as a consumer
+  style-map key, cancelled runs with kill tails of cycling sizes,
+  instant-pip bursts, a viewport-crossing long span, packing bursts,
+  markers, connectors, lazy backward history with an end-of-history
+  boundary), plus a second compact instance demoing `--timeline-*`
+  retheming and auto-fit. Data is generated deterministically as a pure
+  function of absolute time (`fake-data.ts`), so live ticks, lazy history
+  and resyncs always agree and the demo never runs dry.
+- **`<data-table>`** (`data-table-demo.ts`) — three instances: full
+  (query + two chip groups + sorting + keyboard-reachable rows), minimal,
+  and filtered-to-nothing. Fixed-seed fixture, so a visual change is a real
+  change and never the generator reshuffling.
+- **`<activity-feed>`** (`activity-feed-demo.ts`) — a `<data-table>`
+  underneath; the fixture mixes kinds the severity rules claim with kinds
+  no rule mentions, which is the derived-not-enumerated claim made visible.
+
+No network anywhere: every fixture is generated locally.
 
 - **Build**: `pnpm build:showcase` → `showcase/dist/index.html` (gitignored via
   the root `dist/` pattern). `showcase/ts0.json` selects ts0's single-HTML
