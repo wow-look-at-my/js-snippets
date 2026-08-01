@@ -117,7 +117,17 @@ performs the standard property upgrade):
                               searchable?, align?: 'start'|'end', className?}
   rows: Row[]                rendered in the given order unless sorted
   facets: FacetGroup[]       {key, label?, of, order?, chipClass?,
-                              decorate?, hidden?} -- one chip row per group
+                              decorate?, hidden?, local?, counts?, always?}
+                             -- one chip row per group. local:false means
+                             the HOST filters (server-side, before its own
+                             row cap): chips still toggle/persist/emit but
+                             the table drops nothing locally, and the group
+                             MUST supply `counts` (its rows no longer
+                             contain the hidden buckets, so derived counts
+                             read x0 on exactly the chips needing a number).
+                             Re-filtering a server-filtered window is how a
+                             table empties itself and reports "nothing
+                             matches" with the wanted rows just past the cap.
   sort: {key, dir} | null    null = the consumer's order
   rowClass / rowId           per-row class; stable id echoed in row-click
   searchText: (row)=>string  overrides what the query searches

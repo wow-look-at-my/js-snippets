@@ -89,6 +89,33 @@ export interface FacetGroup<Row extends DataRow = DataRow> {
   decorate?: (chip: HTMLButtonElement, bucket: string) => void;
   /** Hide the whole group's chip row. */
   hidden?: boolean;
+
+  /**
+   * Set false when the HOST does the filtering — typically server-side,
+   * before its own row cap. The chips still render, toggle and persist,
+   * and `table-filter-change` still fires, but the table does NOT drop
+   * rows locally: the host is expected to refetch.
+   *
+   * This exists because doing it the other way round is a real bug. A
+   * server that caps a page BEFORE excluding a status hands over a window
+   * that is entirely that status; filtering it again here empties the
+   * table, and it reports "nothing matches" while the rows the operator
+   * wants sit just past the cap, unreachable at any limit. If the data is
+   * a server-filtered window, say so here.
+   */
+  local?: boolean;
+
+  /**
+   * Chip counts to display instead of counting the supplied rows. A
+   * host-filtered group MUST supply these: the rows in hand no longer
+   * contain the hidden buckets at all, so a derived count would read ×0
+   * for precisely the chip you need a number on. Counts over the host's
+   * whole window ("skipped ×4213") are the useful figure anyway.
+   */
+  counts?: ReadonlyMap<string, number> | Readonly<Record<string, number>>;
+
+  /** Buckets whose chip shows even at zero, so the control stays discoverable. */
+  always?: readonly string[];
 }
 
 const DEFAULT_EMPTY = 'Nothing yet.';
@@ -444,11 +471,20 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     this.chipsWrapEl.replaceChildren();
     for (const group of this._facets) {
       if (group.hidden) continue;
-      const counts = facetCounts.get(group.key) ?? new Map<string, number>();
+      // Supplied counts win: a host-filtered group's rows no longer contain
+      // its hidden buckets, so derived counts would read ×0 on exactly the
+      // chips that need a number.
+      const counts = group.counts
+        ? group.counts instanceof Map
+          ? group.counts
+          : new Map(Object.entries(group.counts))
+        : (facetCounts.get(group.key) ?? new Map<string, number>());
       const hidden = this._hidden.get(group.key) ?? new Set<string>();
       // Every bucket that occurs, PLUS every hidden one: a chip must stay
       // visible while it is hiding rows, or the filter becomes unreachable.
-      const buckets = new Set([...counts.keys(), ...hidden]);
+      // PLUS any the group pins, so a control with nothing to show yet is
+      // still discoverable.
+      const buckets = new Set([...counts.keys(), ...hidden, ...(group.always ?? [])]);
       if (buckets.size === 0) continue;
       const ordered = group.order
         ? [...group.order].filter((b) => buckets.has(b)).concat([...buckets].filter((b) => !group.order?.includes(b)).sort())
@@ -478,10 +514,12 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
 
     this.queryEl.hidden = !this.searchable;
 
+    // Only LOCAL groups take part in selection; a host-filtered group's
+    // exclusions were already applied upstream (see FacetGroup.local).
     const filter = {
       query: this._query,
       hidden: this._hidden,
-      facets: this._facets,
+      facets: this._facets.filter((g) => g.local !== false),
       searchText: this._searchText ?? undefined,
     };
     const { shown, facetCounts, total } = selectRows(this._rows, this._columns, filter);
@@ -490,9 +528,16 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     this.renderChips(facetCounts);
 
     const filtering = isFiltering(filter);
-    this.countEl.textContent = filtering ? `showing ${shown.length} of ${total}` : '';
-    this.clearEl.hidden = !filtering;
-    this.barEl.hidden = !this.searchable && this.chipsWrapEl.childElementCount === 0 && !filtering;
+    // "showing N of M" describes what THIS element removed. A host-filtered
+    // group's exclusions never reached these rows, so counting them here
+    // would announce "showing 50 of 50" and mean nothing.
+    this.countEl.textContent = shown.length !== total ? `showing ${shown.length} of ${total}` : '';
+    // The clear affordance, though, covers every hidden bucket including a
+    // host-filtered group's — otherwise a chip could be toggled on and
+    // never cleared.
+    const anyHidden = isFiltering({ query: this._query, hidden: this._hidden });
+    this.clearEl.hidden = !anyHidden;
+    this.barEl.hidden = !this.searchable && this.chipsWrapEl.childElementCount === 0 && !anyHidden;
 
     const ordered = sortRows(shown, this._columns, this._sort);
 

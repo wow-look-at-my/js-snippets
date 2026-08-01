@@ -196,6 +196,18 @@ test('selectRows tolerates a missing row list', () => {
   assert.deepEqual(selectRows(null, COLUMNS, {}), { shown: [], facetCounts: new Map(), total: 0 });
 });
 
+test('a host-filtered group is excluded from selection by the caller', () => {
+  // <data-table> drops FacetGroup.local === false groups before calling
+  // selectRows: the host already applied them, upstream of its own row cap.
+  // Re-applying here is how a server-filtered window gets emptied twice.
+  const facets = [{ key: 'status', of: (r: Run) => r.status }];
+  const hidden = new Map([['status', new Set(['success'])]]);
+  const withGroup = selectRows(rows, COLUMNS, { facets, hidden });
+  const withoutGroup = selectRows(rows, COLUMNS, { facets: [], hidden });
+  assert.equal(withGroup.shown.length, 2);
+  assert.equal(withoutGroup.shown.length, 3, 'no group declared = nothing dropped locally');
+});
+
 test('isFiltering ignores empty queries and empty hidden sets', () => {
   assert.ok(!isFiltering({}));
   assert.ok(!isFiltering({ query: '   ' }));
