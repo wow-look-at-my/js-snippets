@@ -406,6 +406,12 @@ const EDGE_SHADOW_ALPHA = 0.85;
 const MAX_DPR = 3;
 // Cluster 3-stack ghost alphas (front draws at 1).
 const LANE_FIT_CACHE_MAX = 512;
+// Diamonds per batched path. Measured in Chromium (2400x1200 canvas, 1200
+// diamonds): 2.50 us/marker one per path, 1.75 at 8-32 per path, 2.75 at 256
+// and 8.08 with all 1200 in ONE path — a giant path costs far more to
+// rasterize than the calls it saves. Batching is a win only inside that
+// window, so the flush is capped rather than "one path per lane".
+const CLUSTER_BATCH_MAX = 32;
 const CLUSTER_MID_ALPHA = 0.65;
 const CLUSTER_BACK_ALPHA = 0.35;
 // The minimap strip's height (CSS px) — the plot canvas cedes this band
@@ -4408,9 +4414,11 @@ export class TimelineViewElement extends HTMLElement {
    * load, ~5 us per cluster).
    *
    * A lane's markers almost always share ONE resolved style, and the three
-   * stack layers are three globalAlpha values, so the whole lane can be drawn
-   * as (layers x styles) paths instead of (layers x clusters): one beginPath
-   * per layer collecting every diamond, then a single fill and stroke.
+   * stack layers are three globalAlpha values, so a lane draws as
+   * (layers x styles x ceil(n/CLUSTER_BATCH_MAX)) paths instead of
+   * (layers x clusters). The cap is not incidental: batching wins only up to
+   * a few dozen subpaths per path and REVERSES past a few hundred (see
+   * CLUSTER_BATCH_MAX).
    *
    * Only the plain case batches. A hovered marker, an emphasis stem or a
    * dashed outline is per-marker geometry, so those fall back to drawCluster —
@@ -4447,17 +4455,21 @@ export class TimelineViewElement extends HTMLElement {
         // so a front is never covered by a neighbour's ghost.
         for (const [alpha, off] of [[CLUSTER_BACK_ALPHA, 2], [CLUSTER_MID_ALPHA, 1], [1, 0]] as const) {
           ctx.globalAlpha = alpha;
-          ctx.beginPath();
-          for (const it of items) {
-            const cx = it.cx + off * it.s;
-            ctx.moveTo(cx, it.cy - it.r);
-            ctx.lineTo(cx + it.rx, it.cy);
-            ctx.lineTo(cx, it.cy + it.r);
-            ctx.lineTo(cx - it.rx, it.cy);
-            ctx.closePath();
+          for (let i = 0; i < items.length; i += CLUSTER_BATCH_MAX) {
+            const to = Math.min(i + CLUSTER_BATCH_MAX, items.length);
+            ctx.beginPath();
+            for (let k = i; k < to; k++) {
+              const it = items[k];
+              const cx = it.cx + off * it.s;
+              ctx.moveTo(cx, it.cy - it.r);
+              ctx.lineTo(cx + it.rx, it.cy);
+              ctx.lineTo(cx, it.cy + it.r);
+              ctx.lineTo(cx - it.rx, it.cy);
+              ctx.closePath();
+            }
+            ctx.fill();
+            ctx.stroke();
           }
-          ctx.fill();
-          ctx.stroke();
         }
         ctx.globalAlpha = 1;
       }
