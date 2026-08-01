@@ -144,3 +144,15 @@ tbody tr.interactive:focus-visible {
 @media (prefers-reduced-motion: no-preference) {
   .chip { transition: opacity 120ms ease; }
 }
+
+/* Expandable detail rows (detailFor). The detail spans every column and
+   reads as part of its parent row, not as a sibling: same left edge accent,
+   no row separator between them. */
+tbody tr.has-open-detail { background: var(--table-panel); }
+tbody tr.detail-row > td {
+  padding: 0.5rem 0.75rem 0.75rem;
+  background: var(--table-panel);
+  border-top: 0;
+}
+tbody tr.detail-row .detail-pending { color: var(--table-muted); font-style: italic; }
+tbody tr.detail-row .detail-error { color: var(--table-failure, var(--failure, #f85149)); }
