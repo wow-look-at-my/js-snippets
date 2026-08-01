@@ -1130,6 +1130,109 @@ Exports:
     TimelineLegendEntry {glyph, text}
   Plus everything re-exported from ui/timeline-view-math.js.
 
+### ui/timeline-wire.js
+A compact COLUMNAR wire format for feeding <timeline-view> a lot of events,
+plus the frame-paced driver that decodes one without blocking the page. Use
+it when a feed is big enough that JSON stops being free: on 100k events it is
+~10 B/event gzipped against JSON's ~32, and ~5x cheaper to turn into
+intervals, because nothing parses per record and no per-row object is built
+until something asks for one.
+
+It decodes a LAYOUT, not a vocabulary — it has no idea what your events mean.
+Turning columns into intervals (labels, states, lanes) is your domain logic
+and stays in your code. The column NAMES are yours too, declared in a schema
+you pass in, which is what lets one format serve different producers.
+
+  interface WireSchema {
+    magic: string;              // 4 chars, checked against the payload
+    deltaU: readonly string[];  // ascending unsigned, delta-encoded (ids)
+    deltaZ: readonly string[];  // signed, zigzag delta-encoded (epoch ms)
+    plain:  readonly string[];  // plain unsigned, one per row
+    bits:   readonly string[];  // one bit per row
+    strings: readonly string[]; // dictionary-encoded + one index per row
+  }
+
+  interface Columns {
+    n: number;
+    u: Record<string, Float64Array>;   // delta-decoded unsigned
+    z: Record<string, Float64Array>;   // delta-decoded signed (epoch ms)
+    p: Record<string, Int32Array>;     // plain unsigned
+    b: Record<string, Uint8Array>;     // bitsets — read with bitAt()
+    s: Record<string, StringColumn>;   // dictionaries — read with stringAt()
+  }
+
+  interface DecodedPage { c: Columns; maxId: number;
+                          retentionStart: number; now: number }
+
+Exports:
+  decodePage(buf: Uint8Array, schema: WireSchema): DecodedPage
+  decodePageGen(buf, schema): Task<DecodedPage>   // yields between chunks
+  runSliced<T>(task: Task<T>, onSlice?: (ms: number) => void): Promise<T>
+  nextFrame(): Promise<void>
+  drain<T>(task: Task<T>): T
+  stringAt(c, name, i): string
+  bitAt(c, name, i): boolean
+  rowOfId(c, idColumn, id): number      // binary search, -1 if absent
+  rowObject(c, i): Record<string, string | number | boolean>
+  CHUNK_MS, STEP
+  types: WireSchema, Columns, StringColumn, DecodedPage, Task
+
+THE LAYOUT (v1), in order: 4-byte magic, maxId (uvarint), retentionStart
+(varint, epoch ms), now (varint, epoch ms), n (uvarint), then the numeric
+columns, the bitsets (ceil(n/8) bytes each), and the string columns
+(dictionary, then one index per row) — each in schema order. A string column
+whose dictionary holds exactly ONE entry carries no index run at all (it was
+unused in this window) and reads as that entry for every row. A change to the
+layout is a NEW VERSION, new magic — never an edit to this one.
+
+Decoding throws on bad magic, a truncated payload, or TRAILING BYTES: a
+payload that does not decode exactly did not decode. Trailing bytes usually
+mean your schema disagrees with the producer's column list.
+
+PACING — the part that matters for a big page. runSliced runs ONE CHUNK PER
+FRAME, where a chunk is a FRAME'S WORTH of work (CHUNK_MS): it claims a frame,
+then pulls generator steps ACROSS phase boundaries until the budget is spent.
+One unit per frame means the unit's cost IS the frame's load. Defining a chunk
+as one step of one phase instead took 70 frames to do 8 ms of work; filling
+the frame took it to 3. A frame is a global TURN, so two concurrent loads get
+different frames rather than sharing one, and it is claimed BEFORE the work —
+yielding afterwards leaves seams where two flows both run unwaited.
+
+Intervals should carry the page's Columns as their shared payload — ONE
+reference, not a per-row object — and recover the row on hover with
+rowOfId(). At 100k events the per-row objects are enough allocation to cause
+GC pauses inside decode chunks (measured 4-7 ms), which is exactly what the
+frame budget exists to avoid.
+
+  import { decodePageGen, runSliced, stringAt, rowOfId }
+    from '.../ui/timeline-wire.js';
+
+  const SCHEMA = {
+    magic: 'TLC1',
+    deltaU: ['id'], deltaZ: ['start'], plain: ['dur', 'status'],
+    bits: [], strings: ['lane', 'kind', 'label'],
+  };
+
+  const res = await fetch('/feed', { headers: { Accept: MY_MEDIA_TYPE } });
+  const buf = new Uint8Array(await res.arrayBuffer());
+  const { c, maxId } = await runSliced(decodePageGen(buf, SCHEMA));
+
+  // columns -> your intervals (your domain logic, chunked however you like)
+  const intervals = [];
+  for (let i = 0; i < c.n; i++) {
+    intervals.push({
+      id: String(c.u.id[i]),
+      laneId: stringAt(c, 'lane', i),
+      start: c.z.start[i],
+      end: c.z.start[i] + c.p.dur[i],
+      label: stringAt(c, 'label', i),
+      data: c,                       // ONE shared reference for the page
+    });
+  }
+
+A producer exists in Go: github-state-mirror encodes this layout, and both
+sides pin the same golden payload in their tests so neither can drift.
+
 ### ui/timeline-view-math.js
 The timeline's pure math. No DOM or browser APIs (unit-tested under
 node); ui/timeline-view.js is the canvas-bound half that consumes it.
