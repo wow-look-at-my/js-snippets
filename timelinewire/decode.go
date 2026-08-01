@@ -5,18 +5,12 @@ import (
 	"fmt"
 )
 
-// Decode reads a payload back into a Page. It is the inverse of Encode and the
-// same layout read the other way — the browser's decoder is
-// src/ui/timeline-wire.ts, and the golden fixture in testdata/ is what keeps
-// all of it honest.
-//
-// It exists so a Go PRODUCER can read its own payload — in tests, in a dump
-// tool — without writing a second reader of the format. That is the whole
-// reason both halves live here.
+// Decode is the inverse of Encode, so a Go producer can read its own payload —
+// in a test, in a dump tool — without writing a second reader of the format.
 //
 // A payload that does not decode EXACTLY is an error, trailing bytes included:
-// leftovers mean the schema disagrees with the producer's column list, which
-// would otherwise surface as silently shifted values.
+// leftovers mean the caller's schema names different columns than the producer
+// wrote, which would otherwise surface as silently shifted values.
 func Decode(b []byte, s Schema) (Page, error) {
 	if len(s.Magic) != 4 {
 		return Page{}, fmt.Errorf("timelinewire: magic must be 4 bytes, got %q", s.Magic)
