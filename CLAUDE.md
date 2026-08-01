@@ -4,7 +4,6 @@
 
 A library of reusable ES modules. Source is TypeScript (`.ts`) plus WGSL/GLSL shaders (`.wgsl`/`.glsl`) under `src/`. [ts0](https://github.com/wow-look-at-my/ts0) compiles them to JavaScript, which deploys to [buildhost](https://github.com/wow-look-at-my/buildhost) sites. **Only `.ts` and `.wgsl` files are committed — `.js` output is never checked in.**
 
-Base URL: `https://sites.pazer.build/js-snippets/branch/library` (the legacy GitHub Pages site at `https://wow-look-at-my.github.io/js-snippets` was unpublished 2026-07-20 in the org-wide GitHub Pages shutdown — the org Actions artifact quota had already frozen its deploys at 07-15 content; see "Deploy")
 Base URL: `https://sites.pazer.build/js-snippets/branch/library` — the canonical consumption URL. The site is public (anonymous reads, `Access-Control-Allow-Origin: *`), and the code-split `chunk-*.js` siblings are served next to the entry modules, so imports resolve relative to it. Consumers import modules at runtime by URL — never vendored copies, never npm. The legacy GitHub Pages site at `https://wow-look-at-my.github.io/js-snippets` was unpublished 2026-07-20 and is permanently dead (fetches fail with a CORS error and no HTTP status) — do NOT import it or reintroduce the `github.io` origin anywhere; downstream consumers' CI fails on any reference. See "Deploy".
 
 ## Directory Layout
