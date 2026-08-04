@@ -369,6 +369,9 @@ interface ResolvedStyle {
 const LAYOUT_TWEEN_MS = 150; // lane-height ease on visible-track-count AND fit-height change
 const AXIS_H = 22;
 const LANE_LABEL_MIN_PX = 10; // below this lane height the gutter label is tooltip-only
+// Floor for the compact-lane label font. Also the bottom of the range the
+// cold surface warms, so keep the two together.
+const LANE_LABEL_MIN_FONT_PX = 7;
 const HIT_MIN_W = 9; // widened hit target for instants (px)
 const CONNECTOR_TOL = 4;
 const CLICK_SLOP = 4;
@@ -405,6 +408,13 @@ const EDGE_SHADOW_ALPHA = 0.85;
 // fully-uncapped perf cliff on 4k+ screens.
 const MAX_DPR = 3;
 // Cluster 3-stack ghost alphas (front draws at 1).
+const LANE_FIT_CACHE_MAX = 512;
+// Diamonds per batched path. Measured in Chromium (2400x1200 canvas, 1200
+// diamonds): 2.50 us/marker one per path, 1.75 at 8-32 per path, 2.75 at 256
+// and 8.08 with all 1200 in ONE path — a giant path costs far more to
+// rasterize than the calls it saves. Batching is a win only inside that
+// window, so the flush is capped rather than "one path per lane".
+const CLUSTER_BATCH_MAX = 32;
 const CLUSTER_MID_ALPHA = 0.65;
 const CLUSTER_BACK_ALPHA = 0.35;
 // The minimap strip's height (CSS px) — the plot canvas cedes this band
@@ -683,7 +693,20 @@ export class TimelineViewElement extends HTMLElement {
   // (epoch bump), and an item sliding in over a stale row for under a
   // quantum is invisible in practice. layoutLanes/auto-fit stay per-frame
   // (O(lanes), the tweens need them).
+  // Memoized lane-label fitting (drawLanes). Bounded, and keyed by
+  // everything the answer depends on, so it self-invalidates.
+  private laneFitCache = new Map<string, { text: string; width: number; faded: boolean } | null>();
   private packEpoch = 0; // bumped on data changes; forces a re-pack
+  // INCREMENTAL REBUILD. A data change used to cost O(all lanes) — re-sort
+  // check, metadata scan, re-cluster and re-assign, for every lane whether or
+  // not it changed. A consumer that streams its history in batches (so each
+  // batch stays inside a frame budget) therefore paid that whole-chart cost
+  // once PER BATCH. These track which lanes an ingest actually touched, so the
+  // rebuild visits those and leaves the rest exactly as they were.
+  private dirtyLanes = new Set<number>();
+  private rebuildAll = true; // first rebuild, and any wholesale replace
+  private laneMaxEnd: number[] = []; // per-lane latest terminated end
+  private laneOngoing: NInterval[][] = []; // per-lane ongoing intervals
   private clusteredEpoch = -1;
   private clusteredSpanKey = NaN; // log-quantized span bucket (spanBucket)
   private clusteredPlotW = NaN; // clustering is scale-aware: a resize re-derives it
@@ -743,6 +766,13 @@ export class TimelineViewElement extends HTMLElement {
   // rebuild() per animation frame rather than re-laying-out synchronously per
   // call (0 = none scheduled). See scheduleRebuild.
   private rebuildRaf = 0;
+  // Frame bookkeeping for the rebuild/paint split (see rebuild()): a paint may
+  // be pushed one frame past its rebuild, but never so far that the chart
+  // stops painting — the test is "did a paint happen in the last frame", not
+  // a one-shot flag, so a stream of merges alternates layout/paint instead of
+  // stalling after the first deferral.
+  private frameNo = 0;
+  private lastDrawFrame = -1;
   private dirty = false;
   // Due timestamp of the next clock-paced draw — the even-spacing grid
   // used while the only motion is clock-driven and slower than the tier
@@ -941,7 +971,18 @@ export class TimelineViewElement extends HTMLElement {
     if (name === 'fullscreen' && oldValue !== newValue) this.applyFullscreen(newValue !== null);
     if (name === 'no-minimap' && oldValue !== newValue) this.resizeBackingStore(); // strip visibility re-evaluates there
     this.syncChrome();
-    this.invalidate();
+    // A rebuild has already spent this frame on layout; stacking the paint on
+    // top of it is what makes a single frame cost layout PLUS draw (measured
+    // 8-10 ms together, either alone comfortably under). Hand the draw the
+    // next frame instead — but never twice running, so a stream of merges
+    // still animates: drawDeferred clears as soon as a draw actually renders.
+    this.dirty = true;
+    if (this.raf !== 0 && this.lastDrawFrame >= this.frameNo - 1) {
+      cancelAnimationFrame(this.raf);
+      this.raf = requestAnimationFrame(this.onFrame);
+    } else {
+      this.schedule();
+    }
   }
 
   // -- Fullscreen (viewport-fill) ---------------------------------------------------
@@ -1104,6 +1145,10 @@ export class TimelineViewElement extends HTMLElement {
     this.connectors = [];
     this.markers = [];
     this.coverage = new CoverageTracker();
+    // Lane indices are about to be renumbered from scratch — any dirt
+    // recorded against the old numbering is meaningless.
+    this.dirtyLanes.clear();
+    this.rebuildAll = true;
     this.loadTick++;
     // A full replace invalidates every mark the minimap density texture
     // baked — the incremental queue only covers additions.
@@ -1212,6 +1257,10 @@ export class TimelineViewElement extends HTMLElement {
     this.perLane = [];
     this.connectors = [];
     this.markers = markers;
+    // Lane indices are about to be renumbered from scratch — any dirt
+    // recorded against the old numbering is meaningless.
+    this.dirtyLanes.clear();
+    this.rebuildAll = true;
     // Lane replacement can renumber every row — the baked marks are stale.
     this.mmTexDirty = true;
     this.mmPendingNew.length = 0;
@@ -1221,6 +1270,10 @@ export class TimelineViewElement extends HTMLElement {
   setIntervals(intervals: TimelineInterval[]): void {
     this.byId.clear();
     this.perLane = this.lanes.map(() => []);
+    // Lane indices are about to be renumbered from scratch — any dirt
+    // recorded against the old numbering is meaningless.
+    this.dirtyLanes.clear();
+    this.rebuildAll = true;
     // Full interval replace — the baked density marks are all stale.
     this.mmTexDirty = true;
     this.mmPendingNew.length = 0;
@@ -1389,6 +1442,7 @@ export class TimelineViewElement extends HTMLElement {
       this.lanes.push({ id: iv.laneId, label: iv.laneId });
       this.perLane.push([]);
     }
+    this.dirtyLanes.add(laneIdx);
     const lane = this.lanes[laneIdx];
     const start = toMs(iv.start);
     const end = iv.end == null ? null : toMs(iv.end);
@@ -1411,6 +1465,8 @@ export class TimelineViewElement extends HTMLElement {
     };
     const prev = this.byId.get(iv.id);
     if (prev) {
+      // A replace can MOVE an interval between lanes: both ends changed.
+      this.dirtyLanes.add(prev.laneIdx);
       const arr = this.perLane[prev.laneIdx];
       arr.splice(arr.indexOf(prev), 1);
       // Replacing an already-TERMINATED interval can rewrite a mark the
@@ -1472,11 +1528,23 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   private rebuild(): void {
+    // The lanes this pass has to look at: everything on a wholesale replace,
+    // otherwise exactly the ones an ingest touched. Streaming a window in
+    // batches used to re-scan, re-cluster and re-assign the WHOLE chart per
+    // batch; now each batch costs its own lanes.
+    const visit: number[] = [];
+    if (this.rebuildAll) {
+      for (let i = 0; i < this.perLane.length; i++) visit.push(i);
+    } else {
+      for (const i of this.dirtyLanes) if (i < this.perLane.length) visit.push(i);
+    }
+
     // Re-sort only lanes that actually fell out of (start, id) order: a
     // live merge APPENDS near-now intervals, leaving most lanes already
     // sorted — the O(n) plain-compare check replaces an O(n log n)
     // comparator sort per lane per merge (the 5s merge spike).
-    for (const per of this.perLane) {
+    for (const li of visit) {
+      const per = this.perLane[li];
       let sorted = true;
       for (let i = 1; i < per.length; i++) {
         const a = per[i - 1];
@@ -1500,25 +1568,39 @@ export class TimelineViewElement extends HTMLElement {
       const laneN = this.perLane.length;
       this.laneMaxDur.length = laneN;
       this.laneOngoingStart.length = laneN;
-      this.mmOngoing.length = 0;
-      let latest = -Infinity;
-      for (let li = 0; li < laneN; li++) {
+      this.laneMaxEnd.length = laneN;
+      this.laneOngoing.length = laneN;
+      for (const li of visit) {
         const per = this.perLane[li];
         let maxDur = 0;
         let ongoing = Infinity;
+        let maxEnd = -Infinity;
+        const ongoingList: NInterval[] = [];
         for (let i = 0; i < per.length; i++) {
           const n = per[i];
           if (n.end === null) {
             if (n.start < ongoing) ongoing = n.start;
-            this.mmOngoing.push(n);
+            ongoingList.push(n);
           } else {
             const dur = n.end - n.start;
             if (dur > maxDur) maxDur = dur;
-            if (n.end > latest) latest = n.end;
+            if (n.end > maxEnd) maxEnd = n.end;
           }
         }
         this.laneMaxDur[li] = maxDur;
         this.laneOngoingStart[li] = ongoing;
+        this.laneMaxEnd[li] = maxEnd;
+        this.laneOngoing[li] = ongoingList;
+      }
+      // The two GLOBAL aggregates fold from the per-lane ones, so an
+      // unchanged lane is never re-scanned to compute them.
+      this.mmOngoing.length = 0;
+      let latest = -Infinity;
+      for (let li = 0; li < laneN; li++) {
+        const e = this.laneMaxEnd[li];
+        if (e !== undefined && e > latest) latest = e;
+        const list = this.laneOngoing[li];
+        if (list !== undefined) for (let i = 0; i < list.length; i++) this.mmOngoing.push(list[i]);
       }
       this.mmLatestEnd = latest;
     }
@@ -1529,7 +1611,9 @@ export class TimelineViewElement extends HTMLElement {
       if (!this.laneIdxById.has(key)) this.allocators.delete(key);
     }
     this.packEpoch++;
-    this.updateVisibleLayout();
+    this.updateVisibleLayout(); // reads dirtyLanes/rebuildAll
+    this.dirtyLanes.clear();
+    this.rebuildAll = false;
     this.autoGutter();
     this.clampLaneScroll();
     // The minimap shows iff data exists; only the emptiness EDGE re-runs
@@ -1540,7 +1624,18 @@ export class TimelineViewElement extends HTMLElement {
       this.resizeBackingStore();
     }
     this.syncChrome();
-    this.invalidate();
+    // A rebuild has already spent this frame on layout; stacking the paint on
+    // top of it is what makes a single frame cost layout PLUS draw (measured
+    // 8-10 ms together, either alone comfortably under). Hand the draw the
+    // next frame instead — but never twice running, so a stream of merges
+    // still animates: drawDeferred clears as soon as a draw actually renders.
+    this.dirty = true;
+    if (this.raf !== 0 && this.lastDrawFrame >= this.frameNo - 1) {
+      cancelAnimationFrame(this.raf);
+      this.raf = requestAnimationFrame(this.onFrame);
+    } else {
+      this.schedule();
+    }
   }
 
   /**
@@ -1573,6 +1668,13 @@ export class TimelineViewElement extends HTMLElement {
     // re-cluster. Zooming crosses span buckets and re-clusters at once.
     const needCluster =
       this.clusteredEpoch !== this.packEpoch || this.clusteredSpanKey !== spanKey || this.clusteredPlotW !== plotW || structure;
+    // A DATA-ONLY pass (the epoch moved; span, width and lane set did not)
+    // can only have changed the lanes the ingest touched — every other lane's
+    // clusters are still exactly right, because membership is a function of
+    // (that lane's data, span, plotW). Re-clustering them was the whole-chart
+    // cost a batched history load paid once per batch.
+    const dataOnly =
+      !structure && !this.rebuildAll && this.clusteredSpanKey === spanKey && this.clusteredPlotW === plotW;
     if (needCluster) {
       // A pure zoom/resize re-cluster sees the exact objects of the last
       // pass — clusterLane's membership-identical fast path may reuse its
@@ -1585,7 +1687,12 @@ export class TimelineViewElement extends HTMLElement {
       this.lanePackItems.length = this.perLane.length;
       this.lanePackTargets.length = this.perLane.length;
       this.laneUnclustered.length = this.perLane.length;
-      for (let i = 0; i < this.perLane.length; i++) this.clusterLane(i, rv, plotW, sameData);
+      if (dataOnly) {
+        // sameData is false for these by definition: their data just changed.
+        for (const i of this.dirtyLanes) if (i < this.perLane.length) this.clusterLane(i, rv, plotW, false);
+      } else {
+        for (let i = 0; i < this.perLane.length; i++) this.clusterLane(i, rv, plotW, sameData);
+      }
     }
     // TRACK ASSIGNMENT — re-runs with the clustering, and additionally
     // once the window start has drifted a quantum since the last pass.
@@ -1596,16 +1703,34 @@ export class TimelineViewElement extends HTMLElement {
       this.assignedPlotW !== plotW ||
       !(Math.abs(rv.start - this.assignedStart) < span * ASSIGN_QUANTUM_FRAC);
     if (needAssign) {
+      // The same argument as the clustering above, one step further: when the
+      // ONLY thing that moved is the data (window, width and lane set all
+      // unchanged), an untouched lane's visible count cannot have changed, so
+      // its previous count stands.
+      const assignDataOnly =
+        dataOnly &&
+        this.assignedSpanKey === spanKey &&
+        this.assignedPlotW === plotW &&
+        Math.abs(rv.start - this.assignedStart) < span * ASSIGN_QUANTUM_FRAC &&
+        this.targetCounts.length === this.perLane.length;
       this.assignedEpoch = this.packEpoch;
       this.assignedSpanKey = spanKey;
       this.assignedPlotW = plotW;
       this.assignedStart = rv.start;
       const prev = this.targetCounts;
-      const next = new Array<number>(this.perLane.length);
+      const next = assignDataOnly ? prev.slice() : new Array<number>(this.perLane.length);
       changed = structure;
-      for (let i = 0; i < this.perLane.length; i++) {
-        next[i] = this.assignLane(i, rv);
-        if (!changed && prev[i] !== next[i]) changed = true;
+      if (assignDataOnly) {
+        for (const i of this.dirtyLanes) {
+          if (i >= this.perLane.length) continue;
+          next[i] = this.assignLane(i, rv);
+          if (!changed && prev[i] !== next[i]) changed = true;
+        }
+      } else {
+        for (let i = 0; i < this.perLane.length; i++) {
+          next[i] = this.assignLane(i, rv);
+          if (!changed && prev[i] !== next[i]) changed = true;
+        }
       }
       this.targetCounts = next;
     }
@@ -2234,6 +2359,7 @@ export class TimelineViewElement extends HTMLElement {
 
   private onFrame = (t: number): void => {
     this.raf = 0;
+    this.frameNo++;
     // Adaptive pacing: a pure animation frame (nothing dirty) renders only
     // when its draw budget has elapsed. The budget is the tier's — full
     // rate while interacting, ~30fps idle, ~10fps idle on battery — and,
@@ -2294,6 +2420,7 @@ export class TimelineViewElement extends HTMLElement {
     this.updateVisibleLayout();
     if (this.dirty || this.animating()) {
       this.dirty = false;
+      this.lastDrawFrame = this.frameNo; // a paint is happening now
       this.draw();
     }
     if (this.animating()) this.schedule();
@@ -2345,7 +2472,12 @@ export class TimelineViewElement extends HTMLElement {
 
   // -- Sizing / theme ------------------------------------------------------------
 
+  // True while the plot canvas has been (re)sized but not yet painted; see
+  // the cold-surface split in draw().
+  private surfaceCold = true;
+
   private resizeBackingStore(): void {
+    this.surfaceCold = true;
     const raw = typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1;
     const dpr = Math.min(MAX_DPR, raw);
     const hostH = this.clientHeight;
@@ -3244,6 +3376,39 @@ export class TimelineViewElement extends HTMLElement {
     ctx.fillStyle = t.bg;
     ctx.fillRect(0, 0, w, h);
 
+    // A COLD SURFACE is a frame's worth of work by itself: allocating the
+    // backing store and first-touching ~11 MB of pixels costs several ms
+    // where the rasterizer is software, and doing it in the same frame as the
+    // first real render measured 8-11 ms — the one frame in a whole session
+    // that missed the budget. So the cold frame establishes the surface and
+    // stops; the next frame draws the chart into a surface that is already
+    // warm. Costs one extra frame after a create or a resize, and nothing
+    // afterwards.
+    if (this.surfaceCold) {
+      this.surfaceCold = false;
+      // Warm the text pipeline while this frame is otherwise idle. The first
+      // measureText/fillText with a given font shapes its glyphs, and paying
+      // that for the axis ticks and every lane label inside the first REAL
+      // draw is what pushed that frame to 9-10 ms. A cold frame that has
+      // nothing else to do is exactly where it belongs.
+      // Every size a lane label can be drawn at, not just the base one: a
+      // compact lane picks its font from its own height, so the first draw
+      // that lands with lanes at mixed heights shapes glyphs at several sizes
+      // at once (measured: drawLanes 8 ms on that one frame).
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = t.bg; // paint warm glyphs offscreen-left, invisible
+      for (let fs = LANE_LABEL_MIN_FONT_PX; fs <= t.fontSize; fs++) {
+        ctx.font = `${fs}px ${t.font}`;
+        ctx.measureText('0123456789:.-/{}_ abcdefghijklmnopqrstuvwxyz');
+        ctx.measureText('ABCDEFGHIJKLMNOPQRSTUVWXYZ\u21d0\u21d2\u2026');
+        ctx.fillText('0', -100, -100);
+      }
+      ctx.font = this.fontBar;
+      this.dirty = true;
+      this.schedule();
+      return;
+    }
+
     this.drawAxisAndGrid(ctx, now);
     this.drawLanes(ctx);
 
@@ -3795,6 +3960,7 @@ export class TimelineViewElement extends HTMLElement {
     ctx.font = this.fontBar;
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
+    const separators: number[] = [];
     for (let i = 0; i < this.lanes.length; i++) {
       const top = AXIS_H + tops[i] - this.laneScroll;
       const lh = heights[i];
@@ -3804,14 +3970,10 @@ export class TimelineViewElement extends HTMLElement {
         ctx.fillRect(0, Math.max(AXIS_H, top), w, Math.min(top + lh, h) - Math.max(AXIS_H, top));
       }
       const yBottom = snap(top + lh, dpr);
-      if (yBottom > AXIS_H && yBottom < h) {
-        ctx.strokeStyle = t.hairline;
-        ctx.lineWidth = hairline;
-        ctx.beginPath();
-        ctx.moveTo(0, yBottom);
-        ctx.lineTo(w, yBottom);
-        ctx.stroke();
-      }
+      // Collected, not stroked here: one path for every lane separator beats
+      // a beginPath/stroke pair per lane (49 lanes = 49 rasterizer round
+      // trips per frame, for identical 1px lines).
+      if (yBottom > AXIS_H && yBottom < h) separators.push(yBottom);
       // Gutter label, graded by the lane's CURRENT height: full while the
       // lane comfortably fits the base font; smaller + faded while it
       // doesn't (compact lanes); skipped entirely below legibility
@@ -3820,10 +3982,22 @@ export class TimelineViewElement extends HTMLElement {
       // height, so adjacent lanes' labels can never overlap.
       if (lh >= LANE_LABEL_MIN_PX && top + lh / 2 > AXIS_H + 4 && top + lh / 2 < h - 2) {
         const full = lh >= t.fontSize + 5;
-        const fs = full ? t.fontSize : Math.max(7, Math.min(t.fontSize - 2, Math.floor(lh - 3)));
+        const fs = full ? t.fontSize
+          : Math.max(LANE_LABEL_MIN_FONT_PX, Math.min(t.fontSize - 2, Math.floor(lh - 3)));
         const charW = full ? this.charW : (this.charW * fs) / t.fontSize;
         this.measureCharW = charW;
-        const fit = fitTieredText(this.lanes[i].label, this.gutterW - 16, this.measureLabel);
+        // fitTieredText measures text, which is the dearest thing a frame
+        // does per lane — and the answer only changes when the label, the
+        // gutter width or the font does. All three are in the key, so the
+        // cache needs no invalidation hook.
+        const label = this.lanes[i].label;
+        const fitKey = `${label}\u0000${this.gutterW}\u0000${fs}\u0000${t.font}`;
+        let fit = this.laneFitCache.get(fitKey);
+        if (fit === undefined) {
+          fit = fitTieredText(label, this.gutterW - 16, this.measureLabel);
+          if (this.laneFitCache.size > LANE_FIT_CACHE_MAX) this.laneFitCache.clear();
+          this.laneFitCache.set(fitKey, fit);
+        }
         if (fit !== null) {
           ctx.font = full ? this.fontBar : `${fs}px ${t.font}`;
           const color = full ? t.muted : withAlpha(t.muted, 0.7);
@@ -3839,10 +4013,14 @@ export class TimelineViewElement extends HTMLElement {
       }
     }
     ctx.font = this.fontBar; // undo any compact-label font downshift
-    // Gutter | plot separator.
+    // Every lane separator plus the gutter | plot rule: ONE path, one stroke.
     ctx.strokeStyle = t.hairline;
     ctx.lineWidth = hairline;
     ctx.beginPath();
+    for (const y of separators) {
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+    }
     const xg = snap(this.gutterW, dpr);
     ctx.moveTo(xg, AXIS_H);
     ctx.lineTo(xg, h);
@@ -3951,7 +4129,7 @@ export class TimelineViewElement extends HTMLElement {
       }
       // The lane's cluster stack markers, over its bars.
       const ncs = this.laneClusters[laneIdx];
-      if (ncs) for (const c of ncs) this.drawCluster(ctx, c);
+      if (ncs) this.drawClusters(ctx, ncs);
     }
     void dpr;
     void t;
@@ -4301,6 +4479,77 @@ export class TimelineViewElement extends HTMLElement {
    * Like pips, clusters get no edge-continuation treatment — a point
    * marker has no clipped extent.
    */
+  /**
+   * A lane's cluster markers, BATCHED. Each marker is a 3-diamond stack, so
+   * the obvious loop issues six canvas path operations per cluster — and a
+   * dense hour of traffic puts ~400 clusters on screen, which measured as the
+   * single largest slice of frame time (31 ms of a 59 ms draw budget across a
+   * load, ~5 us per cluster).
+   *
+   * A lane's markers almost always share ONE resolved style, and the three
+   * stack layers are three globalAlpha values, so a lane draws as
+   * (layers x styles x ceil(n/CLUSTER_BATCH_MAX)) paths instead of
+   * (layers x clusters). The cap is not incidental: batching wins only up to
+   * a few dozen subpaths per path and REVERSES past a few hundred (see
+   * CLUSTER_BATCH_MAX).
+   *
+   * Only the plain case batches. A hovered marker, an emphasis stem or a
+   * dashed outline is per-marker geometry, so those fall back to drawCluster —
+   * and draw AFTER the batch, which is where they belong anyway (a hover ring
+   * under a neighbour's ghost was always a latent glitch).
+   */
+  private drawClusters(ctx: CanvasRenderingContext2D, ncs: NCluster[]): void {
+    if (ncs.length === 0) return;
+    const t = this.theme;
+    let batched: Map<ResolvedStyle, { cx: number; cy: number; r: number; rx: number; s: number }[]> | null = null;
+    let fallback: NCluster[] | null = null;
+    for (const c of ncs) {
+      const style = this.resolved(c.catKey, c.state, null);
+      const emphasis = style.glyph === 'bang' || style.border === t.emphasis;
+      const dashed = style.dash !== null && style.dash.length > 0;
+      if (emphasis || dashed || this.hoverClusterId === c.members[0].id) {
+        (fallback ??= []).push(c);
+        continue;
+      }
+      const p = this.clusterPos(c);
+      if (!p) continue;
+      const r = Math.max(2, Math.min(p.th * 0.42, 8));
+      const map = (batched ??= new Map());
+      let list = map.get(style);
+      if (list === undefined) map.set(style, (list = []));
+      list.push({ cx: p.cx, cy: p.cy, r, rx: r * 0.78, s: Math.max(1, Math.min(2, p.r * 0.35)) });
+    }
+    if (batched) {
+      for (const [style, items] of batched) {
+        ctx.fillStyle = style.pattern === 'outline' ? withAlpha(style.fill, 0.15) : style.fill;
+        ctx.strokeStyle = style.border;
+        ctx.lineWidth = 1;
+        // Back and mid ghosts first (offset right, faded), then the fronts —
+        // so a front is never covered by a neighbour's ghost.
+        for (const [alpha, off] of [[CLUSTER_BACK_ALPHA, 2], [CLUSTER_MID_ALPHA, 1], [1, 0]] as const) {
+          ctx.globalAlpha = alpha;
+          for (let i = 0; i < items.length; i += CLUSTER_BATCH_MAX) {
+            const to = Math.min(i + CLUSTER_BATCH_MAX, items.length);
+            ctx.beginPath();
+            for (let k = i; k < to; k++) {
+              const it = items[k];
+              const cx = it.cx + off * it.s;
+              ctx.moveTo(cx, it.cy - it.r);
+              ctx.lineTo(cx + it.rx, it.cy);
+              ctx.lineTo(cx, it.cy + it.r);
+              ctx.lineTo(cx - it.rx, it.cy);
+              ctx.closePath();
+            }
+            ctx.fill();
+            ctx.stroke();
+          }
+        }
+        ctx.globalAlpha = 1;
+      }
+    }
+    if (fallback) for (const c of fallback) this.drawCluster(ctx, c);
+  }
+
   private drawCluster(ctx: CanvasRenderingContext2D, c: NCluster): void {
     const p = this.clusterPos(c);
     if (!p) return;

@@ -1285,6 +1285,16 @@ export function edgeContinuation(
  */
 export const CLUSTER_JOIN_PX = 12;
 
+/**
+ * Hard cap on a cluster's own width in CSS px. The join rule is transitive,
+ * so without a cap a densely populated track chains end-to-end into ONE
+ * cluster whose single marker sits at the midpoint — the whole track reads
+ * as empty at wide zooms. Capping the extent bounds how far a member is
+ * displaced from its true timestamp (at most half this, ~a pip width) and
+ * keeps a dense run reading as a dense run: many markers, not one.
+ */
+export const CLUSTER_MAX_SPAN_PX = 2 * CLUSTER_JOIN_PX;
+
 /** A group of visually-overlapping instant markers (see clusterInstants). */
 export interface InstantCluster {
   /** Indices into the input array, in (start, id) order. */
@@ -1304,6 +1314,12 @@ export interface InstantCluster {
  * reads as ONE point-like ×N marker while zooming in progressively
  * splits every cluster until each pip stands at its true timestamp.
  *
+ * A cluster never grows wider than `maxSpanPx` CSS px: the chain also
+ * breaks once the next instant sits that far from the bucket's FIRST
+ * member, so no pip is ever compacted more than half that from where it
+ * belongs, and a densely packed track stays a row of markers at any zoom
+ * instead of collapsing into one.
+ *
  * Only instants participate: an item must be terminal (end != null — an
  * ongoing interval will grow into a bar) with a duration mapping under
  * `instantPx` (the pip threshold) at this scale. Membership depends only
@@ -1321,6 +1337,7 @@ export function clusterInstants(
   plotWidth: number,
   joinPx = CLUSTER_JOIN_PX,
   instantPx = INSTANT_THRESHOLD_PX,
+  maxSpanPx = CLUSTER_MAX_SPAN_PX,
 ): { clusters: InstantCluster[]; memberOf: number[] } {
   const memberOf = new Array<number>(items.length).fill(-1);
   const clusters: InstantCluster[] = [];
@@ -1328,6 +1345,7 @@ export function clusterInstants(
   if (!(span > 0) || !(plotWidth > 0)) return { clusters, memberOf };
   const msPerPx = span / plotWidth;
   const joinMs = joinPx * msPerPx;
+  const maxSpanMs = Math.max(0, maxSpanPx) * msPerPx;
   const instantMaxMs = instantPx * msPerPx;
   const order: number[] = [];
   for (let i = 0; i < items.length; i++) {
@@ -1358,11 +1376,15 @@ export function clusterInstants(
   // Greedy transitive sweep over `order` as index ranges (no per-bucket
   // array churn — this runs on the layout hot path): a bucket is
   // order[bucketStart, oi); it flushes when the next instant's gap from
-  // its predecessor exceeds joinMs, and at the end.
+  // its predecessor exceeds joinMs, when taking it would push the bucket
+  // past maxSpanMs wide, and at the end.
   let bucketStart = 0;
   for (let oi = 0; oi <= order.length; oi++) {
     const boundary =
-      oi === order.length || (oi > bucketStart && items[order[oi]].start - items[order[oi - 1]].start > joinMs);
+      oi === order.length ||
+      (oi > bucketStart &&
+        (items[order[oi]].start - items[order[oi - 1]].start > joinMs ||
+          items[order[oi]].start - items[order[bucketStart]].start > maxSpanMs));
     if (!boundary) continue;
     const len = oi - bucketStart;
     if (len > 1) {
@@ -1733,7 +1755,7 @@ export function categoryHue(category: string): number {
  * separate by tone, while every category keeps one stable color forever.
  */
 export function categoryJitter(category: string): { dl: number; dc: number } {
-  const h = hashString(`${category} tone`);
+  const h = hashString(`${category}\u0000tone`);
   return {
     dl: ((h & 0xff) / 255 - 0.5) * 0.1,
     dc: (((h >>> 8) & 0xff) / 255 - 0.5) * 0.04,

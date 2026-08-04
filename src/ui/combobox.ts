@@ -26,94 +26,39 @@
  *   //  <combo-box><select>…</select></combo-box>
  *
  * Rendered in the LIGHT DOM and injects its own themeable stylesheet once —
- * drop the module in, no CSS file to ship. Theme by overriding the `--cb-*`
- * custom properties (see COMBOBOX_CSS).
+ * drop the module in, no CSS file to ship (the styles compile into this
+ * module from combobox.css as a text import). Theme by overriding the
+ * `--cb-*` custom properties (see COMBOBOX_CSS).
+ *
+ * The pure half — the activation gate, option navigation, type-ahead, and
+ * popup placement math — lives in ui/combobox-logic.js and is re-exported
+ * here, so one import is enough.
  */
 
-// -- Theme -------------------------------------------------------------------
+import CSS_TEXT from './combobox.css';
+import {
+  computePopupPlacement,
+  firstEnabledIndex,
+  lastEnabledIndex,
+  optionText,
+  shouldEnable,
+  stepActiveIndex,
+  typeAheadTarget,
+} from './combobox-logic.ts';
+import type { EnableOptions, OptionLike } from './combobox-logic.ts';
+
+export * from './combobox-logic.ts';
+
+// -- Theme ---------------------------------------------------------------------
 
 /**
- * The component's self-contained stylesheet. Every colour reads a `--cb-*`
- * custom property with an inline fallback, so it works unthemed and retints
- * when you set those on `:root`, a host, or any ancestor. The popup is
- * appended to `<body>`, so its rules are global (not scoped to a host).
+ * The component's self-contained stylesheet (the combobox.css source). Every
+ * colour reads a `--cb-*` custom property with an inline fallback, so it
+ * works unthemed and retints when you set those on `:root`, a host, or any
+ * ancestor. The popup is appended to `<body>`, so its rules are global (not
+ * scoped to a host).
  */
-export const COMBOBOX_CSS = `
-.cb-select-hidden { display: none !important; }
-
-.cb-trigger:focus-visible {
-  outline: 2px solid var(--cb-accent, #5b9dd9);
-  outline-offset: 1px;
-}
-
-.cb-trigger-native {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 2rem;
-  padding: 0.4rem 1.9rem 0.4rem 0.6rem;
-  background: var(--cb-bg, #12141f);
-  color: var(--cb-fg, #e2e8f0);
-  border: 1px solid var(--cb-border, #2d3148);
-  border-radius: var(--cb-radius, 6px);
-  font: inherit;
-  cursor: pointer;
-  user-select: none;
-  -webkit-user-select: none;
-}
-
-.cb-trigger-native .cb-trigger-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cb-trigger-native::after {
-  content: "";
-  position: absolute;
-  right: 0.7rem;
-  top: 50%;
-  width: 0;
-  height: 0;
-  border-left: 0.3rem solid transparent;
-  border-right: 0.3rem solid transparent;
-  border-top: 0.35rem solid currentColor;
-  transform: translateY(-25%);
-  opacity: 0.75;
-  pointer-events: none;
-}
-
-.cb-popup {
-  position: fixed;
-  margin: 0;
-  padding: 0.25rem 0;
-  background: var(--cb-popup-bg, #12141f);
-  color: var(--cb-popup-fg, #e2e8f0);
-  border: 1px solid var(--cb-popup-border, rgba(255, 255, 255, 0.16));
-  border-radius: var(--cb-radius, 6px);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-}
-
-.cb-option {
-  padding: 0.45rem 0.85rem;
-  cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: 1.25;
-}
-
-.cb-option.cb-active { background: var(--cb-active, rgba(255, 255, 255, 0.14)); }
-.cb-option.cb-selected { font-weight: 600; }
-.cb-option.cb-selected::before { content: "\\203A  "; opacity: 0.8; }
-.cb-option.cb-disabled { opacity: 0.4; cursor: default; }
-.cb-option.cb-disabled.cb-active { background: transparent; }
-`;
+export const COMBOBOX_CSS: string = CSS_TEXT;
 
 const STYLE_ID = 'js-snippets-combobox-styles';
 
@@ -127,43 +72,7 @@ export function injectStyles(): void {
   (document.head || document.documentElement).appendChild(style);
 }
 
-// -- Activation gating -------------------------------------------------------
-
-export interface EnableOptions {
-  /** Bypass the user-agent gate entirely. */
-  force?: boolean;
-  /** Custom UA test. Default matches Tesla's in-car browser. */
-  match?: (userAgent: string) => boolean;
-}
-
-const defaultMatch = (ua: string): boolean => /Tesla|QtCarBrowser/i.test(ua);
-
-/**
- * Whether the fallback should activate. True if `force`, the UA matches
- * (Tesla by default), or a manual override is set: `?combobox=force`,
- * `localStorage['js-combobox'] === 'force'`, or
- * `globalThis.__JS_COMBOBOX_FORCE__ = true`.
- */
-export function shouldEnable(opts: EnableOptions = {}): boolean {
-  try {
-    if (opts.force) return true;
-    if ((globalThis as { __JS_COMBOBOX_FORCE__?: unknown }).__JS_COMBOBOX_FORCE__) return true;
-    const match = opts.match ?? defaultMatch;
-    if (match(globalThis.navigator?.userAgent ?? '')) return true;
-    try {
-      if (globalThis.localStorage && localStorage.getItem('js-combobox') === 'force') return true;
-    } catch {
-      /* storage may throw in sandboxed contexts */
-    }
-    const search = globalThis.location?.search;
-    if (search && /[?&]combobox=force\b/.test(search)) return true;
-  } catch {
-    /* navigator/location may be absent */
-  }
-  return false;
-}
-
-// -- Upgrading a single <select> ---------------------------------------------
+// -- Upgrading a single <select> -------------------------------------------------
 
 const UPGRADED = new WeakSet<HTMLSelectElement>();
 
@@ -176,10 +85,6 @@ export interface UpgradeOptions {
    * stays in sync. Return null/undefined to generate a trigger (default).
    */
   existingTrigger?: (select: HTMLSelectElement) => HTMLElement | null | undefined;
-}
-
-function optionText(opt: HTMLOptionElement | undefined): string {
-  return (opt && (opt.textContent || opt.value)) || '';
 }
 
 function currentText(select: HTMLSelectElement): string {
@@ -239,7 +144,7 @@ export function upgradeSelect(select: HTMLSelectElement, opts: UpgradeOptions = 
   }
 }
 
-// -- The popup listbox -------------------------------------------------------
+// -- The popup listbox -----------------------------------------------------------
 
 let currentPopup: { el: HTMLElement; cleanup: () => void } | null = null;
 
@@ -248,6 +153,7 @@ export function openPopup(select: HTMLSelectElement, trigger: HTMLElement, syncL
   closePopup();
 
   const options = Array.from(select.options);
+  const optionData: OptionLike[] = options.map((o) => ({ text: optionText(o), disabled: o.disabled }));
   const popup = document.createElement('div');
   popup.className = 'cb-popup';
   popup.setAttribute('role', 'listbox');
@@ -267,16 +173,8 @@ export function openPopup(select: HTMLSelectElement, trigger: HTMLElement, syncL
   }
 
   const items: HTMLElement[] = [];
-  let activeIndex = select.selectedIndex < 0 ? firstEnabled() : select.selectedIndex;
+  let activeIndex = select.selectedIndex < 0 ? firstEnabledIndex(optionData) : select.selectedIndex;
 
-  function firstEnabled(): number {
-    for (let i = 0; i < options.length; i++) if (!options[i].disabled) return i;
-    return 0;
-  }
-  function lastEnabled(): number {
-    for (let i = options.length - 1; i >= 0; i--) if (!options[i].disabled) return i;
-    return options.length - 1;
-  }
   function setActive(i: number): void {
     if (i < 0 || i >= items.length) return;
     items[activeIndex]?.classList.remove('cb-active');
@@ -285,16 +183,8 @@ export function openPopup(select: HTMLSelectElement, trigger: HTMLElement, syncL
     el.classList.add('cb-active');
     el.scrollIntoView?.({ block: 'nearest' });
   }
-  function moveActive(dir: number): void {
-    let i = activeIndex;
-    for (let n = 0; n < items.length; n++) {
-      i = (i + dir + items.length) % items.length;
-      if (!options[i].disabled) break;
-    }
-    setActive(i);
-  }
   function choose(i: number): void {
-    if (i < 0 || i >= options.length || options[i].disabled) return;
+    if (i < 0 || i >= options.length || optionData[i].disabled) return;
     if (select.selectedIndex !== i) {
       select.selectedIndex = i;
       select.dispatchEvent(new Event('input', { bubbles: true }));
@@ -305,11 +195,11 @@ export function openPopup(select: HTMLSelectElement, trigger: HTMLElement, syncL
     trigger.focus();
   }
 
-  options.forEach((opt, i) => {
+  optionData.forEach((opt, i) => {
     const item = document.createElement('div');
     item.className = 'cb-option';
     item.setAttribute('role', 'option');
-    item.textContent = optionText(opt);
+    item.textContent = opt.text;
     if (opt.disabled) item.classList.add('cb-disabled');
     if (i === select.selectedIndex) {
       item.classList.add('cb-selected');
@@ -334,22 +224,16 @@ export function openPopup(select: HTMLSelectElement, trigger: HTMLElement, syncL
     typeBuf += ch.toLowerCase();
     clearTimeout(typeTimer);
     typeTimer = setTimeout(() => { typeBuf = ''; }, 700);
-    const startAt = typeBuf.length === 1 ? activeIndex + 1 : activeIndex;
-    for (let n = 0; n < items.length; n++) {
-      const i = (startAt + n + items.length) % items.length;
-      if (!options[i].disabled && optionText(options[i]).toLowerCase().startsWith(typeBuf)) {
-        setActive(i);
-        break;
-      }
-    }
+    const target = typeAheadTarget(typeBuf, activeIndex, optionData);
+    if (target >= 0) setActive(target);
   }
 
   const onKey = (e: KeyboardEvent): void => {
     switch (e.key) {
-      case 'ArrowDown': e.preventDefault(); moveActive(1); break;
-      case 'ArrowUp': e.preventDefault(); moveActive(-1); break;
-      case 'Home': e.preventDefault(); setActive(firstEnabled()); break;
-      case 'End': e.preventDefault(); setActive(lastEnabled()); break;
+      case 'ArrowDown': e.preventDefault(); setActive(stepActiveIndex(activeIndex, 1, optionData)); break;
+      case 'ArrowUp': e.preventDefault(); setActive(stepActiveIndex(activeIndex, -1, optionData)); break;
+      case 'Home': e.preventDefault(); setActive(firstEnabledIndex(optionData)); break;
+      case 'End': e.preventDefault(); setActive(lastEnabledIndex(optionData)); break;
       case 'Enter':
       case ' ': e.preventDefault(); choose(activeIndex); break;
       case 'Escape': e.preventDefault(); closePopup(); trigger.focus(); break;
@@ -394,38 +278,27 @@ export function closePopup(): void {
   c.cleanup();
 }
 
+/** Measure the popup, place it via the pure placement math, apply. */
 function position(popup: HTMLElement, trigger: HTMLElement): void {
   const r = trigger.getBoundingClientRect();
-  const vh = window.innerHeight || document.documentElement.clientHeight || 0;
-  const vw = window.innerWidth || document.documentElement.clientWidth || 0;
-
+  const placement = computePopupPlacement({
+    trigger: { top: r.top, bottom: r.bottom, left: r.left, width: r.width },
+    viewport: {
+      width: window.innerWidth || document.documentElement.clientWidth || 0,
+      height: window.innerHeight || document.documentElement.clientHeight || 0,
+    },
+    popup: { width: popup.offsetWidth, height: popup.offsetHeight },
+  });
   popup.style.position = 'fixed';
-  popup.style.minWidth = `${r.width}px`;
-  popup.style.maxWidth = `${Math.min(Math.max(r.width, 200), Math.max(vw - 16, 120))}px`;
   popup.style.zIndex = '2147483647';
-
-  const spaceBelow = vh - r.bottom;
-  const spaceAbove = r.top;
-  const desired = Math.min(popup.offsetHeight || 0, 320);
-  let top: number;
-  if (spaceBelow < desired && spaceAbove > spaceBelow) {
-    popup.style.maxHeight = `${Math.max(80, Math.min(spaceAbove - 8, 320))}px`;
-    top = Math.max(4, r.top - 2 - Math.min(popup.offsetHeight, spaceAbove - 8));
-  } else {
-    popup.style.maxHeight = `${Math.max(80, Math.min(spaceBelow - 8, 320))}px`;
-    top = r.bottom + 2;
-  }
-
-  let left = r.left;
-  const width = popup.offsetWidth || r.width;
-  if (left + width > vw - 4) left = Math.max(4, vw - 4 - width);
-  if (left < 4) left = 4;
-
-  popup.style.left = `${left}px`;
-  popup.style.top = `${top}px`;
+  popup.style.minWidth = `${placement.minWidth}px`;
+  popup.style.maxWidth = `${placement.maxWidth}px`;
+  popup.style.maxHeight = `${placement.maxHeight}px`;
+  popup.style.left = `${placement.left}px`;
+  popup.style.top = `${placement.top}px`;
 }
 
-// -- Bulk upgrade + observation ----------------------------------------------
+// -- Bulk upgrade + observation ---------------------------------------------------
 
 /** Upgrade every `<select>` under `root` (default: the whole document). */
 export function upgradeAll(root: ParentNode = document, opts: UpgradeOptions = {}): void {
@@ -466,7 +339,7 @@ export function installSelectFallback(opts: FallbackOptions = {}): () => void {
   return () => observer?.disconnect();
 }
 
-// -- Declarative custom element ----------------------------------------------
+// -- Declarative custom element ----------------------------------------------------
 
 /**
  * `<combo-box><select>…</select></combo-box>` — upgrades its child `<select>`
