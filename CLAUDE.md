@@ -140,6 +140,8 @@ showcase/                  ← the COMPONENT GALLERY: one section per DOM-bound 
 ├── fake-data.ts           ← deterministic fake-run generator (pure fn of absolute time) + mulberry32, shared by every section
 ├── page.css               ← page chrome (adopted from main.ts as a text import)
 └── assets.d.ts            ← ambient *.css/*.wgsl/*.glsl decls for the nested project's own type-check
+docs/timeline-view.png     ← the README's <timeline-view> picture. Captured from the built showcase by scripts/screenshot-showcase.mjs (playwright + the preinstalled chromium), so it is the REAL component and cannot drift; regenerate after a visual change: pnpm build:showcase && node scripts/screenshot-showcase.mjs
+scripts/screenshot-showcase.mjs ← that capture (fails on any page error rather than writing a half-upgraded chart)
 llms-header.txt            ← preamble for combined llms.txt
 ts0.json                   ← ts0 config (js library target, .wgsl/.glsl text loaders)
 scripts/build-llms.mjs     ← assembles dist/llms.txt after the ts0 build
