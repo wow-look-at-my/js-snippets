@@ -4,6 +4,17 @@ Reusable ES modules served via [buildhost](https://github.com/wow-look-at-my/bui
 
 **Base URL:** `https://sites.pazer.build/js-snippets/branch/library`
 
+## `<timeline-view>`
+
+![The timeline-view component: labeled swimlanes of interval bars on a shared time axis, with sub-track packing, hatched wait segments, dashed kill tails, diamond instant pips, a time marker, a minimap and a live edge](docs/timeline-view.png)
+
+A canvas-rendered realtime swimlane chart in one custom element — sub-track
+packing, phase segments inside bars, instant pips, async backward history,
+follow-now, trackpad pan/zoom and `--timeline-*` theming. That picture is the
+real component: it is captured from the [showcase gallery](#deploy) by
+`node scripts/screenshot-showcase.mjs`, so it cannot drift into showing a
+chart the code no longer draws.
+
 ## Usage
 
 ```js
