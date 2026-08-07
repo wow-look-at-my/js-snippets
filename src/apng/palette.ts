@@ -49,34 +49,55 @@ export function buildPalette(
   limit = 256,
   reserveTransparent = true,
 ): Palette | null {
-  const counts = new Map<number, number>();
+  // Colours are interned to a slot so the per-pixel work is an integer compare
+  // against the previous pixel, and the Map is touched once per RUN of one
+  // colour rather than once per pixel. On the flat content that palettises at
+  // all — UI, pixel art, charts — runs are long and this is most of the scan's
+  // cost. Counts stay EXACT pixel counts (they order the palette below), so the
+  // output is identical to counting one pixel at a time.
+  const slotOf = new Map<number, number>();
+  const keys: number[] = [];
+  const counts: number[] = [];
   let sawTransparent = false;
+  let runKey = -1;
+  let runSlot = -1;
+  let runLength = 0;
+
   // One slot is held back for the transparent sentinel until we see that the
   // images already contain one.
   for (const img of images) {
     for (let i = 0; i < img.length; i += 4) {
       const key = packRgba(img[i], img[i + 1], img[i + 2], img[i + 3]);
-      const prev = counts.get(key);
-      if (prev !== undefined) {
-        counts.set(key, prev + 1);
+      if (key === runKey) {
+        runLength++;
         continue;
       }
-      if (img[i + 3] === 0) sawTransparent = true;
-      const budget = reserveTransparent && !sawTransparent ? limit - 1 : limit;
-      if (counts.size >= budget) return null;
-      counts.set(key, 1);
+      if (runSlot >= 0) counts[runSlot] += runLength;
+      runKey = key;
+      runLength = 1;
+      let slot = slotOf.get(key);
+      if (slot === undefined) {
+        if (img[i + 3] === 0) sawTransparent = true;
+        const budget = reserveTransparent && !sawTransparent ? limit - 1 : limit;
+        if (keys.length >= budget) return null;
+        slot = keys.length;
+        slotOf.set(key, slot);
+        keys.push(key);
+        counts.push(0);
+      }
+      runSlot = slot;
     }
   }
-  if (counts.size === 0) return null;
+  if (runSlot >= 0) counts[runSlot] += runLength;
+  if (keys.length === 0) return null;
 
-  const keys = [...counts.keys()];
   keys.sort((ka, kb) => {
     const aa = ka & 0xff;
     const ab = kb & 0xff;
     // Non-opaque first (shortest possible tRNS), then most-used first.
     if ((aa === 255) !== (ab === 255)) return aa === 255 ? 1 : -1;
-    const ca = counts.get(ka) as number;
-    const cb = counts.get(kb) as number;
+    const ca = counts[slotOf.get(ka) as number];
+    const cb = counts[slotOf.get(kb) as number];
     if (ca !== cb) return cb - ca;
     return ka - kb;
   });

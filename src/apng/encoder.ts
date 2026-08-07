@@ -360,6 +360,10 @@ export async function encodeApng(
     if (!overLegal || effort === 'best') blends.push('source');
 
     let chosen: PendingFrame | undefined;
+    // The winning blend's pixels are kept, not recomputed: they are also what
+    // the canvas has to be advanced by, and re-cropping a rectangle the size of
+    // the changed area is not free.
+    let shown: Uint8Array | undefined;
     for (const blend of blends) {
       const payloadRgba = blend === 'over'
         ? cropRectMasked(canvas, image, width, rect, diffOptions, maskFill)
@@ -370,16 +374,14 @@ export async function encodeApng(
           rect, blend, filter: encoded.filter, payload: encoded.payload,
           changed: diff.changed, delayMs, coalesced: 0, sourceIndex: i,
         };
+        shown = payloadRgba;
       }
     }
-    if (!chosen) throw new Error(`internal: frame ${i} produced no encoding`);
+    if (!chosen || !shown) throw new Error(`internal: frame ${i} produced no encoding`);
     pending.push(chosen);
 
     // Advance the canvas the way a decoder would, so the next frame diffs
     // against what will actually be on screen.
-    const shown = chosen.blend === 'over'
-      ? cropRectMasked(canvas, image, width, rect, diffOptions, maskFill)
-      : cropRect(image, width, rect);
     composite(canvas, width, rect, shown, chosen.blend);
     options.onProgress?.(i + 1, images.length);
   }
