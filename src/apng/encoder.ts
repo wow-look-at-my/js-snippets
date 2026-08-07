@@ -101,8 +101,11 @@ export interface ApngFrameStat {
 }
 
 export interface ApngResult {
-  /** The complete .apng / .png file. */
-  bytes: Uint8Array;
+  /**
+   * The complete .apng / .png file. Typed over a plain ArrayBuffer, which is
+   * what Blob and a postMessage transfer list accept.
+   */
+  bytes: Uint8Array<ArrayBuffer>;
   width: number;
   height: number;
   /** Frames in the output animation. */

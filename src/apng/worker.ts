@@ -92,7 +92,7 @@ export function installApngWorker(): void {
             scope.postMessage({ type: 'apng:progress', id, done, total }, []);
           },
         });
-        scope.postMessage({ type: 'apng:done', id, result }, [result.bytes.buffer as ArrayBuffer]);
+        scope.postMessage({ type: 'apng:done', id, result }, [result.bytes.buffer]);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         scope.postMessage({ type: 'apng:error', id, message }, []);

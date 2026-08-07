@@ -53,7 +53,7 @@ export function writeChunk(type: string, data: Uint8Array): Uint8Array {
 }
 
 /** Concatenate byte runs into one buffer. */
-export function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
+export function concatBytes(parts: readonly Uint8Array[]): Uint8Array<ArrayBuffer> {
   let total = 0;
   for (const p of parts) total += p.length;
   const out = new Uint8Array(total);
