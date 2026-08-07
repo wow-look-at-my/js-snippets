@@ -20,9 +20,22 @@
 //   const result = await encoder.encode(w, h, frames, { threshold: 2 }, onProgress);
 
 import { encodeApng, type ApngFrame, type ApngOptions, type ApngResult } from './encoder.ts';
+import { rasterizeToRgba, type FitMode } from './raster.ts';
 
-/** The `ApngOptions` that survive a structured clone — no functions. */
-export type ApngWorkerOptions = Omit<ApngOptions, 'deflate' | 'onProgress'>;
+/**
+ * The `ApngOptions` that survive a structured clone — no functions — plus how
+ * a bitmap frame is fitted to the output size.
+ */
+export type ApngWorkerOptions = Omit<ApngOptions, 'deflate' | 'onProgress'> & { fit?: FitMode };
+
+/**
+ * A frame to encode: either RGBA8 bytes already the right size, or an
+ * ImageBitmap of any size, which the WORKER rasterises so the page never
+ * touches pixels.
+ */
+export type ApngSourceFrame =
+  | { data: Uint8Array | Uint8ClampedArray; delayMs?: number }
+  | { bitmap: ImageBitmap; delayMs?: number };
 
 /** Message posted to the worker to start an encode. */
 export interface ApngEncodeRequest {
@@ -30,7 +43,7 @@ export interface ApngEncodeRequest {
   id: number;
   width: number;
   height: number;
-  frames: { data: Uint8Array; delayMs?: number }[];
+  frames: ApngSourceFrame[];
   options: ApngWorkerOptions;
 }
 
@@ -67,13 +80,19 @@ export function installApngWorker(): void {
 
     void (async () => {
       try {
-        const result = await encodeApng(msg.width, msg.height, msg.frames, {
-          ...msg.options,
+        const { fit, ...encodeOptions } = msg.options;
+        const frames: ApngFrame[] = msg.frames.map((f) =>
+          'bitmap' in f
+            ? { data: rasterizeToRgba(f.bitmap, msg.width, msg.height, fit), delayMs: f.delayMs }
+            : f,
+        );
+        const result = await encodeApng(msg.width, msg.height, frames, {
+          ...encodeOptions,
           onProgress: (done, total) => {
             scope.postMessage({ type: 'apng:progress', id, done, total }, []);
           },
         });
-        scope.postMessage({ type: 'apng:done', id, result }, [result.bytes.buffer]);
+        scope.postMessage({ type: 'apng:done', id, result }, [result.bytes.buffer as ArrayBuffer]);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         scope.postMessage({ type: 'apng:error', id, message }, []);
@@ -94,7 +113,7 @@ export interface ApngEncoder {
   encode(
     width: number,
     height: number,
-    frames: readonly ApngFrame[],
+    frames: readonly ApngSourceFrame[],
     options?: ApngWorkerOptions,
     onProgress?: ApngProgress,
   ): Promise<ApngResult>;
@@ -156,18 +175,27 @@ export function createApngEncoder(
     encode(width, height, frames, options = {}, onProgress) {
       const w = spawn();
       const id = nextId++;
-      const payload = frames.map((f) => ({
-        data: f.data instanceof Uint8Array
-          ? f.data
-          : new Uint8Array(f.data.buffer, f.data.byteOffset, f.data.length),
-        delayMs: f.delayMs,
-      }));
+      const payload: ApngSourceFrame[] = frames.map((f) =>
+        'bitmap' in f
+          ? f
+          : {
+              data: f.data instanceof Uint8Array
+                ? f.data
+                : new Uint8Array(f.data.buffer, f.data.byteOffset, f.data.length),
+              delayMs: f.delayMs,
+            },
+      );
       const request: ApngEncodeRequest = {
         type: 'apng:encode', id, width, height, frames: payload, options,
       };
       return new Promise<ApngResult>((resolve, reject) => {
         pending.set(id, { resolve, reject, onProgress });
-        const transfer = transferFrames ? payload.map((f) => f.data.buffer) : [];
+        // Bitmaps are never transferred: a caller that re-encodes on every
+        // settings change needs to keep them. `transferFrames` moves the byte
+        // buffers only, and only when the caller says it is done with them.
+        const transfer: Transferable[] = transferFrames
+          ? payload.flatMap((f) => ('bitmap' in f ? [] : [f.data.buffer as ArrayBuffer]))
+          : [];
         w.postMessage(request, transfer);
       });
     },

@@ -84,10 +84,40 @@ createApngEncoder(workerUrl, { transferFrames = false }) -> ApngEncoder
   .terminate()  kill the worker, rejecting everything in flight; the next
                 encode spawns a fresh one (this is how you abandon a long
                 encode whose inputs just changed)
-`options` is ApngOptions minus its function fields (they cannot be cloned);
-progress arrives through the `onProgress` argument instead. `transferFrames`
-moves the frame buffers into the worker rather than copying them — faster and
-half the peak memory, but it detaches the caller's arrays.
+
+FRAMES MAY BE BITMAPS: each entry is either `{ data, delayMs? }` (RGBA8
+already at the output size) or `{ bitmap, delayMs? }` (an ImageBitmap of any
+size, which the WORKER rasterises with apng/raster.js). Pass bitmaps and the
+page never touches a pixel — decode a file with createImageBitmap, hand it
+over, and both the scaling and the encoding happen off-thread.
+`options.fit` ('contain' default | 'cover' | 'stretch') places a bitmap whose
+aspect ratio differs from the output's; 'contain' leaves the bars transparent,
+which an APNG stores for almost nothing.
+
+`options` is otherwise ApngOptions minus its function fields (they cannot be
+cloned); progress arrives through the `onProgress` argument instead.
+`transferFrames` moves the frame BYTE buffers into the worker rather than
+copying them — faster and half the peak memory, but it detaches the caller's
+arrays. Bitmaps are never transferred, since a caller that re-encodes when a
+setting changes still needs them.
+
+### apng/raster.js
+Fitting and drawing a source into an RGBA8 frame. The maths is pure and
+node-tested; only rasterizeToRgba needs a canvas (OffscreenCanvas, so it runs
+in a worker).
+
+Exports: fitRect, clampSize, rasterizeToRgba
+Types: FitMode = 'contain'|'cover'|'stretch', FitRect { x, y, w, h }
+
+- fitRect(srcW, srcH, dstW, dstH, mode='contain') -> FitRect — where to draw a
+  source inside a differently-shaped canvas. 'contain' fits it whole and
+  centres it, 'cover' fills and overflows, 'stretch' ignores aspect ratio.
+  Throws on a non-positive source size.
+- clampSize(width, height, max) -> { width, height } — scale down so neither
+  side exceeds `max`, keeping the ratio, never scaling up, never returning 0.
+- rasterizeToRgba(source, width, height, mode='contain') -> Uint8ClampedArray
+  — draw any CanvasImageSource into a fresh transparent canvas of that size.
+  Throws where OffscreenCanvas does not exist rather than returning blanks.
 
 ### apng/png.js
 PNG container primitives: CRC-32, chunk framing, scanline filtering. Pure.
