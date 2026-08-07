@@ -169,6 +169,29 @@ test('composite over blends a translucent source the way the APNG spec states', 
   for (const c of [r, g, b]) assert.ok(Math.abs(c - 128) <= 1, `channel ${c}`);
 });
 
+// The encoder skips trying the SOURCE encoding when every pixel in the
+// rectangle changed, on the grounds that OVER's payload is then identical. That
+// is this property, and if it ever stopped holding the encoder would silently
+// pick the wrong bytes.
+test('with every pixel in the rect changed, the masked crop equals the plain crop', () => {
+	const canvas = blank(0);
+	const next = blank(200);
+	const rect: Rect = { x: 1, y: 1, w: 5, h: 3 };
+	const opts = { threshold: 2 };
+	const diff = diffFrames(canvas, next, W, H, opts);
+	assert.ok(diff);
+	assert.equal(diff.changed, W * H, 'the fixture must change every pixel');
+	assert.deepEqual(
+		[...cropRectMasked(canvas, next, W, rect, opts)],
+		[...cropRect(next, W, rect)],
+	);
+	// And the same with a non-black transparent fill, which is the indexed path.
+	assert.deepEqual(
+		[...cropRectMasked(canvas, next, W, rect, opts, [7, 8, 9, 0])],
+		[...cropRect(next, W, rect)],
+	);
+});
+
 test('cropRectMasked and diffFrames agree on which pixels changed', () => {
   const canvas = blank(50);
   const next = canvas.slice();

@@ -355,9 +355,14 @@ export async function encodeApng(
     // own image and is always stored whole.
     const overLegal = i > 0 && diff.opaque;
 
+    // With every pixel in the rectangle changed there is nothing for OVER to
+    // skip, so its payload is byte-identical to SOURCE's and trying both would
+    // compress the same bytes twice. That is the shape a full-frame change
+    // takes, which is exactly where effort 'best' is most expensive.
+    const overIsSource = diff.changed === rect.w * rect.h;
     const blends: Array<'source' | 'over'> = [];
     if (overLegal) blends.push('over');
-    if (!overLegal || effort === 'best') blends.push('source');
+    if (!overLegal || (effort === 'best' && !overIsSource)) blends.push('source');
 
     let chosen: PendingFrame | undefined;
     // The winning blend's pixels are kept, not recomputed: they are also what
