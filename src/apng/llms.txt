@@ -1,0 +1,184 @@
+### apng/encoder.js
+Size-optimising animated PNG encoder. RGBA8 frames in, one .apng file out.
+Pure logic — no DOM — so it runs unchanged in a Worker, which is where it
+belongs (see apng/worker.js).
+
+Exports: encodeApng, deflateZlib, delayFraction
+Types: ApngFrame, ApngOptions, ApngResult, ApngFrameStat, ApngEffort,
+  ApngColorType, Deflate
+
+  const result = await encodeApng(width, height, frames, { threshold: 2 });
+  // result.bytes is the file; result.frames explains what it did per frame.
+
+encodeApng(width, height, frames, options?) -> Promise<ApngResult>
+  frames: { data: Uint8Array | Uint8ClampedArray, delayMs?: number }[]
+  Every frame must be exactly width*height*4 bytes of non-premultiplied RGBA8.
+  Throws on a wrong-sized frame, a non-positive size, or an empty list.
+
+What it does beyond writing the frames out, all of it aimed at file size:
+  - DIRTY RECTANGLES: each frame stores only the bounding box of the pixels
+    that moved since the previous one.
+  - TRANSPARENT SKIPPING: inside that box, pixels that did not move are
+    written fully transparent and composited with blend_op=OVER, so the
+    decoder keeps what was there and deflate sees long runs of one value.
+    Only legal when every changed pixel is opaque (OVER reproduces its source
+    exactly only at alpha 255) — otherwise the frame falls back to SOURCE.
+  - THRESHOLD: a channel movement of `threshold` or less is not a movement.
+    Default 2 — invisible at 8 bits, and enough to absorb the +-1 noise that
+    otherwise leaves a dirty-rect encoder with nothing static to find. 0 is
+    exact/lossless. Comparison is against the CANVAS A DECODER WOULD SHOW, not
+    the previous source frame, so tolerated differences cannot accumulate:
+    every output pixel stays within `threshold` of its source, forever.
+  - COALESCING: a frame that changes nothing is dropped and its delay added to
+    the frame before it (`coalesce`, default true).
+  - EXACT PALETTE: <= 256 distinct RGBA values become an 8-bit indexed PNG,
+    one byte per pixel instead of four. Detection is exact and never
+    quantises; `colorType: 'indexed'` on frames that do not fit throws rather
+    than approximating.
+  - FILTERING: per-row adaptive filter selection by default; `effort: 'best'`
+    compresses every legal (blend op, filter strategy) pairing per frame and
+    keeps the smallest, at the cost of up to 12 deflate passes per frame.
+
+ApngOptions: threshold=2, alphaThreshold=threshold, delayMs=100, loops=0
+  (0 = forever), colorType='auto'|'rgba'|'indexed', filter (see apng/png.js),
+  effort='fast'|'best', coalesce=true, deflate, onProgress(done, total).
+
+ApngResult: bytes, width, height, frameCount (frames in the output),
+  sourceFrameCount, colorType ('rgba'|'indexed'), paletteSize, frames
+  (ApngFrameStat[]: index, sourceIndex, rect, blend, filter, bytes, changed,
+  delayMs, coalesced) — enough to show a per-frame size/rect breakdown.
+
+deflateZlib(bytes) -> Promise<Uint8Array> is the default compressor,
+`CompressionStream('deflate')`. Pass `options.deflate` to swap in a slower,
+denser one; the encoder only requires a zlib stream back.
+
+delayFraction(ms) -> { num, den } is APNG's uint16 delay fraction, exported
+because a caller reading back an fcTL needs the same rounding.
+
+### apng/worker.js
+Running apng/encoder.js off the main thread: the worker-side handler and the
+main-thread client. DOM/Worker-bound, so it is not node-tested.
+
+Exports: installApngWorker, createApngEncoder
+Types: ApngEncoder, ApngWorkerOptions, ApngProgress, ApngEncodeRequest,
+  ApngWorkerResponse
+
+A worker script must be same-origin, so the consumer owns a two-line worker
+file and this module supplies the body:
+
+  // apng-worker.js, served from the consumer's own origin
+  import { installApngWorker } from 'https://…/apng/worker.js';
+  installApngWorker();
+
+  // main thread
+  const encoder = createApngEncoder(new URL('./apng-worker.js', import.meta.url));
+  const result = await encoder.encode(w, h, frames, { threshold: 2 }, onProgress);
+
+installApngWorker() registers the message handler on the current worker
+global. It THROWS if that global has a `document` — encoding on the main
+thread is the thing this module exists to prevent, so there is no in-page
+fallback anywhere in it.
+
+createApngEncoder(workerUrl, { transferFrames = false }) -> ApngEncoder
+  .encode(width, height, frames, options?, onProgress?) -> Promise<ApngResult>
+  .terminate()  kill the worker, rejecting everything in flight; the next
+                encode spawns a fresh one (this is how you abandon a long
+                encode whose inputs just changed)
+
+FRAMES MAY BE BITMAPS: each entry is either `{ data, delayMs? }` (RGBA8
+already at the output size) or `{ bitmap, delayMs? }` (an ImageBitmap of any
+size, which the WORKER rasterises with apng/raster.js). Pass bitmaps and the
+page never touches a pixel — decode a file with createImageBitmap, hand it
+over, and both the scaling and the encoding happen off-thread.
+`options.fit` ('contain' default | 'cover' | 'stretch') places a bitmap whose
+aspect ratio differs from the output's; 'contain' leaves the bars transparent,
+which an APNG stores for almost nothing.
+
+`options` is otherwise ApngOptions minus its function fields (they cannot be
+cloned); progress arrives through the `onProgress` argument instead.
+`transferFrames` moves the frame BYTE buffers into the worker rather than
+copying them — faster and half the peak memory, but it detaches the caller's
+arrays. Bitmaps are never transferred, since a caller that re-encodes when a
+setting changes still needs them.
+
+### apng/raster.js
+Fitting and drawing a source into an RGBA8 frame. The maths is pure and
+node-tested; only rasterizeToRgba needs a canvas (OffscreenCanvas, so it runs
+in a worker).
+
+Exports: fitRect, clampSize, rasterizeToRgba
+Types: FitMode = 'contain'|'cover'|'stretch', FitRect { x, y, w, h }
+
+- fitRect(srcW, srcH, dstW, dstH, mode='contain') -> FitRect — where to draw a
+  source inside a differently-shaped canvas. 'contain' fits it whole and
+  centres it, 'cover' fills and overflows, 'stretch' ignores aspect ratio.
+  Throws on a non-positive source size.
+- clampSize(width, height, max) -> { width, height } — scale down so neither
+  side exceeds `max`, keeping the ratio, never scaling up, never returning 0.
+- rasterizeToRgba(source, width, height, mode='contain') -> Uint8ClampedArray
+  — draw any CanvasImageSource into a fresh transparent canvas of that size.
+  Throws where OffscreenCanvas does not exist rather than returning blanks.
+
+### apng/png.js
+PNG container primitives: CRC-32, chunk framing, scanline filtering. Pure.
+
+Exports: PNG_SIGNATURE, crc32, writeChunk, concatBytes, paeth,
+  filterScanlines, unfilterScanlines, FILTER_STRATEGIES
+Type: FilterStrategy = 'none'|'sub'|'up'|'average'|'paeth'|'adaptive'
+
+- crc32(bytes, seed=0) — the zlib polynomial; `seed` continues a running CRC
+  (pass a previous finalised value) so a chunk's type and data can be fed in
+  separately.
+- writeChunk(type, data) — length + 4-char type + data + CRC. Throws unless
+  `type` is exactly 4 characters.
+- filterScanlines(raw, stride, height, bpp, strategy='adaptive') — PNG's
+  pre-compression form: one filter byte then `stride` residual bytes per row.
+  `bpp` is the byte distance to the pixel on the left (4 for RGBA8, 1 for
+  8-bit indexed). 'adaptive' is the standard minimum-sum-of-absolute-
+  differences choice per row.
+- unfilterScanlines(filtered, stride, height, bpp) — the inverse, for a
+  caller that verifies its own output or reads a PNG it did not write.
+  Throws on an unknown filter type.
+
+### apng/diff.js
+Inter-frame differencing: which pixels moved, the box around them, and the
+two ways to encode it. Pure.
+
+Exports: diffFrames, cropRect, cropRectMasked, composite
+Types: Rect { x, y, w, h }, FrameDiff { rect, changed, opaque }, DiffOptions
+  { threshold?, alphaThreshold? }
+
+- diffFrames(canvas, next, width, height, options?) -> FrameDiff | null
+  null means nothing changed past the threshold. `opaque` reports whether
+  every changed pixel is fully opaque, which is exactly when the OVER
+  encoding is legal.
+- cropRect(src, width, rect) — copy the rectangle out verbatim (the SOURCE
+  payload).
+- cropRectMasked(canvas, next, width, rect, options?, fill=[0,0,0,0]) — the
+  same crop with unchanged pixels replaced by a transparent pixel (the OVER
+  payload). An indexed encoder must pass its transparent palette entry's
+  colour as `fill`: any alpha-0 colour is equally invisible, but only the one
+  in the palette can be stored.
+- composite(canvas, width, rect, payload, blend) — advance a canvas the way a
+  decoder would ('source' replaces the rectangle, 'over' skips transparent
+  pixels). This is the encoder's model of the screen; it is also what a
+  consumer needs to replay an APNG it decoded.
+
+### apng/palette.js
+Exact palette detection for 8-bit indexed output. Pure.
+
+Exports: buildPalette, indexImage, packRgba
+Type: Palette { rgba, size, trnsCount, transparentIndex, lookup }
+
+- buildPalette(images, limit=256, reserveTransparent=true) -> Palette | null
+  null when the images use more than the budget of distinct RGBA values. It
+  bails as soon as the count is exceeded, so photographic input costs a few
+  thousand pixel reads rather than a full scan. NOTHING HERE QUANTISES:
+  indexing can never change a pixel. Entries are ordered non-opaque first, so
+  the tRNS chunk (a prefix of the palette) is as short as possible, then most-
+  used first. `reserveTransparent` guarantees a fully transparent entry for
+  masked frames, which costs one slot — so fully opaque input fits 255
+  colours, not 256.
+- indexImage(src, palette) -> Uint8Array, one byte per pixel. Throws on a
+  colour the palette lacks rather than substituting a near one.
+- packRgba(r, g, b, a) -> number, the endian-independent lookup key.
