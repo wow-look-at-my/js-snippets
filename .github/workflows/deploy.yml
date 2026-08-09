@@ -78,8 +78,7 @@ jobs:
         uses: wow-look-at-my/actions@typescript#latest
         with:
           script: |
-            // buildhost serves sites under a single path segment — flatten
-            // anything outside [A-Za-z0-9._-] out of the branch name.
+            // buildhost serves sites under one path segment — flatten anything outside [A-Za-z0-9._-] out of the branch name
             const flat = (github.ref_name || 'branch').replace(/[^A-Za-z0-9._-]/g, '-');
             const site = github.ref_name === 'master' ? 'library' : `library-${flat}`;
             core.setOutput('branch', site);
@@ -149,16 +148,9 @@ jobs:
         uses: wow-look-at-my/actions@typescript#latest
         with:
           script: |
-            // The preview reflects BRANCH state, so the gate is branch-level:
-            // publish when the branch's diff vs origin/master touches any UI
-            // component or the gallery (any later push to such a branch
-            // refreshes its preview). Master itself always publishes.
-            // src/ui/ is watched WHOLE, not per-component: every component
-            // has a gallery section, so any of them changing is a reason to
-            // republish the page.
+            // src/ui/ is watched WHOLE, not per-component — every UI component has a gallery section, so any of them changing means republish
             const watched = /^(src\/ui\/|showcase\/|\.github\/workflows\/deploy\.yml$)/;
-            // buildhost serves sites under a single path segment — flatten
-            // anything outside [A-Za-z0-9._-] out of the branch name.
+            // buildhost serves sites under one path segment — flatten anything outside [A-Za-z0-9._-] out of the branch name
             const branch = (github.ref_name || 'preview').replace(/[^A-Za-z0-9._-]/g, '-');
             core.setOutput('branch', branch);
             if (github.ref_name === 'master') {
