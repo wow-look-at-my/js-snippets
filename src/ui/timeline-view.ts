@@ -422,22 +422,10 @@ const EDGE_SHADOW_ALPHA = 0.85;
 const MAX_DPR = 3;
 // Cluster 3-stack ghost alphas (front draws at 1).
 const LANE_FIT_CACHE_MAX = 512;
-// Diamonds per batched path. Measured in Chromium (2400x1200 canvas, 1200
-// diamonds): 2.50 us/marker one per path, 1.75 at 8-32 per path, 2.75 at 256
-// and 8.08 with all 1200 in ONE path — a giant path costs far more to
-// rasterize than the calls it saves. Batching is a win only inside that
-// window, so the flush is capped rather than "one path per lane".
-const CLUSTER_BATCH_MAX = 32;
 // Baked pip glyphs kept alive (see pipSprite). Generous enough to hold every
 // (style, radius, dpr) a chart cycles through, bounded so a lane-height tween
 // walking radii cannot grow it forever.
 const PIP_SPRITE_CACHE_MAX = 96;
-// Markers of one baked glyph a frame must hold before baking it is worth
-// doing. A bake is ~82 us and saves ~0.55 us/marker, so it repays at ~150
-// markers in ONE frame; at 48 it repays within about three, which a chart
-// dense enough to hit it will always draw. Below that the live path wins
-// outright, and a static chart with a handful of pips never bakes at all.
-const PIP_SPRITE_MIN_MARKERS = 48;
 const CLUSTER_MID_ALPHA = 0.65;
 const CLUSTER_BACK_ALPHA = 0.35;
 // The minimap strip's height (CSS px) — the plot canvas cedes this band
@@ -1922,28 +1910,16 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   /**
-   * Baked pip glyphs, keyed by style + radius + dpr + variant. ONLY the
-   * glyphs whose per-marker cost is real are sprited: a dashed
-   * (cancelled) pip re-derives and applies a dash pattern per marker, and
-   * a cluster's 3-stack is six path ops. A plain solid pip is deliberately
-   * NOT sprited — batched paths beat drawImage for it. Measured in
-   * Chromium, 1200 markers on a 2400x1200 canvas, us/marker:
+   * Baked pip glyphs, keyed by style + radius + dpr + variant. EVERY pip
+   * comes off a sprite, including a plain solid one. Sustained-throughput
+   * measurement on an M1, markers per frame holding 30fps (bench/bench-gl.html):
    *
-   *   solid   batched 0.75  |  one path each 1.14  |  sprite 1.56
-   *   dashed  per-path 1.80  |  sprite 1.24
-   *   stack   batched 1.81  |  sprite 1.29
+   *   sprite blit 29977  |  batched path 4571  |  one path each 5100
    *
-   * Measured on a software rasterizer (headless, no GPU), which is the
-   * pessimistic case for drawImage — a GPU-backed canvas blits cheaper,
-   * so these are lower bounds on the sprite's advantage, never upper ones.
-   *
-   * BAKING IS NOT FREE, and it is the cost a sprite table usually hides:
-   * 82 us for a dashed pip, 84 for a stack, nearly all of it creating the
-   * canvas and its context. Against a saving of ~0.55 us/marker that is
-   * ~150 markers before a sprite has paid for itself, so a bake happens
-   * only once a frame actually holds PIP_SPRITE_MIN_MARKERS of that glyph
-   * — below that the live path is genuinely cheaper and is what runs.
-   * Returns null to say exactly that: not cached, and not worth baking.
+   * A bake is ~82 us, once per (style, radius, dpr), and repays inside the
+   * first frame that draws a few hundred of them. Do not reintroduce a
+   * minimum-markers gate or a solid-pip carve-out: both came from a
+   * software-rasterizer micro-benchmark that the sustained numbers reverse.
    */
   private pipSprites = new Map<string, { img: HTMLCanvasElement; w: number; h: number; ax: number; ay: number }>();
   private styleIds = new WeakMap<ResolvedStyle, string>();
@@ -1965,12 +1941,11 @@ export class TimelineViewElement extends HTMLElement {
    * Radius is quantized to a half pixel so a lane-height tween re-uses
    * one sprite instead of baking a new one every frame.
    */
-  private pipSprite(style: ResolvedStyle, radius: number, stack: boolean, markers: number): { img: HTMLCanvasElement; w: number; h: number; ax: number; ay: number } | null {
+  private pipSprite(style: ResolvedStyle, radius: number, stack: boolean): { img: HTMLCanvasElement; w: number; h: number; ax: number; ay: number } {
     const r = Math.round(radius * 2) / 2;
     const key = `${this.styleId(style)}|${r}|${this.dpr}|${stack ? 'k' : 'p'}`;
     const hit = this.pipSprites.get(key);
     if (hit) return hit;
-    if (markers < PIP_SPRITE_MIN_MARKERS) return null;
     const rx = r * 0.78;
     const step = stack ? Math.max(1, Math.min(2, r * 0.35)) : 0;
     const pad = 3;
@@ -4703,8 +4678,7 @@ export class TimelineViewElement extends HTMLElement {
    * hour of traffic puts ~400 on screen, which measured as the single
    * largest slice of frame time (31 ms of a 59 ms draw budget across a
    * load). The whole stack bakes into one image per (style, radius, dpr),
-   * so a marker costs one blit: 1.29 us against 1.81 batched (pipSprite
-   * carries the measurements).
+   * so a marker costs one blit (pipSprite carries the measurements).
    *
    * A hovered marker or an emphasis stem is per-marker geometry, so those
    * fall back to drawCluster — and draw AFTER the blits, which is where
@@ -4715,8 +4689,8 @@ export class TimelineViewElement extends HTMLElement {
     if (ncs.length === 0) return;
     const t = this.theme;
     let fallback: NCluster[] | null = null;
-    // Grouped by the glyph they would blit, because whether baking pays
-    // is a question about the SIZE of each group.
+    // Grouped by the glyph they blit, so one bake and one transform switch
+    // serve the whole group.
     let groups: Map<string, { style: ResolvedStyle; r: number; at: NCluster[] }> | null = null;
     for (const c of ncs) {
       const style = this.resolved(c.catKey, c.state, null);
@@ -4738,11 +4712,7 @@ export class TimelineViewElement extends HTMLElement {
     }
     if (groups) {
       for (const g of groups.values()) {
-        const sprite = this.pipSprite(g.style, g.r, true, g.at.length);
-        if (!sprite) {
-          for (const c of g.at) this.drawCluster(ctx, c);
-          continue;
-        }
+        const sprite = this.pipSprite(g.style, g.r, true);
         const blits: { sprite: typeof sprite; cx: number; cy: number }[] = [];
         for (const c of g.at) {
           const p = this.clusterPos(c);
@@ -4766,46 +4736,15 @@ export class TimelineViewElement extends HTMLElement {
     if (!geo) return;
     const cy = geo.y + geo.th / 2;
     const hovered = this.hoverClusterId ?? this.hoverIntervalId;
-    const emphasis = style.glyph === 'bang' || style.border === this.theme.emphasis;
-    const dashed = style.dash !== null && style.dash.length > 0;
     const pips = geo.pips;
     const hoverAt = hovered === null ? -1 : pips.findIndex((p) => c.members[p.mark.from].id === hovered);
-    const sprite = dashed || emphasis ? this.pipSprite(style, geo.r, false, pips.length) : null;
-    if (sprite) {
-      // Per-marker dash setup is the expensive glyph, so once there are
-      // enough of them it comes off a baked sprite (1.24 us against 1.80
-      // drawn live — see pipSprite).
-      this.blitPips(
-        ctx,
-        pips.map((p) => ({ sprite, cx: p.cx, cy })),
-      );
-    } else if (dashed || emphasis) {
-      for (const p of pips) this.drawInstant(ctx, style, p.cx, cy, geo.th, false);
-    } else {
-      // One cheap path per pip, so BATCHING beats blitting here (0.75 us
-      // against 1.56): the whole run goes down as subpaths of one path.
-      ctx.fillStyle = style.pattern === 'outline' ? withAlpha(style.fill, 0.15) : style.fill;
-      ctx.strokeStyle = style.border;
-      ctx.lineWidth = 1;
-      const r = geo.r;
-      const rx = r * 0.78;
-      for (let i = 0; i < pips.length; i += CLUSTER_BATCH_MAX) {
-        const to = Math.min(i + CLUSTER_BATCH_MAX, pips.length);
-        ctx.beginPath();
-        for (let k = i; k < to; k++) {
-          const cx = pips[k].cx;
-          ctx.moveTo(cx, cy - r);
-          ctx.lineTo(cx + rx, cy);
-          ctx.lineTo(cx, cy + r);
-          ctx.lineTo(cx - rx, cy);
-          ctx.closePath();
-        }
-        ctx.fill();
-        ctx.stroke();
-      }
-    }
+    const sprite = this.pipSprite(style, geo.r, false);
+    this.blitPips(
+      ctx,
+      pips.map((p) => ({ sprite, cx: p.cx, cy })),
+    );
     // The hovered mark redraws whole, on top: its ring and any emphasis
-    // stem are per-marker geometry the batch and the sprite both omit.
+    // stem are per-marker geometry the sprite omits.
     if (hoverAt >= 0) this.drawInstant(ctx, style, pips[hoverAt].cx, cy, geo.th, true);
   }
 

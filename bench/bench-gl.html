@@ -34,7 +34,14 @@ const W = CSS_W * DPR, H = CSS_H * DPR;
 const R = 8, RX = R * 0.78, PAD = 3;
 const FILL = '#7a94b7', BORDER = '#97adcd';
 const BATCH = 32;             // the component's CLUSTER_BATCH_MAX
-const N_CAP = 1_000_000;      // memory guard: the widest layout is 264 B/marker
+// Memory guard. Each method declares its per-marker allocation and gets its
+// own ceiling out of one budget, because they differ by 30x: the instanced
+// path uploads 8 B per marker and the GL path allocates 264 B (96 position +
+// 48 colour + 120 index). One shared cap either strangles the cheap methods
+// on a fast GPU or lets the expensive one allocate a gigabyte.
+const N_CAP_HARD = 4_000_000;
+const MEM_BUDGET = 384 * 1024 * 1024;
+const capFor = (bytes) => Math.min(N_CAP_HARD, Math.floor(MEM_BUDGET / (bytes + 8)));
 
 const SW = Math.ceil(RX * 2 + PAD * 2), SH = Math.ceil(R * 2 + PAD * 2);
 const SPRITE_W = SW * DPR, SPRITE_H = SH * DPR;
@@ -473,17 +480,23 @@ function span9Patch(n, pts, hatched) {
 	}
 }
 
-// [label, draw(n, positions), isGl] — isGl routes the row through the GPU
-// timer when one exists, which is the only way to see past vsync.
+// [label, draw(n, positions), isGl, bytesPerMarker] — isGl routes the row
+// through the GPU timer when one exists, which is the only way to see past
+// vsync; the byte count sizes that row's own ceiling (see capFor).
+const GL_BYTES = {
+	'gl instanced quads': 8,
+	'gl vert+index 4v/6i': 88,
+	'gl path 12v/30i': 264,
+};
 const METHODS = [
-	['canvas2d path, batched 32', c2Batched, false],
-	['canvas2d path, one each', c2PerPath, false],
-	['canvas2d sprite blit', c2Blit, false],
-	...Object.entries(glMethods).map(([name, fn]) => [name, fn, true]),
-	['span path, solid', (n, p) => spanPath(n, p, false), false],
-	['span 9-patch, solid', (n, p) => span9Patch(n, p, false), false],
-	['span path, hatched', (n, p) => spanPath(n, p, true), false],
-	['span 9-patch, hatched', (n, p) => span9Patch(n, p, true), false],
+	['canvas2d path, batched 32', c2Batched, false, 0],
+	['canvas2d path, one each', c2PerPath, false, 0],
+	['canvas2d sprite blit', c2Blit, false, 0],
+	...Object.entries(glMethods).map(([name, fn]) => [name, fn, true, GL_BYTES[name] ?? 0]),
+	['span path, solid', (n, p) => spanPath(n, p, false), false, 0],
+	['span 9-patch, solid', (n, p) => span9Patch(n, p, false), false, 0],
+	['span path, hatched', (n, p) => spanPath(n, p, true), false, 0],
+	['span 9-patch, hatched', (n, p) => span9Patch(n, p, true), false, 0],
 ];
 
 
@@ -579,7 +592,7 @@ function ensure(n) {
  * Ramp `draw` to the 30fps band, freeze, and sample a sustained window.
  * Resolves { n, fps, frames, seconds, timing, pinned }.
  */
-function measure(draw, isGl, note) {
+function measure(draw, isGl, note, cap) {
 	return new Promise((resolve) => {
 		// GPU timing only helps the GL methods; canvas2d work is CPU-side
 		// and the extension would time an empty GPU queue.
@@ -598,7 +611,7 @@ function measure(draw, isGl, note) {
 		let lastNote = 0;
 		const sample = [];
 		let sampleStart = 0;
-		const rampStart = performance.now();
+		let rampStart = performance.now();
 
 		const tick = (rafTs) => {
 			const ts = useGpu ? performance.now() : (rafTs ?? performance.now());
@@ -649,9 +662,9 @@ function measure(draw, isGl, note) {
 						const proximity = Math.min(1, Math.max(0, (fps - edge) / edge));
 						const floor = CONTROL_STEP_FLOOR * proximity;
 						const clamp = useGpu ? CONTROL_STEP_CLAMP : CONTROL_STEP_CLAMP_RAF;
-						nF = Math.min(N_CAP, nF * (1 + Math.min(clamp, Math.max(floor, gain))));
+						nF = Math.min(cap, nF * (1 + Math.min(clamp, Math.max(floor, gain))));
 						n = Math.max(1, Math.round(nF));
-						if (nF >= N_CAP - 0.5) pinned = true;
+						if (nF >= cap - 0.5) pinned = true;
 						// Throttled: writing progress every ramp frame costs a
 						// layout and a paint that the frozen sample does not pay,
 						// so the ramp measures its own instrumentation and stops
@@ -687,6 +700,14 @@ function measure(draw, isGl, note) {
 							phase = 'ramp';
 							ctrl.length = 0;
 							sample.length = 0;
+							// The deadline is PER ramp round. Left un-reset it
+							// has already expired by the time the first sample
+							// ends, so every resumed round flipped straight back
+							// to sampling after one control window and the row
+							// reported a floor as a ceiling: the GL path row
+							// resolved at 97k markers sustaining 120fps, four
+							// times the target, and the table printed it plain.
+							rampStart = ts;
 							note(`n=${n} sustained ${fps.toFixed(1)} fps — resuming ramp`);
 						} else {
 							resolve({
@@ -723,7 +744,7 @@ function thermalWarmup(note) {
 			const dt = prev === null ? 0 : ts - prev;
 			prev = ts;
 			if (dt > 0 && 1000 / dt > TARGET_FPS + BAND_FPS) {
-				nF = Math.min(N_CAP, nF * 1.01);
+				nF = Math.min(capFor(METHODS[0][3]), nF * 1.01);
 				n = Math.max(1, Math.round(nF));
 			}
 			const left = (thermalMs - (ts - start)) / 1000;
@@ -741,8 +762,8 @@ async function run() {
 	const out = document.getElementById('out');
 	const note = (what) => { out.textContent = what; };
 	await thermalWarmup(note);
-	for (const [name, draw, isGl] of METHODS) {
-		const r = await measure(draw, !!isGl, (what) => note(`${name}: ${what}`));
+	for (const [name, draw, isGl, bytes] of METHODS) {
+		const r = await measure(draw, !!isGl, (what) => note(`${name}: ${what}`), capFor(bytes));
 		rows.push({ name, ...r });
 		note(`${rows.length}/${METHODS.length} — ${name}: ${r.n} @ ${r.fps.toFixed(1)} fps`);
 	}
@@ -759,11 +780,15 @@ async function run() {
 				// smallest size, so its fixed per-frame cost — not the markers —
 				// is what is being measured. Saying so beats printing a marker
 				// count that has nothing to do with markers.
+				// A row that sampled outside the band never converged, so its
+				// marker count is not a ceiling and must not read as one.
 				const flag = r.pinned
 					? '  <- pinned at the size cap, never reached the band'
 					: r.n <= N_MIN
 						? '  <- floored: over budget at the SMALLEST size; fixed per-frame cost dominates, not the markers'
-						: '';
+						: r.fps > TARGET_FPS + BAND_FPS
+							? `  <- NEVER CONVERGED after ${r.reramps} re-ramps: sustained ${r.fps.toFixed(0)} fps, so this is a FLOOR, not a ceiling`
+							: '';
 				return `  ${r.name.padEnd(26)} ${String(r.n).padStart(9)}  ${r.fps.toFixed(1).padStart(6)}  ${String(rate).padStart(11)}   ${r.frames}f/${r.seconds.toFixed(1)}s ${r.timing}${flag}`;
 			})
 			.join('\n');
