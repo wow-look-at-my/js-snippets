@@ -172,6 +172,9 @@ import {
   clusterInstants,
   clusterMarkerTime,
   clusterZoomView,
+  CLUSTER_STACK_MAX_PX,
+  CLUSTER_MARK_PX,
+  type ClusterMark,
   fitSpanView,
   segmentAtTime,
   type SegmentHit,
@@ -331,10 +334,15 @@ interface NInterval {
 }
 
 /**
- * A cluster of instant markers (drawn as a fixed 3-stack of pips),
- * re-derived per layout pass at the
- * current scale (clusterInstants). Occupies ONE packing slot spanning its
- * member extent — coincident instants can never blow up the lane height.
+ * A cluster of instant markers, re-derived per layout pass at the current
+ * scale (clusterInstants). Occupies ONE packing slot spanning its member
+ * extent — coincident instants can never blow up the lane height.
+ *
+ * It draws one of two ways. A POINT cluster (`point`) is narrower than a
+ * pip, so it is the 3-stack glyph at one anchor. A SPREAD cluster covers
+ * real time and draws its `marks` — separated ticks at true timestamps,
+ * thinned as you zoom out, never merged (see
+ * docs/timeline/zoom-out-never-merges.md).
  */
 interface NCluster {
   /** 'cluster:' + the FIRST member's id — the sticky packing identity (stable while membership is; see packLane). */
@@ -344,6 +352,10 @@ interface NCluster {
   extent: TimeRange;
   /** Members in (start, id) order. */
   members: NInterval[];
+  /** The members thinned to a drawable pitch (clusterInstants) — what a spread cluster draws and hit-tests by. */
+  marks: ClusterMark[];
+  /** Extent under a pip's width at the clustering scale: draw the stack glyph. */
+  point: boolean;
   /** Uniform member category, else the lane default (see clusterKeys). */
   catKey: string;
   /** Uniform member state, else '' — the neutral treatment for mixed clusters. */
@@ -475,7 +487,8 @@ export interface TimelineLegendEntry {
 const LEGEND_ROWS: readonly { swatch: string; text: string }[] = [
   { swatch: 'lg-instant', text: 'instant — a zero-duration event (filled pip)' },
   { swatch: 'lg-cancelled-pip', text: 'cancelled instant (hollow, dashed pip)' },
-  { swatch: 'lg-cluster', text: 'stacked pips — several instants clustered at this zoom; zoom in or click to split' },
+  { swatch: 'lg-cluster', text: 'stacked pips — several instants at one point at this zoom; zoom in or click to split' },
+  { swatch: 'lg-strip', text: 'ticks — instants too dense to draw as pips; thinned to fit, never merged' },
   { swatch: 'lg-bar lg-failed', text: 'failed — stippled body, red border, corner bang' },
   { swatch: 'lg-bar lg-hatch', text: 'hatched phase — a declared wait (lock, group slot, sleep) or queued time' },
   { swatch: 'lg-bar lg-dim', text: 'dim — queued / de-emphasized' },
@@ -1838,7 +1851,15 @@ export class TimelineViewElement extends HTMLElement {
             break;
           }
         }
-        if (same) return;
+        if (same) {
+          // Membership survives, but the marks and point-ness are functions
+          // of the SCALE this pass ran at — the one thing that changed.
+          for (let k = 0; k < clusters.length; k++) {
+            prev[k].marks = clusters[k].marks;
+            prev[k].point = this.isPointCluster(clusters[k].extent, rv, plotW);
+          }
+          return;
+        }
       }
     }
     const ncs: NCluster[] = new Array(clusters.length);
@@ -1847,7 +1868,17 @@ export class TimelineViewElement extends HTMLElement {
       const members = new Array<NInterval>(c.indices.length);
       for (let k = 0; k < c.indices.length; k++) members[k] = per[c.indices[k]];
       const keys = this.clusterKeys(members, lane);
-      ncs[ci] = { id: `cluster:${members[0].id}`, laneIdx, extent: c.extent, members, catKey: keys.catKey, state: keys.state, track: -1 };
+      ncs[ci] = {
+        id: `cluster:${members[0].id}`,
+        laneIdx,
+        extent: c.extent,
+        members,
+        marks: c.marks,
+        point: this.isPointCluster(c.extent, rv, plotW),
+        catKey: keys.catKey,
+        state: keys.state,
+        track: -1,
+      };
     }
     const items: PackItem[] = [];
     const targets: { track: number }[] = [];
@@ -1868,6 +1899,11 @@ export class TimelineViewElement extends HTMLElement {
     this.lanePackItems[laneIdx] = items;
     this.lanePackTargets[laneIdx] = targets;
     this.laneUnclustered[laneIdx] = unclustered;
+  }
+
+  /** Whether a cluster's extent is small enough to draw as the stack glyph. */
+  private isPointCluster(extent: TimeRange, rv: TimeView, plotW: number): boolean {
+    return durationWidthPx(extent.start, extent.end, rv, plotW) <= CLUSTER_STACK_MAX_PX;
   }
 
   /**
@@ -2801,11 +2837,30 @@ export class TimelineViewElement extends HTMLElement {
       const ncs = this.laneClusters[laneIdx];
       if (ncs) {
         for (let i = ncs.length - 1; i >= 0; i--) {
-          const p = this.clusterPos(ncs[i]);
+          const c = ncs[i];
+          // A spread cluster answers per MARK — the unit it draws. The
+          // whole chain would report "x240 events" over four hours, which
+          // tells the pointer nothing about what it is on.
+          if (!c.point) {
+            const geo = this.clusterMarks(c);
+            if (!geo) continue;
+            for (const t of geo.ticks) {
+              const r = expandHitRect({ x: t.x, y: geo.y, w: CLUSTER_MARK_PX, h: geo.th }, HIT_MIN_W);
+              if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+                const members = c.members.slice(t.mark.from, t.mark.to);
+                // A mark standing only for itself IS one event — it opens
+                // like any other pip, not as a group of one.
+                if (members.length === 1) return { type: 'interval', interval: members[0].src, lane: this.lanes[laneIdx], segment: null };
+                return { type: 'cluster', intervals: members.map((member) => member.src), lane: this.lanes[laneIdx] };
+              }
+            }
+            continue;
+          }
+          const p = this.clusterPos(c);
           if (!p) continue;
           const r = expandHitRect({ x: p.cx - (p.r + 2), y: p.y, w: (p.r + 2) * 2, h: p.th }, HIT_MIN_W);
           if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
-            return { type: 'cluster', intervals: ncs[i].members.map((member) => member.src), lane: this.lanes[laneIdx] };
+            return { type: 'cluster', intervals: c.members.map((member) => member.src), lane: this.lanes[laneIdx] };
           }
         }
       }
@@ -4463,6 +4518,31 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   /**
+   * Screen geometry of a SPREAD cluster's marks — shared by drawing and
+   * hit testing so the two can never disagree. Every mark is exactly
+   * CLUSTER_MARK_PX wide: no width here is derived from a time range,
+   * which is the mechanical reason marks cannot fuse into a bar (see
+   * docs/timeline/zoom-out-never-merges.md). Off-screen marks are
+   * dropped; null while the cluster is unplaced or none is on screen.
+   */
+  private clusterMarks(c: NCluster): { y: number; th: number; h: number; ticks: { x: number; mark: ClusterMark }[] } | null {
+    if (c.track < 0) return null;
+    const rv = this.renderView();
+    const plotW = this.plotWidth();
+    const th = this.laneTrackHeight(c.laneIdx);
+    const m = this.metrics();
+    const y = AXIS_H + this.layout.tops[c.laneIdx] - this.laneScroll + trackTop(c.track, m, th);
+    const r = Math.max(2, Math.min(th * 0.42, 8));
+    const ticks: { x: number; mark: ClusterMark }[] = [];
+    for (const mark of c.marks) {
+      const x = timeToX(mark.time, rv, plotW) - CLUSTER_MARK_PX / 2;
+      if (x + CLUSTER_MARK_PX < 0 || x > plotW) continue;
+      ticks.push({ x: this.gutterW + x, mark });
+    }
+    return ticks.length > 0 ? { y, th, h: r * 2, ticks } : null;
+  }
+
+  /**
    * A cluster marker: the SAME diamond pip as a single instant, drawn as
    * a STACK of exactly THREE copies (two ghost copies offset straight
    * RIGHT behind the true pip, fading with depth — middle dimmer, back
@@ -4505,6 +4585,10 @@ export class TimelineViewElement extends HTMLElement {
     let fallback: NCluster[] | null = null;
     for (const c of ncs) {
       const style = this.resolved(c.catKey, c.state, null);
+      if (!c.point) {
+        this.drawClusterMarks(ctx, c, style);
+        continue;
+      }
       const emphasis = style.glyph === 'bang' || style.border === t.emphasis;
       const dashed = style.dash !== null && style.dash.length > 0;
       if (emphasis || dashed || this.hoverClusterId === c.members[0].id) {
@@ -4548,6 +4632,51 @@ export class TimelineViewElement extends HTMLElement {
       }
     }
     if (fallback) for (const c of fallback) this.drawCluster(ctx, c);
+  }
+
+  /**
+   * A SPREAD cluster's marks: one CLUSTER_MARK_PX tick per mark, at the
+   * pip's height and centered on the track. The ticks are separated by
+   * construction (clusterInstants thinned them to a pitch), so a dense
+   * run reads as many events however far out you zoom, and never as one
+   * span — a bar fills the track and carries a label; these do not.
+   *
+   * A dashed state renders hollow with a solid border, the same
+   * dash-to-solid fallback narrow bars take: a 3px dashed outline is
+   * noise, and hollow is what carries "cancelled" at this size.
+   */
+  private drawClusterMarks(ctx: CanvasRenderingContext2D, c: NCluster, style: ResolvedStyle): void {
+    const geo = this.clusterMarks(c);
+    if (!geo) return;
+    const top = geo.y + geo.th / 2 - geo.h / 2;
+    const rad = Math.min(1.5, geo.h / 2);
+    const hollow = style.pattern === 'outline' || (style.dash !== null && style.dash.length > 0);
+    ctx.fillStyle = hollow ? withAlpha(style.fill, 0.15) : style.fill;
+    ctx.strokeStyle = style.border;
+    ctx.lineWidth = style.glyph === 'bang' || style.border === this.theme.emphasis ? 1.5 : 1;
+    const ticks = geo.ticks;
+    for (let i = 0; i < ticks.length; i += CLUSTER_BATCH_MAX) {
+      const to = Math.min(i + CLUSTER_BATCH_MAX, ticks.length);
+      ctx.beginPath();
+      for (let k = i; k < to; k++) ctx.roundRect(ticks[k].x, top, CLUSTER_MARK_PX, geo.h, rad);
+      ctx.fill();
+      ctx.stroke();
+    }
+    // The hovered MARK (hover resolves per mark, like the tooltip) takes
+    // the white ring a hovered pip takes — keyed by its own member's id,
+    // which is the cluster hover when the mark stands for several and the
+    // interval hover when it stands only for itself.
+    const hovered = this.hoverClusterId ?? this.hoverIntervalId;
+    if (hovered === null) return;
+    for (const t of ticks) {
+      if (c.members[t.mark.from].id !== hovered) continue;
+      ctx.strokeStyle = withAlpha('#ffffff', 0.75);
+      ctx.lineWidth = 1.25;
+      ctx.beginPath();
+      ctx.roundRect(t.x - 2, top - 2, CLUSTER_MARK_PX + 4, geo.h + 4, rad + 1);
+      ctx.stroke();
+      break;
+    }
   }
 
   private drawCluster(ctx: CanvasRenderingContext2D, c: NCluster): void {

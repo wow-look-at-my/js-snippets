@@ -468,6 +468,20 @@ canvas.minimap[hidden] {
     2.8px -2.8px 0 -1px rgba(122, 148, 183, 0.35);
 }
 
+/* Ticks: the canvas thins dense instants to separated marks rather than
+   merging them, so the swatch is a row of gapped ticks — the gap IS the
+   glyph (docs/timeline/zoom-out-never-merges.md). */
+.lg-strip::before {
+  content: '';
+  width: 13px;
+  height: 8px;
+  background: repeating-linear-gradient(
+    90deg,
+    rgba(122, 148, 183, 1) 0 3px,
+    transparent 3px 5px
+  );
+}
+
 /* -- Minimap lift for the corner chrome ------------------------------------------ */
 /* While the minimap strip is visible (the element unhides canvas.minimap,
  * which precedes all the chrome in the shadow DOM, so the sibling
