@@ -154,6 +154,7 @@ showcase/                  ← the COMPONENT GALLERY: one section per DOM-bound 
 └── assets.d.ts            ← ambient *.css/*.wgsl/*.glsl decls for the nested project's own type-check
 docs/timeline-view.png     ← the README's <timeline-view> picture. Captured from the built showcase by scripts/screenshot-showcase.mjs (playwright + the preinstalled chromium), so it is the REAL component and cannot drift; regenerate after a visual change: pnpm build:showcase && node scripts/screenshot-showcase.mjs
 scripts/screenshot-showcase.mjs ← that capture (fails on any page error rather than writing a half-upgraded chart)
+bench/bench-gl.html        ← how many instant pips one frame can draw and still hold 30fps, per draw method: canvas2d path (batched / one each), canvas2d sprite blit, GL instanced quads, GL vert+index 4v/6i, GL path 12v/30i (the diamond as triangles, no texture), and spans path vs 9-patch. Run: `NODE_PATH=/opt/node22/lib/node_modules node scripts/run-bench.mjs bench/bench-gl.html`. It prints the GL renderer — a GPU-less runner falls back to SwiftShader and every GL row is then a software rasterizer's, so never quote one without it. On an M1 the ordering is GL quads 800k > sprite blit 30k > canvas2d path 4.6k markers/frame; the software numbers invert that, which is why no drawing decision may be made from a SwiftShader run
 llms-header.txt            ← preamble for combined llms.txt
 ts0.json                   ← ts0 config (js library target, .wgsl/.glsl text loaders)
 scripts/build-llms.mjs     ← assembles dist/llms.txt after the ts0 build
