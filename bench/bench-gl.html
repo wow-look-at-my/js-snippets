@@ -1,20 +1,22 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>timeline pip draw: how many markers hold 30fps?</title>
+<title>timeline pip draw: how many markers sustain 30fps?</title>
 <!--
-  How many instant pips can one frame draw and still hold 30fps, by draw
-  method. The chart draws thousands of pips at wide zooms, so the question
-  that matters is the CEILING, not the cost of any fixed count.
+  How many instant pips (and spans) one frame can draw while SUSTAINING
+  30fps, by draw method. The chart draws thousands of pips at wide zooms,
+  so the question that matters is the ceiling, not the cost of any fixed
+  count.
 
-  Each candidate draws N textured/­stroked diamonds per frame at positions
-  that MOVE every frame — a pan — so no method gets to hide behind a static
-  buffer it uploaded once. Frame cost is measured around draw + a
-  synchronising read (getImageData / readPixels), so it includes the GPU
-  work rather than just the time to enqueue it. "Holds 30fps" means that
-  cost stays under 33.3 ms. N ramps x2 until it breaks, then binary-searches
-  the boundary.
+  Each candidate draws N diamonds per frame at positions that MOVE every
+  frame — a pan — so no method gets to hide behind a buffer it uploaded
+  once. Every row ramps N monotonically until real presented frames reach
+  30+-3 fps, then FREEZES N and samples >=150 frames / >=5 s at that size:
+  the number is backed by a sustained window, not by a handful of frames.
+  See the driver comment below for why the ramp only ever goes up.
 
-  Run: node scripts/run-bench.mjs bench/pip-draw.html
+  Run: node scripts/run-bench.mjs bench/bench-gl.html
+       (add ?warmup=0 to skip the 30 s thermal warmup while iterating)
+
   A GPU-less runner falls back to SwiftShader, which understates every GL
   row badly; the renderer string is reported so a result can never be read
   without knowing which machine produced it.
@@ -22,8 +24,6 @@
 <style>
 	body { font: 13px ui-monospace, monospace; background: #14161a; color: #d6dde6; }
 	canvas { display: block; margin: 4px 0; width: 600px; height: 300px; }
-	th, td { text-align: left; padding: 2px 14px 2px 0; }
-	td.n { text-align: right; }
 </style>
 <canvas id="c2"></canvas>
 <canvas id="gl"></canvas>
@@ -34,8 +34,6 @@ const W = CSS_W * DPR, H = CSS_H * DPR;
 const R = 8, RX = R * 0.78, PAD = 3;
 const FILL = '#7a94b7', BORDER = '#97adcd';
 const BATCH = 32;             // the component's CLUSTER_BATCH_MAX
-const BUDGET_MS = 1000 / 30;  // "holds 30fps"
-const FRAMES = 8;             // frames averaged per measurement
 const N_CAP = 1_000_000;      // memory guard: the quad path is 64 B/marker
 
 const SW = Math.ceil(RX * 2 + PAD * 2), SH = Math.ceil(R * 2 + PAD * 2);
@@ -72,7 +70,6 @@ function positions(n, f, out) {
 const c2 = document.getElementById('c2');
 c2.width = W; c2.height = H;
 const ctx = c2.getContext('2d');
-const c2Finish = () => ctx.getImageData(0, 0, 1, 1);
 
 function c2Batched(n, pts) {
 	ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
@@ -265,11 +262,6 @@ if (gl) {
 	const dbg = gl.getExtension('WEBGL_debug_renderer_info');
 	renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
 }
-const glFinish = () => {
-	const px = new Uint8Array(4);
-	gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-};
-
 // ---------------------------------------------------------------- spans
 // The other half of the chart is BARS: rounded rects with a fill, a 1px
 // border, and sometimes a 45-degree hatch. The question is whether a
@@ -379,94 +371,300 @@ function span9Patch(n, pts, hatched) {
 	}
 }
 
+// [label, draw(n, positions), isGl] — isGl routes the row through the GPU
+// timer when one exists, which is the only way to see past vsync.
 const METHODS = [
-	['canvas2d path, batched 32', c2Batched, c2Finish],
-	['canvas2d path, one each', c2PerPath, c2Finish],
-	['canvas2d sprite blit', c2Blit, c2Finish],
-	...Object.entries(glMethods).map(([name, fn]) => [name, fn, glFinish]),
-	['span path, solid', (n, p) => spanPath(n, p, false), c2Finish],
-	['span 9-patch, solid', (n, p) => span9Patch(n, p, false), c2Finish],
-	['span path, hatched', (n, p) => spanPath(n, p, true), c2Finish],
-	['span 9-patch, hatched', (n, p) => span9Patch(n, p, true), c2Finish],
+	['canvas2d path, batched 32', c2Batched, false],
+	['canvas2d path, one each', c2PerPath, false],
+	['canvas2d sprite blit', c2Blit, false],
+	...Object.entries(glMethods).map(([name, fn]) => [name, fn, true]),
+	['span path, solid', (n, p) => spanPath(n, p, false), false],
+	['span 9-patch, solid', (n, p) => span9Patch(n, p, false), false],
+	['span path, hatched', (n, p) => spanPath(n, p, true), false],
+	['span 9-patch, hatched', (n, p) => span9Patch(n, p, true), false],
 ];
 
+
+// ---------------------------------------------------------------- driver
+// Ported from PazerOP/scratch scratchpads/gpu-benchmark/bench.ts, which
+// solved this problem already. The shape matters and the reasons are not
+// obvious:
+//
+//   0. Thermal warmup, once: ramping load until the GPU's clocks and
+//      temperature settle. A cold GPU boosts, so the first measurement of
+//      a run reads high and every later one looks like a regression.
+//   1. Per-method warmup frames: shader compile, the first buffer upload
+//      and the canvas' first raster all land here and none of them recur.
+//   2. Ramp, MONOTONIC: raise the marker count until the frame time
+//      reaches the 30fps band. It never steps back down. A search that
+//      moves both ways gets one slow reading — a GC pause, a compositor
+//      hiccup — and converges on a number nowhere near the truth, which
+//      is exactly what a binary search over this signal produced.
+//   3. Sample: FREEZE the count and collect SAMPLE_FRAMES contiguous
+//      frames, at least SAMPLE_MIN_MS of them. The reported figure is
+//      backed by that sustained window, not by a handful of frames.
+//
+// Timing source: with a GPU timer (EXT_disjoint_timer_query_webgl2) the
+// loop runs off setTimeout so it is NOT gated by vsync, and dt is the
+// GPU's own execution time. Without one it falls back to rAF wall-clock,
+// where vsync quantises everything to the refresh interval and hides the
+// GPU falling behind — hence the much tighter step clamp on that path, so
+// the ramp cannot overshoot the vsync cliff by multiples.
+
+const TARGET_FPS = 30;
+const TARGET_MS = 1000 / TARGET_FPS;
+const BAND_FPS = 3;                    // acceptance band around the target
+const THERMAL_WARMUP_MS = 30000;
+const WARMUP_FRAMES = 5;
+const CONTROL_GAIN = 0.05;
+const CONTROL_STEP_FLOOR = 0.05;
+const CONTROL_STEP_CLAMP = 0.2;        // per ramp frame, GPU-timed
+const CONTROL_STEP_CLAMP_RAF = 0.01;   // tighter: rAF hides the overshoot
+const CONTROL_WINDOW = 7;              // frames the ramp decides on (median)
+const MAX_RERAMPS = 6;                 // sample-verify rounds before giving up
+const NOTE_INTERVAL_MS = 250;          // progress writes: a DOM write per frame IS measurable load
+const SAMPLE_FRAMES = 150;             // 5 s at 30 fps
+const SAMPLE_MIN_MS = 5000;
+const RAMP_TIMEOUT_MS = 45000;
+const N_MIN = 64;
+
+const params = new URLSearchParams(location.search);
+const thermalMs = Number(params.get('warmup') ?? THERMAL_WARMUP_MS);
+
+// GPU timing, WebGL2 only. SwiftShader does not advertise it, so a
+// GPU-less runner takes the rAF path and says so in the output.
+const timerExt = gl ? gl.getExtension('EXT_disjoint_timer_query_webgl2') : null;
+const TIMER_SLOTS = 4;
+let timerRing = [];
+let timerHead = 0;
+let timerTail = 0;
+function timerSlotFree() {
+	return timerRing.length < TIMER_SLOTS;
+}
+function beginGpuTimer() {
+	if (!timerExt || !timerSlotFree()) return false;
+	const q = gl.createQuery();
+	gl.beginQuery(timerExt.TIME_ELAPSED_EXT, q);
+	timerRing.push(q);
+	return true;
+}
+function endGpuTimer(started) {
+	if (started) gl.endQuery(timerExt.TIME_ELAPSED_EXT);
+}
+/** Oldest finished GPU time in ms, or null. */
+function pollGpuTime() {
+	if (!timerExt || timerRing.length === 0) return null;
+	const q = timerRing[0];
+	if (!gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE)) return null;
+	if (gl.getParameter(timerExt.GPU_DISJOINT_EXT)) {
+		timerRing.shift();
+		gl.deleteQuery(q);
+		return null;
+	}
+	const ns = gl.getQueryParameter(q, gl.QUERY_RESULT);
+	timerRing.shift();
+	gl.deleteQuery(q);
+	return ns / 1e6;
+}
+
 let scratch = new Float32Array(2);
-/**
- * Cost of one full frame at n markers, in ms — the BEST of two runs.
- * A single run occasionally lands high (GC, a scheduler hiccup), and one
- * high reading inside the search truncates the ramp and reports a ceiling
- * far under the real one, at a frame time visibly below budget. Taking
- * the min is the standard estimator here: noise only ever adds time.
- */
-function frameMs(draw, finish, n) {
+function ensure(n) {
 	if (scratch.length < n * 2) scratch = new Float32Array(n * 2);
-	let best = Infinity;
-	for (let run = 0; run < 2; run++) {
-		for (let f = 0; f < 3; f++) draw(n, positions(n, f, scratch)); // warm
-		finish();
-		const t0 = performance.now();
-		for (let f = 0; f < FRAMES; f++) draw(n, positions(n, f, scratch));
-		finish();
-		const ms = (performance.now() - t0) / FRAMES;
-		if (ms < best) best = ms;
-	}
-	return best;
+	return scratch;
 }
 
-/** Largest n whose frame stays inside the 30fps budget. */
-function ceiling(draw, finish) {
-	let lo = 0, hi = 256;
-	while (hi <= N_CAP && frameMs(draw, finish, hi) < BUDGET_MS) {
-		lo = hi;
-		hi *= 2;
-	}
-	if (hi > N_CAP) return { n: lo, ms: frameMs(draw, finish, lo), capped: true };
-	for (let i = 0; i < 7 && hi - lo > Math.max(64, lo * 0.02); i++) {
-		const mid = Math.floor((lo + hi) / 2);
-		if (frameMs(draw, finish, mid) < BUDGET_MS) lo = mid;
-		else hi = mid;
-	}
-	// One over-budget reading anywhere above sticks: every later probe is
-	// below it, so the search can converge on an n whose own frame time is
-	// nowhere near the budget. Creep back up while it still fits, which
-	// makes a reported ceiling always one that measures AT its budget.
-	let ms = frameMs(draw, finish, lo);
-	for (let i = 0; i < 8 && ms < BUDGET_MS * 0.9 && lo < N_CAP; i++) {
-		const next = Math.floor(lo * 1.25) + 32;
-		const nextMs = frameMs(draw, finish, next);
-		if (nextMs >= BUDGET_MS) break;
-		lo = next;
-		ms = nextMs;
-	}
-	return { n: lo, ms, capped: false };
+/**
+ * Ramp `draw` to the 30fps band, freeze, and sample a sustained window.
+ * Resolves { n, fps, frames, seconds, timing, pinned }.
+ */
+function measure(draw, isGl, note) {
+	return new Promise((resolve) => {
+		// GPU timing only helps the GL methods; canvas2d work is CPU-side
+		// and the extension would time an empty GPU queue.
+		let useGpu = isGl && !!timerExt;
+		let gpuResults = 0;
+		const gpuDeadline = useGpu ? performance.now() + 2000 : 0;
+
+		let nF = N_MIN;
+		let n = N_MIN;
+		let pinned = false;
+		let phase = 'warmup';
+		let warmed = 0;
+		let prevTs = null;
+		const ctrl = [];
+		let reramps = 0;
+		let lastNote = 0;
+		const sample = [];
+		let sampleStart = 0;
+		const rampStart = performance.now();
+
+		const tick = (rafTs) => {
+			const ts = useGpu ? performance.now() : (rafTs ?? performance.now());
+			const gpuMs = useGpu ? pollGpuTime() : null;
+			if (gpuMs !== null && gpuMs > 0) gpuResults++;
+			// A timer that only ever yields zeros is not a working timer.
+			if (useGpu && gpuResults === 0 && ts > gpuDeadline) {
+				useGpu = false;
+				note('gpu timer yielded nothing — falling back to rAF');
+			}
+
+			const render = !useGpu || timerSlotFree();
+			if (render) {
+				const started = useGpu ? beginGpuTimer() : false;
+				draw(n, positions(n, warmed, ensure(n)));
+				endGpuTimer(started);
+			}
+
+			let dt = 0;
+			if (gpuMs !== null) dt = gpuMs;
+			else if (!useGpu && prevTs !== null) dt = ts - prevTs;
+			prevTs = ts;
+
+			if (phase === 'warmup') {
+				if (++warmed >= WARMUP_FRAMES) phase = 'ramp';
+			} else if (dt > 0) {
+				if (phase === 'ramp') {
+					// The control signal is the MEDIAN of the last few frames,
+					// never one frame. A monotonic ramp terminates the moment it
+					// sees an in-band reading, so a single hiccup — a GC pause,
+					// the compositor picking up other work — would freeze the
+					// workload far below the real ceiling and report it as the
+					// answer. That is exactly what one-frame control produced:
+					// every row settling at 60fps, which is not the band at all.
+					ctrl.push(dt);
+					if (ctrl.length > CONTROL_WINDOW) ctrl.shift();
+					if (ctrl.length < CONTROL_WINDOW) {
+						requestAnimationFrame(tick);
+						return;
+					}
+					const sortedCtrl = ctrl.slice().sort((a, b) => a - b);
+					const ctrlMs = sortedCtrl[sortedCtrl.length >> 1];
+					const fps = 1000 / ctrlMs;
+					dt = ctrlMs;
+					if (fps > TARGET_FPS + BAND_FPS && !pinned) {
+						const gain = Math.abs(Math.pow(TARGET_MS / dt, CONTROL_GAIN) - 1);
+						const edge = TARGET_FPS + BAND_FPS;
+						const proximity = Math.min(1, Math.max(0, (fps - edge) / edge));
+						const floor = CONTROL_STEP_FLOOR * proximity;
+						const clamp = useGpu ? CONTROL_STEP_CLAMP : CONTROL_STEP_CLAMP_RAF;
+						nF = Math.min(N_CAP, nF * (1 + Math.min(clamp, Math.max(floor, gain))));
+						n = Math.max(1, Math.round(nF));
+						if (nF >= N_CAP - 0.5) pinned = true;
+						// Throttled: writing progress every ramp frame costs a
+						// layout and a paint that the frozen sample does not pay,
+						// so the ramp measures its own instrumentation and stops
+						// early. That alone was freezing rows at 60fps.
+						if (ts - lastNote > NOTE_INTERVAL_MS) {
+							lastNote = ts;
+							note(`ramping n=${n} (${fps.toFixed(1)} fps)`);
+						}
+					} else {
+						phase = 'sample';
+						sampleStart = ts;
+						note(`sampling n=${n} for ${(SAMPLE_MIN_MS / 1000).toFixed(0)}s`);
+					}
+					if (ts - rampStart > RAMP_TIMEOUT_MS) {
+						phase = 'sample';
+						sampleStart = ts;
+					}
+				} else {
+					sample.push(dt);
+					if (sample.length >= SAMPLE_FRAMES && ts - sampleStart >= SAMPLE_MIN_MS) {
+						const sorted = sample.slice().sort((a, b) => a - b);
+						const median = sorted[sorted.length >> 1];
+						const fps = 1000 / median;
+						// The sample VERIFIES the ramp. If the frozen workload
+						// sustains faster than the band, the ramp stopped short —
+						// under vsync the signal is quantised to the refresh
+						// interval, so a workload sitting just under the cliff
+						// reads as over it for a few frames and then settles back.
+						// Resume ramping (n never decreases) rather than report a
+						// ceiling the sustained window just contradicted.
+						if (fps > TARGET_FPS + BAND_FPS && !pinned && reramps < MAX_RERAMPS) {
+							reramps++;
+							phase = 'ramp';
+							ctrl.length = 0;
+							sample.length = 0;
+							note(`n=${n} sustained ${fps.toFixed(1)} fps — resuming ramp`);
+						} else {
+							resolve({
+								n,
+								fps,
+								frames: sample.length,
+								seconds: (ts - sampleStart) / 1000,
+								timing: useGpu ? 'gpu-timer' : 'rAF',
+								pinned,
+								reramps,
+							});
+							return;
+						}
+					}
+				}
+			}
+
+			if (useGpu) setTimeout(tick, 0);
+			else requestAnimationFrame(tick);
+		};
+		requestAnimationFrame(tick);
+	});
 }
 
-// Run off the load event, a slice at a time, so the page never blocks.
+/** Ramping load until the silicon settles. Nothing is collected. */
+function thermalWarmup(note) {
+	if (!(thermalMs > 0)) return Promise.resolve();
+	return new Promise((resolve) => {
+		const draw = METHODS[0][1];
+		let nF = N_MIN, n = N_MIN, prev = null, f = 0;
+		const start = performance.now();
+		const tick = (ts) => {
+			draw(n, positions(n, f++, ensure(n)));
+			const dt = prev === null ? 0 : ts - prev;
+			prev = ts;
+			if (dt > 0 && 1000 / dt > TARGET_FPS + BAND_FPS) {
+				nF = Math.min(N_CAP, nF * 1.01);
+				n = Math.max(1, Math.round(nF));
+			}
+			const left = (thermalMs - (ts - start)) / 1000;
+			if (left > 0) {
+				note(`thermal warmup ${left.toFixed(0)}s (n=${n})`);
+				requestAnimationFrame(tick);
+			} else resolve();
+		};
+		requestAnimationFrame(tick);
+	});
+}
+
 const rows = [];
-let mi = 0;
-function step() {
-	if (mi >= METHODS.length) {
-		const out = { renderer, budgetMs: BUDGET_MS, markersAt30fps: {} };
-		for (const r of rows) out.markersAt30fps[r.name] = r.capped ? `>=${r.n} (hit the ${N_CAP} cap)` : r.n;
-		out.detail = rows;
-		window.__results = out;
-		document.getElementById('out').textContent =
-			`renderer: ${renderer}\n\nmarkers drawn per frame while holding 30fps (${BUDGET_MS.toFixed(1)} ms):\n\n` +
-				rows
-				.map((r) => {
-					// A ceiling whose own frame time is well under budget means the
-					// NEXT step jumped clean over it: a cliff, not a bad search.
-					const cliff = !r.capped && r.ms < BUDGET_MS * 0.9 ? '  <- cliff: the next size blows the budget outright' : '';
-					return `  ${r.name.padEnd(26)} ${String(r.n).padStart(9)}   (${r.ms.toFixed(1)} ms/frame)${cliff}`;
-				})
-				.join('\n');
-		return;
+async function run() {
+	const out = document.getElementById('out');
+	const note = (what) => { out.textContent = what; };
+	await thermalWarmup(note);
+	for (const [name, draw, isGl] of METHODS) {
+		const r = await measure(draw, !!isGl, (what) => note(`${name}: ${what}`));
+		rows.push({ name, ...r });
+		note(`${rows.length}/${METHODS.length} — ${name}: ${r.n} @ ${r.fps.toFixed(1)} fps`);
 	}
-	const [name, draw, finish] = METHODS[mi++];
-	const r = ceiling(draw, finish);
-	rows.push({ name, ...r });
-	document.getElementById('out').textContent = `measured ${mi}/${METHODS.length}: ${name} -> ${r.n}`;
-	setTimeout(step, 0);
+	const res = { renderer, target: TARGET_FPS, band: BAND_FPS, rows };
+	window.__results = res;
+	out.textContent =
+		`renderer: ${renderer}\n` +
+		`each row: markers ramped until frames hit ${TARGET_FPS}+-${BAND_FPS} fps, then frozen and sampled\n\n` +
+		`  ${'method'.padEnd(26)} ${'markers'.padStart(9)}  ${'fps'.padStart(6)}  ${'markers/s'.padStart(11)}   sample\n` +
+		rows
+			.map((r) => {
+				const rate = Math.round(r.n * r.fps);
+				// n == N_MIN means the method could not hold the band even at the
+				// smallest size, so its fixed per-frame cost — not the markers —
+				// is what is being measured. Saying so beats printing a marker
+				// count that has nothing to do with markers.
+				const flag = r.pinned
+					? '  <- pinned at the size cap, never reached the band'
+					: r.n <= N_MIN
+						? '  <- floored: over budget at the SMALLEST size; fixed per-frame cost dominates, not the markers'
+						: '';
+				return `  ${r.name.padEnd(26)} ${String(r.n).padStart(9)}  ${r.fps.toFixed(1).padStart(6)}  ${String(rate).padStart(11)}   ${r.frames}f/${r.seconds.toFixed(1)}s ${r.timing}${flag}`;
+			})
+			.join('\n');
 }
-addEventListener('load', () => setTimeout(step, 0));
+addEventListener('load', () => setTimeout(run, 0));
 </script>

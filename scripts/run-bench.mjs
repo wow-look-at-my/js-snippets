@@ -31,7 +31,11 @@ page.on('console', (m) => {
 	if (m.type() === 'error') errors.push(m.text());
 });
 
-await page.goto(pathToFileURL(resolve(file)).href, { waitUntil: 'domcontentloaded' });
+// A page may take options in its query string (bench-gl.html?warmup=0), and
+// pathToFileURL would percent-escape the '?' into part of the filename.
+const [path, query] = file.split('?');
+const url = pathToFileURL(resolve(path)).href + (query ? `?${query}` : '');
+await page.goto(url, { waitUntil: 'domcontentloaded' });
 // (fn, arg, options) — the options object MUST go third; passed second it
 // is taken as the function's argument and the timeout silently stays 30s.
 await page.waitForFunction(() => window.__results !== undefined, undefined, { timeout });
