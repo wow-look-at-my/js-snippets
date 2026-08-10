@@ -270,23 +270,147 @@ const glFinish = () => {
 	gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
 };
 
+// ---------------------------------------------------------------- spans
+// The other half of the chart is BARS: rounded rects with a fill, a 1px
+// border, and sometimes a 45-degree hatch. The question is whether a
+// 9-patch — cap, middle, cap, blitted from a baked strip — beats drawing
+// the path. It splits on the fill: a solid middle is one stretched blit,
+// but a hatched middle CANNOT stretch (it would smear the diagonal), so it
+// has to tile at the hatch period and the blit count grows with the bar.
+const BAR_H = 18, BAR_R = 3, CAP = BAR_R + 1, HATCH_PERIOD = 5;
+
+/** Deterministic bar widths, 40..300 CSS px. */
+function barWidth(i) {
+	return 40 + ((i * 37) % 261);
+}
+
+function barPath(c, x, y, w, h) {
+	c.beginPath();
+	c.roundRect(x, y, w, h, BAR_R);
+}
+
+const hatchPattern = (() => {
+	const p = document.createElement('canvas');
+	p.width = HATCH_PERIOD * DPR; p.height = HATCH_PERIOD * DPR;
+	const pc = p.getContext('2d');
+	pc.setTransform(DPR, 0, 0, DPR, 0, 0);
+	pc.strokeStyle = BORDER; pc.lineWidth = 2;
+	pc.beginPath(); pc.moveTo(-HATCH_PERIOD, HATCH_PERIOD); pc.lineTo(HATCH_PERIOD, -HATCH_PERIOD); pc.stroke();
+	pc.beginPath(); pc.moveTo(0, HATCH_PERIOD * 2); pc.lineTo(HATCH_PERIOD * 2, 0); pc.stroke();
+	return ctx.createPattern(p, 'repeat');
+})();
+
+function spanPath(n, pts, hatched) {
+	ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+	ctx.clearRect(0, 0, CSS_W, CSS_H);
+	ctx.strokeStyle = BORDER; ctx.lineWidth = 1;
+	for (let i = 0; i < n; i++) {
+		const w = barWidth(i);
+		barPath(ctx, pts[i * 2], pts[i * 2 + 1], w, BAR_H);
+		ctx.fillStyle = FILL;
+		ctx.fill();
+		if (hatched) {
+			ctx.save();
+			ctx.clip();
+			ctx.fillStyle = hatchPattern;
+			ctx.fillRect(pts[i * 2], pts[i * 2 + 1], w, BAR_H);
+			ctx.restore();
+			barPath(ctx, pts[i * 2], pts[i * 2 + 1], w, BAR_H);
+		}
+		ctx.stroke();
+	}
+}
+
+/** Bake [leftCap | middle | rightCap] once, at device resolution. */
+function bakeStrip(hatched) {
+	const midW = hatched ? HATCH_PERIOD : 1;
+	const w = CAP * 2 + midW;
+	const s = document.createElement('canvas');
+	s.width = Math.ceil(w * DPR); s.height = Math.ceil(BAR_H * DPR);
+	const sc = s.getContext('2d');
+	sc.setTransform(DPR, 0, 0, DPR, 0, 0);
+	// Draw a bar far wider than the strip and let the strip window it, so
+	// the caps carry the real corner geometry and the middle is seamless.
+	sc.save();
+	sc.beginPath();
+	sc.roundRect(0.5, 0.5, w - 1, BAR_H - 1, BAR_R);
+	sc.fillStyle = FILL;
+	sc.fill();
+	if (hatched) {
+		sc.save(); sc.clip();
+		sc.fillStyle = hatchPattern;
+		sc.fillRect(0, 0, w, BAR_H);
+		sc.restore();
+		sc.beginPath();
+		sc.roundRect(0.5, 0.5, w - 1, BAR_H - 1, BAR_R);
+	}
+	sc.strokeStyle = BORDER; sc.lineWidth = 1;
+	sc.stroke();
+	sc.restore();
+	return { img: s, capPx: CAP, midPx: midW };
+}
+const stripSolid = bakeStrip(false);
+const stripHatch = bakeStrip(true);
+
+function span9Patch(n, pts, hatched) {
+	const strip = hatched ? stripHatch : stripSolid;
+	const { img, capPx, midPx } = strip;
+	const sCap = capPx * DPR, sMid = midPx * DPR, sH = BAR_H * DPR;
+	ctx.setTransform(1, 0, 0, 1, 0, 0);
+	ctx.clearRect(0, 0, W, H);
+	for (let i = 0; i < n; i++) {
+		const x = Math.round(pts[i * 2] * DPR), y = Math.round(pts[i * 2 + 1] * DPR);
+		const w = Math.round(barWidth(i) * DPR);
+		const midW = w - sCap * 2;
+		ctx.drawImage(img, 0, 0, sCap, sH, x, y, sCap, sH);
+		if (midW > 0) {
+			if (hatched) {
+				// Tiled: a 45-degree hatch smears if stretched, so the
+				// middle repeats at its period — blits grow with width.
+				for (let o = 0; o < midW; o += sMid) {
+					const tw = Math.min(sMid, midW - o);
+					ctx.drawImage(img, sCap, 0, tw, sH, x + sCap + o, y, tw, sH);
+				}
+			} else {
+				ctx.drawImage(img, sCap, 0, sMid, sH, x + sCap, y, midW, sH);
+			}
+		}
+		ctx.drawImage(img, sCap + sMid, 0, sCap, sH, x + w - sCap, y, sCap, sH);
+	}
+}
+
 const METHODS = [
 	['canvas2d path, batched 32', c2Batched, c2Finish],
 	['canvas2d path, one each', c2PerPath, c2Finish],
 	['canvas2d sprite blit', c2Blit, c2Finish],
 	...Object.entries(glMethods).map(([name, fn]) => [name, fn, glFinish]),
+	['span path, solid', (n, p) => spanPath(n, p, false), c2Finish],
+	['span 9-patch, solid', (n, p) => span9Patch(n, p, false), c2Finish],
+	['span path, hatched', (n, p) => spanPath(n, p, true), c2Finish],
+	['span 9-patch, hatched', (n, p) => span9Patch(n, p, true), c2Finish],
 ];
 
 let scratch = new Float32Array(2);
-/** Mean cost of one full frame at n markers, in ms. */
+/**
+ * Cost of one full frame at n markers, in ms — the BEST of two runs.
+ * A single run occasionally lands high (GC, a scheduler hiccup), and one
+ * high reading inside the search truncates the ramp and reports a ceiling
+ * far under the real one, at a frame time visibly below budget. Taking
+ * the min is the standard estimator here: noise only ever adds time.
+ */
 function frameMs(draw, finish, n) {
 	if (scratch.length < n * 2) scratch = new Float32Array(n * 2);
-	for (let f = 0; f < 3; f++) draw(n, positions(n, f, scratch)); // warm
-	finish();
-	const t0 = performance.now();
-	for (let f = 0; f < FRAMES; f++) draw(n, positions(n, f, scratch));
-	finish();
-	return (performance.now() - t0) / FRAMES;
+	let best = Infinity;
+	for (let run = 0; run < 2; run++) {
+		for (let f = 0; f < 3; f++) draw(n, positions(n, f, scratch)); // warm
+		finish();
+		const t0 = performance.now();
+		for (let f = 0; f < FRAMES; f++) draw(n, positions(n, f, scratch));
+		finish();
+		const ms = (performance.now() - t0) / FRAMES;
+		if (ms < best) best = ms;
+	}
+	return best;
 }
 
 /** Largest n whose frame stays inside the 30fps budget. */
@@ -302,7 +426,19 @@ function ceiling(draw, finish) {
 		if (frameMs(draw, finish, mid) < BUDGET_MS) lo = mid;
 		else hi = mid;
 	}
-	return { n: lo, ms: frameMs(draw, finish, lo), capped: false };
+	// One over-budget reading anywhere above sticks: every later probe is
+	// below it, so the search can converge on an n whose own frame time is
+	// nowhere near the budget. Creep back up while it still fits, which
+	// makes a reported ceiling always one that measures AT its budget.
+	let ms = frameMs(draw, finish, lo);
+	for (let i = 0; i < 8 && ms < BUDGET_MS * 0.9 && lo < N_CAP; i++) {
+		const next = Math.floor(lo * 1.25) + 32;
+		const nextMs = frameMs(draw, finish, next);
+		if (nextMs >= BUDGET_MS) break;
+		lo = next;
+		ms = nextMs;
+	}
+	return { n: lo, ms, capped: false };
 }
 
 // Run off the load event, a slice at a time, so the page never blocks.
@@ -316,7 +452,14 @@ function step() {
 		window.__results = out;
 		document.getElementById('out').textContent =
 			`renderer: ${renderer}\n\nmarkers drawn per frame while holding 30fps (${BUDGET_MS.toFixed(1)} ms):\n\n` +
-			rows.map((r) => `  ${r.name.padEnd(26)} ${String(r.n).padStart(9)}   (${r.ms.toFixed(1)} ms/frame)`).join('\n');
+				rows
+				.map((r) => {
+					// A ceiling whose own frame time is well under budget means the
+					// NEXT step jumped clean over it: a cliff, not a bad search.
+					const cliff = !r.capped && r.ms < BUDGET_MS * 0.9 ? '  <- cliff: the next size blows the budget outright' : '';
+					return `  ${r.name.padEnd(26)} ${String(r.n).padStart(9)}   (${r.ms.toFixed(1)} ms/frame)${cliff}`;
+				})
+				.join('\n');
 		return;
 	}
 	const [name, draw, finish] = METHODS[mi++];

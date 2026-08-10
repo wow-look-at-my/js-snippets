@@ -32,7 +32,9 @@ page.on('console', (m) => {
 });
 
 await page.goto(pathToFileURL(resolve(file)).href, { waitUntil: 'domcontentloaded' });
-await page.waitForFunction(() => window.__results !== undefined, { timeout });
+// (fn, arg, options) — the options object MUST go third; passed second it
+// is taken as the function's argument and the timeout silently stays 30s.
+await page.waitForFunction(() => window.__results !== undefined, undefined, { timeout });
 const results = await page.evaluate(() => window.__results);
 const text = await page.evaluate(() => document.getElementById('out')?.textContent ?? '');
 await browser.close();
