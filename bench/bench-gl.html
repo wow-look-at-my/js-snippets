@@ -422,9 +422,16 @@ function spanPath(n, pts, hatched) {
 	}
 }
 
+// Hatch periods per baked middle tile. Every tile boundary damages about a
+// pixel of the diagonal — the blit resamples the slice's edge — so at one
+// period (5px) a fifth of the content sits on a seam and the hatch reads as
+// dashes instead of lines. Widening the tile spends memory to push that
+// fraction down; it does not remove it.
+const HATCH_TILE_PERIODS = 4;
+
 /** Bake [leftCap | middle | rightCap] once, at device resolution. */
 function bakeStrip(hatched) {
-	const midW = hatched ? HATCH_PERIOD : 1;
+	const midW = hatched ? HATCH_PERIOD * HATCH_TILE_PERIODS : 1;
 	const w = CAP * 2 + midW;
 	const s = document.createElement('canvas');
 	s.width = Math.ceil(w * DPR); s.height = Math.ceil(BAR_H * DPR);
