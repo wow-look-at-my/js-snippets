@@ -14,7 +14,11 @@
 // wait below is what puts real spans, waits, pips and history on screen --
 // too short and you capture an empty axis.
 
-import { chromium } from 'playwright';
+// Node's ESM resolver ignores NODE_PATH, and playwright is preinstalled
+// globally rather than depended on here, so it comes through CJS
+// resolution, which honours it. A bare import throws ERR_MODULE_NOT_FOUND.
+import { createRequire } from 'node:module';
+const { chromium } = createRequire(import.meta.url)('playwright');
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 

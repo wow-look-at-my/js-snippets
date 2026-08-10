@@ -1,0 +1,329 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>timeline pip draw: how many markers hold 30fps?</title>
+<!--
+  How many instant pips can one frame draw and still hold 30fps, by draw
+  method. The chart draws thousands of pips at wide zooms, so the question
+  that matters is the CEILING, not the cost of any fixed count.
+
+  Each candidate draws N textured/­stroked diamonds per frame at positions
+  that MOVE every frame — a pan — so no method gets to hide behind a static
+  buffer it uploaded once. Frame cost is measured around draw + a
+  synchronising read (getImageData / readPixels), so it includes the GPU
+  work rather than just the time to enqueue it. "Holds 30fps" means that
+  cost stays under 33.3 ms. N ramps x2 until it breaks, then binary-searches
+  the boundary.
+
+  Run: node scripts/run-bench.mjs bench/pip-draw.html
+  A GPU-less runner falls back to SwiftShader, which understates every GL
+  row badly; the renderer string is reported so a result can never be read
+  without knowing which machine produced it.
+-->
+<style>
+	body { font: 13px ui-monospace, monospace; background: #14161a; color: #d6dde6; }
+	canvas { display: block; margin: 4px 0; width: 600px; height: 300px; }
+	th, td { text-align: left; padding: 2px 14px 2px 0; }
+	td.n { text-align: right; }
+</style>
+<canvas id="c2"></canvas>
+<canvas id="gl"></canvas>
+<pre id="out">running…</pre>
+<script>
+const DPR = 2, CSS_W = 1200, CSS_H = 600;
+const W = CSS_W * DPR, H = CSS_H * DPR;
+const R = 8, RX = R * 0.78, PAD = 3;
+const FILL = '#7a94b7', BORDER = '#97adcd';
+const BATCH = 32;             // the component's CLUSTER_BATCH_MAX
+const BUDGET_MS = 1000 / 30;  // "holds 30fps"
+const FRAMES = 8;             // frames averaged per measurement
+const N_CAP = 1_000_000;      // memory guard: the quad path is 64 B/marker
+
+const SW = Math.ceil(RX * 2 + PAD * 2), SH = Math.ceil(R * 2 + PAD * 2);
+const SPRITE_W = SW * DPR, SPRITE_H = SH * DPR;
+
+function diamond(p, cx, cy, r, rx) {
+	p.moveTo(cx, cy - r); p.lineTo(cx + rx, cy); p.lineTo(cx, cy + r); p.lineTo(cx - rx, cy); p.closePath();
+}
+
+// The baked glyph, shared by the canvas2d blit and the GL texture.
+const glyph = document.createElement('canvas');
+glyph.width = SPRITE_W; glyph.height = SPRITE_H;
+{
+	const g = glyph.getContext('2d');
+	g.setTransform(DPR, 0, 0, DPR, 0, 0);
+	g.fillStyle = FILL; g.strokeStyle = BORDER; g.lineWidth = 1;
+	g.beginPath(); diamond(g, SW / 2, SH / 2, R, RX); g.fill(); g.stroke();
+}
+
+/** Marker positions for frame `f` — everything shifts, like a pan. */
+function positions(n, f, out) {
+	const cols = Math.max(1, Math.ceil(Math.sqrt(n * 2)));
+	const dx = (CSS_W - 12) / cols;
+	const rows = Math.ceil(n / cols);
+	const dy = (CSS_H - 24) / Math.max(1, rows);
+	const shift = (f % 17) * 0.31;
+	for (let i = 0; i < n; i++) {
+		out[i * 2] = 6 + ((i % cols) * dx + shift) % (CSS_W - 12);
+		out[i * 2 + 1] = 12 + Math.floor(i / cols) * dy;
+	}
+	return out;
+}
+
+const c2 = document.getElementById('c2');
+c2.width = W; c2.height = H;
+const ctx = c2.getContext('2d');
+const c2Finish = () => ctx.getImageData(0, 0, 1, 1);
+
+function c2Batched(n, pts) {
+	ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+	ctx.clearRect(0, 0, CSS_W, CSS_H);
+	ctx.fillStyle = FILL; ctx.strokeStyle = BORDER; ctx.lineWidth = 1;
+	for (let i = 0; i < n; i += BATCH) {
+		const to = Math.min(i + BATCH, n);
+		ctx.beginPath();
+		for (let k = i; k < to; k++) diamond(ctx, pts[k * 2], pts[k * 2 + 1], R, RX);
+		ctx.fill(); ctx.stroke();
+	}
+}
+function c2PerPath(n, pts) {
+	ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+	ctx.clearRect(0, 0, CSS_W, CSS_H);
+	ctx.fillStyle = FILL; ctx.strokeStyle = BORDER; ctx.lineWidth = 1;
+	for (let i = 0; i < n; i++) {
+		ctx.beginPath(); diamond(ctx, pts[i * 2], pts[i * 2 + 1], R, RX);
+		ctx.fill(); ctx.stroke();
+	}
+}
+function c2Blit(n, pts) {
+	ctx.setTransform(1, 0, 0, 1, 0, 0);
+	ctx.clearRect(0, 0, W, H);
+	for (let i = 0; i < n; i++) {
+		ctx.drawImage(glyph, Math.round(pts[i * 2] * DPR - SPRITE_W / 2), Math.round(pts[i * 2 + 1] * DPR - SPRITE_H / 2));
+	}
+}
+
+// ---------------------------------------------------------------- webgl2
+const glc = document.getElementById('gl');
+glc.width = W; glc.height = H;
+const gl = glc.getContext('webgl2', { antialias: false, alpha: true });
+let glMethods = {};
+let renderer = 'n/a';
+if (gl) {
+	const compile = (type, src) => {
+		const s = gl.createShader(type);
+		gl.shaderSource(s, src); gl.compileShader(s);
+		if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+		return s;
+	};
+	const link = (vs, fs) => {
+		const p = gl.createProgram();
+		gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+		gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+		gl.linkProgram(p);
+		if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+		return p;
+	};
+	const FS = `#version 300 es
+		precision mediump float;
+		in vec2 v_uv;
+		uniform sampler2D u_tex;
+		out vec4 o;
+		void main() { o = texture(u_tex, v_uv); }`;
+	const instProg = link(`#version 300 es
+		in vec2 a_corner;
+		in vec2 a_center;
+		uniform vec2 u_res;
+		uniform vec2 u_size;
+		out vec2 v_uv;
+		void main() {
+			v_uv = a_corner;
+			vec2 px = a_center + (a_corner - 0.5) * u_size;
+			vec2 clip = (px / u_res) * 2.0 - 1.0;
+			gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+		}`, FS);
+	const quadsProg = link(`#version 300 es
+		in vec2 a_pos;
+		in vec2 a_uv;
+		uniform vec2 u_res;
+		out vec2 v_uv;
+		void main() {
+			v_uv = a_uv;
+			vec2 clip = (a_pos / u_res) * 2.0 - 1.0;
+			gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+		}`, FS);
+
+	const tex = gl.createTexture();
+	gl.bindTexture(gl.TEXTURE_2D, tex);
+	gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, glyph);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+	gl.enable(gl.BLEND);
+	gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+	gl.viewport(0, 0, W, H);
+
+	const quadBuf = gl.createBuffer();
+	gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+	gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
+	const instBuf = gl.createBuffer();
+	const instVao = gl.createVertexArray();
+	gl.bindVertexArray(instVao);
+	gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+	gl.enableVertexAttribArray(gl.getAttribLocation(instProg, 'a_corner'));
+	gl.vertexAttribPointer(gl.getAttribLocation(instProg, 'a_corner'), 2, gl.FLOAT, false, 0, 0);
+	gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+	const aCenter = gl.getAttribLocation(instProg, 'a_center');
+	gl.enableVertexAttribArray(aCenter);
+	gl.vertexAttribPointer(aCenter, 2, gl.FLOAT, false, 0, 0);
+	gl.vertexAttribDivisor(aCenter, 1);
+	gl.bindVertexArray(null);
+
+	const vertBuf = gl.createBuffer();
+	const idxBuf = gl.createBuffer();
+	const quadsVao = gl.createVertexArray();
+	gl.bindVertexArray(quadsVao);
+	gl.bindBuffer(gl.ARRAY_BUFFER, vertBuf);
+	gl.enableVertexAttribArray(gl.getAttribLocation(quadsProg, 'a_pos'));
+	gl.vertexAttribPointer(gl.getAttribLocation(quadsProg, 'a_pos'), 2, gl.FLOAT, false, 16, 0);
+	gl.enableVertexAttribArray(gl.getAttribLocation(quadsProg, 'a_uv'));
+	gl.vertexAttribPointer(gl.getAttribLocation(quadsProg, 'a_uv'), 2, gl.FLOAT, false, 16, 8);
+	gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+	gl.bindVertexArray(null);
+
+	const uInstRes = gl.getUniformLocation(instProg, 'u_res');
+	const uInstSize = gl.getUniformLocation(instProg, 'u_size');
+	const uInstTex = gl.getUniformLocation(instProg, 'u_tex');
+	const uQuadRes = gl.getUniformLocation(quadsProg, 'u_res');
+	const uQuadTex = gl.getUniformLocation(quadsProg, 'u_tex');
+
+	let cap = 0, centers = null, verts = null;
+	/** Size the GPU buffers for n markers (index buffer is static per size). */
+	function reserve(n) {
+		if (n <= cap) return;
+		cap = n;
+		centers = new Float32Array(n * 2);
+		verts = new Float32Array(n * 16);
+		const idx = new Uint32Array(n * 6);
+		const pattern = [0, 1, 2, 2, 1, 3];
+		for (let i = 0; i < n; i++) for (let k = 0; k < 6; k++) idx[i * 6 + k] = i * 4 + pattern[k];
+		gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+		gl.bufferData(gl.ARRAY_BUFFER, centers.byteLength, gl.DYNAMIC_DRAW);
+		gl.bindBuffer(gl.ARRAY_BUFFER, vertBuf);
+		gl.bufferData(gl.ARRAY_BUFFER, verts.byteLength, gl.DYNAMIC_DRAW);
+		gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+		gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+	}
+
+	glMethods = {
+		// One quad, one vec2 per instance: 8 bytes of upload per marker.
+		'gl instanced quads': (n, pts) => {
+			reserve(n);
+			for (let i = 0; i < n; i++) {
+				centers[i * 2] = Math.round(pts[i * 2] * DPR);
+				centers[i * 2 + 1] = Math.round(pts[i * 2 + 1] * DPR);
+			}
+			gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+			gl.useProgram(instProg);
+			gl.bindVertexArray(instVao);
+			gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+			gl.bufferSubData(gl.ARRAY_BUFFER, 0, centers, 0, n * 2);
+			gl.uniform2f(uInstRes, W, H);
+			gl.uniform2f(uInstSize, SPRITE_W, SPRITE_H);
+			gl.activeTexture(gl.TEXTURE0);
+			gl.bindTexture(gl.TEXTURE_2D, tex);
+			gl.uniform1i(uInstTex, 0);
+			gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, n);
+			gl.bindVertexArray(null);
+		},
+		// 4 verts (pos+uv) and 6 indices per marker: 64 bytes of upload.
+		'gl vert+index 4v/6i': (n, pts) => {
+			reserve(n);
+			const hw = SPRITE_W / 2, hh = SPRITE_H / 2;
+			for (let i = 0; i < n; i++) {
+				const x = Math.round(pts[i * 2] * DPR), y = Math.round(pts[i * 2 + 1] * DPR);
+				const o = i * 16;
+				verts[o] = x - hw; verts[o + 1] = y - hh; verts[o + 2] = 0; verts[o + 3] = 0;
+				verts[o + 4] = x + hw; verts[o + 5] = y - hh; verts[o + 6] = 1; verts[o + 7] = 0;
+				verts[o + 8] = x - hw; verts[o + 9] = y + hh; verts[o + 10] = 0; verts[o + 11] = 1;
+				verts[o + 12] = x + hw; verts[o + 13] = y + hh; verts[o + 14] = 1; verts[o + 15] = 1;
+			}
+			gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+			gl.useProgram(quadsProg);
+			gl.bindVertexArray(quadsVao);
+			gl.bindBuffer(gl.ARRAY_BUFFER, vertBuf);
+			gl.bufferSubData(gl.ARRAY_BUFFER, 0, verts, 0, n * 16);
+			gl.uniform2f(uQuadRes, W, H);
+			gl.activeTexture(gl.TEXTURE0);
+			gl.bindTexture(gl.TEXTURE_2D, tex);
+			gl.uniform1i(uQuadTex, 0);
+			gl.drawElements(gl.TRIANGLES, n * 6, gl.UNSIGNED_INT, 0);
+			gl.bindVertexArray(null);
+		},
+	};
+	const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+	renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+}
+const glFinish = () => {
+	const px = new Uint8Array(4);
+	gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+};
+
+const METHODS = [
+	['canvas2d path, batched 32', c2Batched, c2Finish],
+	['canvas2d path, one each', c2PerPath, c2Finish],
+	['canvas2d sprite blit', c2Blit, c2Finish],
+	...Object.entries(glMethods).map(([name, fn]) => [name, fn, glFinish]),
+];
+
+let scratch = new Float32Array(2);
+/** Mean cost of one full frame at n markers, in ms. */
+function frameMs(draw, finish, n) {
+	if (scratch.length < n * 2) scratch = new Float32Array(n * 2);
+	for (let f = 0; f < 3; f++) draw(n, positions(n, f, scratch)); // warm
+	finish();
+	const t0 = performance.now();
+	for (let f = 0; f < FRAMES; f++) draw(n, positions(n, f, scratch));
+	finish();
+	return (performance.now() - t0) / FRAMES;
+}
+
+/** Largest n whose frame stays inside the 30fps budget. */
+function ceiling(draw, finish) {
+	let lo = 0, hi = 256;
+	while (hi <= N_CAP && frameMs(draw, finish, hi) < BUDGET_MS) {
+		lo = hi;
+		hi *= 2;
+	}
+	if (hi > N_CAP) return { n: lo, ms: frameMs(draw, finish, lo), capped: true };
+	for (let i = 0; i < 7 && hi - lo > Math.max(64, lo * 0.02); i++) {
+		const mid = Math.floor((lo + hi) / 2);
+		if (frameMs(draw, finish, mid) < BUDGET_MS) lo = mid;
+		else hi = mid;
+	}
+	return { n: lo, ms: frameMs(draw, finish, lo), capped: false };
+}
+
+// Run off the load event, a slice at a time, so the page never blocks.
+const rows = [];
+let mi = 0;
+function step() {
+	if (mi >= METHODS.length) {
+		const out = { renderer, budgetMs: BUDGET_MS, markersAt30fps: {} };
+		for (const r of rows) out.markersAt30fps[r.name] = r.capped ? `>=${r.n} (hit the ${N_CAP} cap)` : r.n;
+		out.detail = rows;
+		window.__results = out;
+		document.getElementById('out').textContent =
+			`renderer: ${renderer}\n\nmarkers drawn per frame while holding 30fps (${BUDGET_MS.toFixed(1)} ms):\n\n` +
+			rows.map((r) => `  ${r.name.padEnd(26)} ${String(r.n).padStart(9)}   (${r.ms.toFixed(1)} ms/frame)`).join('\n');
+		return;
+	}
+	const [name, draw, finish] = METHODS[mi++];
+	const r = ceiling(draw, finish);
+	rows.push({ name, ...r });
+	document.getElementById('out').textContent = `measured ${mi}/${METHODS.length}: ${name} -> ${r.n}`;
+	setTimeout(step, 0);
+}
+addEventListener('load', () => setTimeout(step, 0));
+</script>
