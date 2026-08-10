@@ -1277,22 +1277,33 @@ export function edgeContinuation(
 
 // -- Instant clustering ----------------------------------------------------------------
 
-/** Clear space kept between two drawn pips, in CSS px. */
-export const CLUSTER_GAP_PX = 2;
+/**
+ * Fraction of a pip's width between two drawn pips. Under 1, so a dense
+ * run draws its pips OVERLAPPING — packed edge over edge, each still its
+ * own diamond, which is what a saturated row of events looks like.
+ * Spacing them apart instead would throw away marks the row had room for.
+ */
+export const CLUSTER_OVERLAP_FRAC = 0.5;
+
+/**
+ * Floor on that pitch, in CSS px. Below it the outlines stop resolving
+ * and the row smears into one shape — the exact failure the thinning
+ * exists to prevent (docs/timeline/zoom-out-never-merges.md).
+ */
+export const CLUSTER_MIN_PITCH_PX = 3;
 
 /**
  * Default centre-to-centre distance below which two instants cannot both
- * be drawn: a full-size pip (~12px incl. its stroke) plus the gap. The
- * element overrides it per lane, because a compact lane's pip shrinks to
- * a dot and more of them fit.
+ * be drawn: half a full-size pip (~12px incl. its stroke). The element
+ * overrides it per lane, because a compact lane's pip shrinks to a dot
+ * and more of them fit.
  *
  * ONE constant does two jobs, and they are the same job: instants closer
- * than this chain into a cluster (their pips would collide), and within a
- * cluster the members are THINNED to exactly this pitch. Marks are
- * dropped to hold it, never widened or merged to close it — see
- * docs/timeline/zoom-out-never-merges.md.
+ * than this chain into a cluster, and within a cluster the members are
+ * THINNED to exactly this pitch. Marks are dropped to hold it, never
+ * widened or merged to close it.
  */
-export const CLUSTER_PITCH_PX = 12 + CLUSTER_GAP_PX;
+export const CLUSTER_PITCH_PX = 12 * CLUSTER_OVERLAP_FRAC;
 
 /**
  * A cluster up to this wide (CSS px) is POINT-LIKE: its members really do

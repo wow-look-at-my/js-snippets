@@ -173,7 +173,8 @@ import {
   clusterMarkerTime,
   clusterZoomView,
   CLUSTER_STACK_MAX_PX,
-  CLUSTER_GAP_PX,
+  CLUSTER_MIN_PITCH_PX,
+  CLUSTER_OVERLAP_FRAC,
   type ClusterMark,
   fitSpanView,
   segmentAtTime,
@@ -1828,11 +1829,12 @@ export class TimelineViewElement extends HTMLElement {
   private clusterLane(laneIdx: number, rv: TimeView, plotW: number, sameData: boolean): void {
     const per = this.perLane[laneIdx];
     const lane = this.lanes[laneIdx];
-    // The pitch is THIS lane's pip width plus a gap: a compact lane's pip
-    // shrinks to a dot, and more dots fit. Read at cluster time, so a
+    // The pitch is a fraction of THIS lane's pip width — pips overlap, and
+    // a compact lane's dots pack tighter still. Read at cluster time, so a
     // lane-height tween runs on the previous pitch until the next
-    // re-cluster — a sub-pixel drift for the length of the tween.
-    const { clusters, memberOf } = clusterInstants(per, rv, plotW, this.pipWidth(laneIdx) + CLUSTER_GAP_PX);
+    // re-cluster: a sub-pixel drift for the length of the tween.
+    const pitch = Math.max(CLUSTER_MIN_PITCH_PX, this.pipWidth(laneIdx) * CLUSTER_OVERLAP_FRAC);
+    const { clusters, memberOf } = clusterInstants(per, rv, plotW, pitch);
     // Membership-identical fast path — pure ZOOM/RESIZE re-clusters only
     // (`sameData`: the pack epoch is unchanged, so `per` holds exactly the
     // objects the previous pass saw; a data change always rebuilds). Most

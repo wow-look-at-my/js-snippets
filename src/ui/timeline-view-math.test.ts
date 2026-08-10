@@ -2403,27 +2403,25 @@ test('clusterInstants: threshold boundary — a gap just under the pitch merges,
 });
 
 test('clusterInstants: a chain runs to the real gap, and every member that clears the pitch keeps its pip', () => {
-  // 10px apart at a 14px pitch: all four chain (their pips would
-  // collide), and the thinning keeps every other one — each at its own
-  // true timestamp, none merged.
+  // 4px apart at the default 6px pitch: all four chain, and the thinning
+  // keeps every other one — each at its own true timestamp, none merged.
   const view: TimeView = { start: 0, end: 100_000 }; // 100ms/px
-  const items = [pip('a', 10_000), pip('b', 11_000), pip('c', 12_000), pip('d', 13_000)];
+  const items = [pip('a', 10_000), pip('b', 10_400), pip('c', 10_800), pip('d', 11_200)];
   const r = clusterInstants(items, view, 1000);
   assert.equal(r.clusters.length, 1);
   assert.deepEqual(r.clusters[0].indices, [0, 1, 2, 3]);
-  assert.deepEqual(r.clusters[0].extent, { start: 10_000, end: 13_000 });
+  assert.deepEqual(r.clusters[0].extent, { start: 10_000, end: 11_200 });
   assert.deepEqual(
     r.clusters[0].marks,
     [
       { time: 10_000, from: 0, to: 2 },
-      { time: 12_000, from: 2, to: 4 },
+      { time: 10_800, from: 2, to: 4 },
     ],
     'b and d sit inside the pitch — dropped, and counted by the pip before them',
   );
-  // A compact lane draws smaller dots, so more of them fit: at a 5px
-  // pitch the same 10px-apart dots do not collide at all — no cluster,
-  // every one drawn as its own pip.
-  const compact = clusterInstants(items, view, 1000, 5);
+  // A compact lane draws smaller dots at a tighter pitch, so more fit: at
+  // 3px the same events all clear it and every one draws as its own pip.
+  const compact = clusterInstants(items, view, 1000, 3);
   assert.equal(compact.clusters.length, 0);
   assert.deepEqual(compact.memberOf, [-1, -1, -1, -1]);
 });
@@ -2482,8 +2480,20 @@ test('clusterInstants: a run of marks fills its extent — no fixed-pitch comb, 
   );
   const marks = r.clusters.flatMap((c) => c.marks);
   const dataPx = (240 * 60_000) / msPerPx;
-  assert.ok(marks.length > dataPx / (CLUSTER_PITCH_PX * 1.5), `${marks.length} marks across ${dataPx.toFixed(0)}px`);
-  assert.ok(marks.length <= dataPx / CLUSTER_PITCH_PX + 1, 'never more marks than the width can separate');
+  // Marks stop at what the width can hold, and fill it: they span the
+  // run's real extent rather than sitting at a pitch of their own.
+  assert.ok(marks.length <= dataPx / CLUSTER_PITCH_PX + 1, `${marks.length} marks is more than ${dataPx.toFixed(0)}px can separate`);
+  const spanPx = (marks[marks.length - 1].time - marks[0].time) / msPerPx;
+  assert.ok(spanPx > dataPx * 0.95, `marks cover ${spanPx.toFixed(0)}px of the run's ${dataPx.toFixed(0)}px`);
+  // The same window with a fifth as many events draws a fifth as many
+  // marks — the old fixed-pitch comb drew both identically.
+  const sparse = clusterInstants(
+    Array.from({ length: 48 }, (_, i) => pip(`f${String(i).padStart(3, '0')}`, i * 300_000)),
+    view,
+    plotWidth,
+  );
+  const sparseMarks = sparse.clusters.flatMap((c) => c.marks).length + sparse.memberOf.filter((m) => m < 0).length;
+  assert.ok(marks.length > sparseMarks * 2, `${marks.length} marks for 240 events vs ${sparseMarks} for 48`);
 });
 
 test('clusterInstants: bars and ongoing intervals never cluster', () => {
@@ -2528,16 +2538,16 @@ test('clusterInstants: pure pans never change membership or extents (translation
 });
 
 test('clusterInstants: zooming in progressively splits clusters until each pip stands alone', () => {
-  // Gaps: a↔b 400ms, b↔c 3_600ms.
-  const items = [pip('a', 10_000), pip('b', 10_400), pip('c', 14_000)];
-  const wide = clusterInstants(items, { start: 0, end: 600_000 }, 1000); // 600ms/px → join 7_200ms
-  assert.equal(wide.clusters.length, 1, 'wide: everything is one blob');
+  // Gaps: a↔b 200ms, b↔c 1_600ms.
+  const items = [pip('a', 10_000), pip('b', 10_200), pip('c', 11_800)];
+  const wide = clusterInstants(items, { start: 0, end: 600_000 }, 1000); // 600ms/px → pitch 3_600ms
+  assert.equal(wide.clusters.length, 1, 'wide: everything is one chain');
   assert.equal(wide.clusters[0].indices.length, 3);
-  const mid = clusterInstants(items, { start: 0, end: 60_000 }, 1000); // 60ms/px → join 720ms
-  assert.equal(mid.clusters.length, 1, 'mid: only the close pair remains merged');
+  const mid = clusterInstants(items, { start: 0, end: 60_000 }, 1000); // 60ms/px → pitch 360ms
+  assert.equal(mid.clusters.length, 1, 'mid: only the close pair still collides');
   assert.deepEqual(mid.clusters[0].indices, [0, 1]);
   assert.equal(mid.memberOf[2], -1);
-  const close = clusterInstants(items, { start: 0, end: 10_000 }, 1000); // 10ms/px → join 120ms
+  const close = clusterInstants(items, { start: 0, end: 10_000 }, 1000); // 10ms/px → pitch 60ms
   assert.equal(close.clusters.length, 0, 'zoomed in: every pip stands at its true timestamp');
 });
 
