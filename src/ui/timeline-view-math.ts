@@ -1278,22 +1278,53 @@ export function edgeContinuation(
 // -- Instant clustering ----------------------------------------------------------------
 
 /**
- * Instant markers whose centers sit within this many CSS px of their
- * neighbor merge into one ×N cluster (~the rendered width of a pip incl.
- * its stroke) — clusters exist exactly while the pips would visually
- * overlap at the current scale.
+ * Fraction of a pip's width between two drawn pips. Under 1, so a dense
+ * run draws its pips OVERLAPPING — packed edge over edge, each still its
+ * own diamond, which is what a saturated row of events looks like.
+ * Spacing them apart instead would throw away marks the row had room for.
  */
-export const CLUSTER_JOIN_PX = 12;
+export const CLUSTER_OVERLAP_FRAC = 0.5;
 
 /**
- * Hard cap on a cluster's own width in CSS px. The join rule is transitive,
- * so without a cap a densely populated track chains end-to-end into ONE
- * cluster whose single marker sits at the midpoint — the whole track reads
- * as empty at wide zooms. Capping the extent bounds how far a member is
- * displaced from its true timestamp (at most half this, ~a pip width) and
- * keeps a dense run reading as a dense run: many markers, not one.
+ * Floor on that pitch, in CSS px. Below it the outlines stop resolving
+ * and the row smears into one shape — the exact failure the thinning
+ * exists to prevent (docs/timeline/zoom-out-never-merges.md).
  */
-export const CLUSTER_MAX_SPAN_PX = 2 * CLUSTER_JOIN_PX;
+export const CLUSTER_MIN_PITCH_PX = 3;
+
+/**
+ * Default centre-to-centre distance below which two instants cannot both
+ * be drawn: half a full-size pip (~12px incl. its stroke). The element
+ * overrides it per lane, because a compact lane's pip shrinks to a dot
+ * and more of them fit.
+ *
+ * ONE constant does two jobs, and they are the same job: instants closer
+ * than this chain into a cluster, and within a cluster the members are
+ * THINNED to exactly this pitch. Marks are dropped to hold it, never
+ * widened or merged to close it.
+ */
+export const CLUSTER_PITCH_PX = 12 * CLUSTER_OVERLAP_FRAC;
+
+/**
+ * A cluster up to this wide (CSS px) is POINT-LIKE: its members really do
+ * sit at one spot, so it draws as the ×N stack glyph. Anything wider
+ * spans real time and draws its thinned marks instead — see
+ * InstantCluster.
+ */
+export const CLUSTER_STACK_MAX_PX = 12;
+
+/**
+ * One drawn mark of a spread cluster — the unit it draws, hit-tests and
+ * zooms by. It is one member, drawn as the pip that member always was,
+ * standing for the members the thinning dropped after it.
+ */
+export interface ClusterMark {
+  /** The drawn member's timestamp — never a midpoint, never snapped. */
+  time: number;
+  /** Half-open range into the cluster's `indices`: this mark's member and the ones it stands for. */
+  from: number;
+  to: number;
+}
 
 /** A group of visually-overlapping instant markers (see clusterInstants). */
 export interface InstantCluster {
@@ -1305,20 +1336,32 @@ export interface InstantCluster {
    * marker anchor (clusterMarkerTime).
    */
   extent: TimeRange;
+  /**
+   * The members THINNED to a drawable pitch, in time order, together
+   * covering every member exactly once. Zooming out drops marks; it
+   * never merges them, so N events can never render as one shape (see
+   * docs/timeline/zoom-out-never-merges.md).
+   */
+  marks: ClusterMark[];
 }
 
 /**
  * SCALE-AWARE clustering of instant markers: a greedy transitive sweep
- * in time order merges instants whose centers sit within `joinPx` CSS px
- * of their neighbor at the view's scale, so a pile of coincident pips
- * reads as ONE point-like ×N marker while zooming in progressively
- * splits every cluster until each pip stands at its true timestamp.
+ * in time order merges instants whose centers sit within `pitchPx` CSS px
+ * of their neighbor at the view's scale — exactly the ones whose pips
+ * would overdraw each other — and zooming in progressively splits every
+ * cluster until each pip stands at its true timestamp.
  *
- * A cluster never grows wider than `maxSpanPx` CSS px: the chain also
- * breaks once the next instant sits that far from the bucket's FIRST
- * member, so no pip is ever compacted more than half that from where it
- * belongs, and a densely packed track stays a row of markers at any zoom
- * instead of collapsing into one.
+ * The chain is maximal: it breaks only at a real gap in the data, never
+ * at a width cap, so a cluster is "one visually continuous run of
+ * instants" and nothing about it depends on where the sweep started. A
+ * run that spans real time is not compacted to a point — it carries
+ * `marks`: its members THINNED to `pitchPx`, each at its own true
+ * timestamp and each drawn as the pip it always was. Marks are dropped,
+ * never merged and never redrawn as some other glyph, so however far out
+ * you zoom the run stays a row of separated pips (halve the width, halve
+ * the pips) and can never fuse into one shape. The rule and the two ways
+ * this has been got wrong: docs/timeline/zoom-out-never-merges.md.
  *
  * Only instants participate: an item must be terminal (end != null — an
  * ongoing interval will grow into a bar) with a duration mapping under
@@ -1335,17 +1378,15 @@ export function clusterInstants(
   items: readonly PackItem[],
   view: TimeView,
   plotWidth: number,
-  joinPx = CLUSTER_JOIN_PX,
+  pitchPx = CLUSTER_PITCH_PX,
   instantPx = INSTANT_THRESHOLD_PX,
-  maxSpanPx = CLUSTER_MAX_SPAN_PX,
 ): { clusters: InstantCluster[]; memberOf: number[] } {
   const memberOf = new Array<number>(items.length).fill(-1);
   const clusters: InstantCluster[] = [];
   const span = view.end - view.start;
   if (!(span > 0) || !(plotWidth > 0)) return { clusters, memberOf };
   const msPerPx = span / plotWidth;
-  const joinMs = joinPx * msPerPx;
-  const maxSpanMs = Math.max(0, maxSpanPx) * msPerPx;
+  const pitchMs = Math.max(0, pitchPx) * msPerPx;
   const instantMaxMs = instantPx * msPerPx;
   const order: number[] = [];
   for (let i = 0; i < items.length; i++) {
@@ -1376,15 +1417,12 @@ export function clusterInstants(
   // Greedy transitive sweep over `order` as index ranges (no per-bucket
   // array churn — this runs on the layout hot path): a bucket is
   // order[bucketStart, oi); it flushes when the next instant's gap from
-  // its predecessor exceeds joinMs, when taking it would push the bucket
-  // past maxSpanMs wide, and at the end.
+  // its predecessor reaches pitchMs — the point where the two pips no
+  // longer collide — and at the end. The same walk thins the bucket to
+  // that same pitch.
   let bucketStart = 0;
   for (let oi = 0; oi <= order.length; oi++) {
-    const boundary =
-      oi === order.length ||
-      (oi > bucketStart &&
-        (items[order[oi]].start - items[order[oi - 1]].start > joinMs ||
-          items[order[oi]].start - items[order[bucketStart]].start > maxSpanMs));
+    const boundary = oi === order.length || (oi > bucketStart && items[order[oi]].start - items[order[oi - 1]].start >= pitchMs);
     if (!boundary) continue;
     const len = oi - bucketStart;
     if (len > 1) {
@@ -1394,9 +1432,22 @@ export function clusterInstants(
         indices[k] = idx;
         memberOf[idx] = clusters.length;
       }
+      // THIN to the drawable pitch: keep a member only once it clears the
+      // last kept one by a whole mark plus its gap, so drawn marks never
+      // touch. Everything skipped is stood for by the mark before it —
+      // dropped from the picture, never fused into it.
+      const marks: ClusterMark[] = [];
+      for (let k = 0; k < len; k++) {
+        const t = items[indices[k]].start;
+        const last = marks[marks.length - 1];
+        if (last !== undefined && t - last.time < pitchMs) continue;
+        if (last !== undefined) last.to = k;
+        marks.push({ time: t, from: k, to: len });
+      }
       clusters.push({
         indices,
         extent: { start: items[indices[0]].start, end: items[indices[len - 1]].start },
+        marks,
       });
     }
     bucketStart = oi;

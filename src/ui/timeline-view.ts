@@ -172,6 +172,10 @@ import {
   clusterInstants,
   clusterMarkerTime,
   clusterZoomView,
+  CLUSTER_STACK_MAX_PX,
+  CLUSTER_MIN_PITCH_PX,
+  CLUSTER_OVERLAP_FRAC,
+  type ClusterMark,
   fitSpanView,
   segmentAtTime,
   type SegmentHit,
@@ -331,10 +335,15 @@ interface NInterval {
 }
 
 /**
- * A cluster of instant markers (drawn as a fixed 3-stack of pips),
- * re-derived per layout pass at the
- * current scale (clusterInstants). Occupies ONE packing slot spanning its
- * member extent — coincident instants can never blow up the lane height.
+ * A cluster of instant markers, re-derived per layout pass at the current
+ * scale (clusterInstants). Occupies ONE packing slot spanning its member
+ * extent — coincident instants can never blow up the lane height.
+ *
+ * It draws one of two ways. A POINT cluster (`point`) is narrower than a
+ * pip, so it is the 3-stack glyph at one anchor. A SPREAD cluster covers
+ * real time and draws its `marks` — separated ticks at true timestamps,
+ * thinned as you zoom out, never merged (see
+ * docs/timeline/zoom-out-never-merges.md).
  */
 interface NCluster {
   /** 'cluster:' + the FIRST member's id — the sticky packing identity (stable while membership is; see packLane). */
@@ -344,6 +353,10 @@ interface NCluster {
   extent: TimeRange;
   /** Members in (start, id) order. */
   members: NInterval[];
+  /** The members thinned to a drawable pitch (clusterInstants) — what a spread cluster draws and hit-tests by. */
+  marks: ClusterMark[];
+  /** Extent under a pip's width at the clustering scale: draw the stack glyph. */
+  point: boolean;
   /** Uniform member category, else the lane default (see clusterKeys). */
   catKey: string;
   /** Uniform member state, else '' — the neutral treatment for mixed clusters. */
@@ -409,12 +422,10 @@ const EDGE_SHADOW_ALPHA = 0.85;
 const MAX_DPR = 3;
 // Cluster 3-stack ghost alphas (front draws at 1).
 const LANE_FIT_CACHE_MAX = 512;
-// Diamonds per batched path. Measured in Chromium (2400x1200 canvas, 1200
-// diamonds): 2.50 us/marker one per path, 1.75 at 8-32 per path, 2.75 at 256
-// and 8.08 with all 1200 in ONE path — a giant path costs far more to
-// rasterize than the calls it saves. Batching is a win only inside that
-// window, so the flush is capped rather than "one path per lane".
-const CLUSTER_BATCH_MAX = 32;
+// Baked pip glyphs kept alive (see pipSprite). Generous enough to hold every
+// (style, radius, dpr) a chart cycles through, bounded so a lane-height tween
+// walking radii cannot grow it forever.
+const PIP_SPRITE_CACHE_MAX = 96;
 const CLUSTER_MID_ALPHA = 0.65;
 const CLUSTER_BACK_ALPHA = 0.35;
 // The minimap strip's height (CSS px) — the plot canvas cedes this band
@@ -475,7 +486,7 @@ export interface TimelineLegendEntry {
 const LEGEND_ROWS: readonly { swatch: string; text: string }[] = [
   { swatch: 'lg-instant', text: 'instant — a zero-duration event (filled pip)' },
   { swatch: 'lg-cancelled-pip', text: 'cancelled instant (hollow, dashed pip)' },
-  { swatch: 'lg-cluster', text: 'stacked pips — several instants clustered at this zoom; zoom in or click to split' },
+  { swatch: 'lg-cluster', text: 'stacked pips — several instants at one point at this zoom; zoom in or click to split' },
   { swatch: 'lg-bar lg-failed', text: 'failed — stippled body, red border, corner bang' },
   { swatch: 'lg-bar lg-hatch', text: 'hatched phase — a declared wait (lock, group slot, sleep) or queued time' },
   { swatch: 'lg-bar lg-dim', text: 'dim — queued / de-emphasized' },
@@ -1816,7 +1827,12 @@ export class TimelineViewElement extends HTMLElement {
   private clusterLane(laneIdx: number, rv: TimeView, plotW: number, sameData: boolean): void {
     const per = this.perLane[laneIdx];
     const lane = this.lanes[laneIdx];
-    const { clusters, memberOf } = clusterInstants(per, rv, plotW);
+    // The pitch is a fraction of THIS lane's pip width — pips overlap, and
+    // a compact lane's dots pack tighter still. Read at cluster time, so a
+    // lane-height tween runs on the previous pitch until the next
+    // re-cluster: a sub-pixel drift for the length of the tween.
+    const pitch = Math.max(CLUSTER_MIN_PITCH_PX, this.pipWidth(laneIdx) * CLUSTER_OVERLAP_FRAC);
+    const { clusters, memberOf } = clusterInstants(per, rv, plotW, pitch);
     // Membership-identical fast path — pure ZOOM/RESIZE re-clusters only
     // (`sameData`: the pack epoch is unchanged, so `per` holds exactly the
     // objects the previous pass saw; a data change always rebuilds). Most
@@ -1838,7 +1854,15 @@ export class TimelineViewElement extends HTMLElement {
             break;
           }
         }
-        if (same) return;
+        if (same) {
+          // Membership survives, but the marks and point-ness are functions
+          // of the SCALE this pass ran at — the one thing that changed.
+          for (let k = 0; k < clusters.length; k++) {
+            prev[k].marks = clusters[k].marks;
+            prev[k].point = this.isPointCluster(clusters[k].extent, rv, plotW);
+          }
+          return;
+        }
       }
     }
     const ncs: NCluster[] = new Array(clusters.length);
@@ -1847,7 +1871,17 @@ export class TimelineViewElement extends HTMLElement {
       const members = new Array<NInterval>(c.indices.length);
       for (let k = 0; k < c.indices.length; k++) members[k] = per[c.indices[k]];
       const keys = this.clusterKeys(members, lane);
-      ncs[ci] = { id: `cluster:${members[0].id}`, laneIdx, extent: c.extent, members, catKey: keys.catKey, state: keys.state, track: -1 };
+      ncs[ci] = {
+        id: `cluster:${members[0].id}`,
+        laneIdx,
+        extent: c.extent,
+        members,
+        marks: c.marks,
+        point: this.isPointCluster(c.extent, rv, plotW),
+        catKey: keys.catKey,
+        state: keys.state,
+        track: -1,
+      };
     }
     const items: PackItem[] = [];
     const targets: { track: number }[] = [];
@@ -1868,6 +1902,142 @@ export class TimelineViewElement extends HTMLElement {
     this.lanePackItems[laneIdx] = items;
     this.lanePackTargets[laneIdx] = targets;
     this.laneUnclustered[laneIdx] = unclustered;
+  }
+
+  /** Whether a cluster's extent is small enough to draw as the stack glyph. */
+  private isPointCluster(extent: TimeRange, rv: TimeView, plotW: number): boolean {
+    return durationWidthPx(extent.start, extent.end, rv, plotW) <= CLUSTER_STACK_MAX_PX;
+  }
+
+  /**
+   * Baked pip glyphs, keyed by style + radius + dpr + variant. EVERY pip
+   * comes off a sprite, including a plain solid one. Sustained-throughput
+   * measurement on an M1, markers per frame holding 30fps (bench/bench-gl.html):
+   *
+   *   sprite blit 29977  |  batched path 4571  |  one path each 5100
+   *
+   * A bake is ~82 us, once per (style, radius, dpr), and repays inside the
+   * first frame that draws a few hundred of them. Do not reintroduce a
+   * minimum-markers gate or a solid-pip carve-out: both came from a
+   * software-rasterizer micro-benchmark that the sustained numbers reverse.
+   */
+  private pipSprites = new Map<string, { img: HTMLCanvasElement; w: number; h: number; ax: number; ay: number }>();
+  private styleIds = new WeakMap<ResolvedStyle, string>();
+  private styleSeq = 0;
+
+  /** Stable id for a resolved style — resolved() interns them, so identity is the key. */
+  private styleId(style: ResolvedStyle): string {
+    let id = this.styleIds.get(style);
+    if (id === undefined) {
+      id = `s${this.styleSeq++}`;
+      this.styleIds.set(style, id);
+    }
+    return id;
+  }
+
+  /**
+   * The baked glyph for one style at one radius, drawn once and blitted
+   * after. `ax`/`ay` place it: subtract them from the marker's centre.
+   * Radius is quantized to a half pixel so a lane-height tween re-uses
+   * one sprite instead of baking a new one every frame.
+   */
+  private pipSprite(style: ResolvedStyle, radius: number, stack: boolean): { img: HTMLCanvasElement; w: number; h: number; ax: number; ay: number } {
+    const r = Math.round(radius * 2) / 2;
+    const key = `${this.styleId(style)}|${r}|${this.dpr}|${stack ? 'k' : 'p'}`;
+    const hit = this.pipSprites.get(key);
+    if (hit) return hit;
+    const rx = r * 0.78;
+    const step = stack ? Math.max(1, Math.min(2, r * 0.35)) : 0;
+    const pad = 3;
+    const w = Math.ceil(rx * 2 + step * 2 + pad * 2);
+    const h = Math.ceil(r * 2 + pad * 2);
+    const img = document.createElement('canvas');
+    img.width = Math.ceil(w * this.dpr);
+    img.height = Math.ceil(h * this.dpr);
+    const sctx = img.getContext('2d');
+    const ax = rx + pad;
+    const ay = r + pad;
+    if (sctx) {
+      sctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+      if (stack) {
+        // Back and mid ghosts first (offset right, faded), then the front.
+        for (const [alpha, off] of [
+          [CLUSTER_BACK_ALPHA, 2],
+          [CLUSTER_MID_ALPHA, 1],
+          [1, 0],
+        ] as const) {
+          sctx.globalAlpha = alpha;
+          this.strokePip(sctx, style, ax + off * step, ay, r);
+        }
+        sctx.globalAlpha = 1;
+      } else {
+        this.strokePip(sctx, style, ax, ay, r);
+      }
+    }
+    const sprite = { img, w, h, ax, ay };
+    // Bounded: a lane-height tween walks radii, and every (style, dpr)
+    // pair adds its own. Evicting the oldest costs one re-bake.
+    if (this.pipSprites.size >= PIP_SPRITE_CACHE_MAX) {
+      const oldest = this.pipSprites.keys().next().value;
+      if (oldest !== undefined) this.pipSprites.delete(oldest);
+    }
+    this.pipSprites.set(key, sprite);
+    return sprite;
+  }
+
+  /** The diamond body: fill + border, dashed when the style is. Shared by the sprite bake and the live path. */
+  private strokePip(ctx: CanvasRenderingContext2D, style: ResolvedStyle, cx: number, cy: number, r: number): void {
+    const rx = r * 0.78;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - r);
+    ctx.lineTo(cx + rx, cy);
+    ctx.lineTo(cx, cy + r);
+    ctx.lineTo(cx - rx, cy);
+    ctx.closePath();
+    ctx.fillStyle = style.pattern === 'outline' ? withAlpha(style.fill, 0.15) : style.fill;
+    ctx.fill();
+    ctx.strokeStyle = style.border;
+    ctx.lineWidth = style.glyph === 'bang' || style.border === this.theme.emphasis ? 2 : 1;
+    // A dashed state reads dashed at pip size too: the declared pattern is
+    // rescaled so a whole number of dash+gap cycles (3-5) closes around the
+    // diamond's perimeter.
+    const dashSum = style.dash ? style.dash.reduce((a, b) => a + b, 0) : 0;
+    if (style.dash && dashSum > 0) {
+      const perim = Math.hypot(rx, r) * 4;
+      const cycles = Math.max(3, Math.min(5, Math.round(perim / 10)));
+      const unit = perim / cycles / (dashSum * (style.dash.length % 2 === 1 ? 2 : 1));
+      ctx.setLineDash(style.dash.map((d) => d * unit));
+    }
+    ctx.stroke();
+    if (style.dash) ctx.setLineDash(EMPTY_DASH);
+  }
+
+  /**
+   * Blit baked glyphs, each centred on its (cx, cy) and snapped to whole
+   * device pixels so it stays crisp. The transform switch is hoisted out
+   * of the loop deliberately — per-blit save/setTransform/restore costs
+   * more than the blit it wraps, and the measurements in pipSprite are
+   * for this shape.
+   */
+  private blitPips(ctx: CanvasRenderingContext2D, blits: readonly { sprite: { img: HTMLCanvasElement; ax: number; ay: number }; cx: number; cy: number }[]): void {
+    if (blits.length === 0) return;
+    const dpr = this.dpr;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    for (const b of blits) {
+      ctx.drawImage(b.sprite.img, Math.round((b.cx - b.sprite.ax) * dpr), Math.round((b.cy - b.sprite.ay) * dpr));
+    }
+    ctx.restore();
+  }
+
+  /** A lane's drawn pip width — pipRadius x 2 x the diamond's 0.78 aspect (drawInstant). */
+  private pipWidth(laneIdx: number): number {
+    return this.pipRadius(this.laneTrackHeight(laneIdx)) * 0.78 * 2;
+  }
+
+  /** Pips shrink with the track but never below a visible 4px diamond. */
+  private pipRadius(trackH: number): number {
+    return Math.max(2, Math.min(trackH * 0.42, 8));
   }
 
   /**
@@ -2801,11 +2971,30 @@ export class TimelineViewElement extends HTMLElement {
       const ncs = this.laneClusters[laneIdx];
       if (ncs) {
         for (let i = ncs.length - 1; i >= 0; i--) {
-          const p = this.clusterPos(ncs[i]);
+          const c = ncs[i];
+          // A spread cluster answers per MARK — the unit it draws. The
+          // whole chain would report "x240 events" over four hours, which
+          // tells the pointer nothing about what it is on.
+          if (!c.point) {
+            const geo = this.clusterMarks(c);
+            if (!geo) continue;
+            for (const p of geo.pips) {
+              const r = expandHitRect({ x: p.cx - (geo.r + 2), y: geo.y, w: (geo.r + 2) * 2, h: geo.th }, HIT_MIN_W);
+              if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+                const members = c.members.slice(p.mark.from, p.mark.to);
+                // A mark standing only for itself IS one event — it opens
+                // like any other pip, not as a group of one.
+                if (members.length === 1) return { type: 'interval', interval: members[0].src, lane: this.lanes[laneIdx], segment: null };
+                return { type: 'cluster', intervals: members.map((member) => member.src), lane: this.lanes[laneIdx] };
+              }
+            }
+            continue;
+          }
+          const p = this.clusterPos(c);
           if (!p) continue;
           const r = expandHitRect({ x: p.cx - (p.r + 2), y: p.y, w: (p.r + 2) * 2, h: p.th }, HIT_MIN_W);
           if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
-            return { type: 'cluster', intervals: ncs[i].members.map((member) => member.src), lane: this.lanes[laneIdx] };
+            return { type: 'cluster', intervals: c.members.map((member) => member.src), lane: this.lanes[laneIdx] };
           }
         }
       }
@@ -4385,36 +4574,15 @@ export class TimelineViewElement extends HTMLElement {
     ghost = false,
   ): void {
     const t = this.theme;
-    // Pips shrink with the track but never below a visible 4px diamond
-    // (compact tracks: the pip fills the 4px band instead of vanishing).
-    const r = Math.max(2, Math.min(trackH * 0.42, 8));
+    const r = this.pipRadius(trackH);
     const rx = r * 0.78;
-    ctx.beginPath();
-    ctx.moveTo(cx, cy - r);
-    ctx.lineTo(cx + rx, cy);
-    ctx.lineTo(cx, cy + r);
-    ctx.lineTo(cx - rx, cy);
-    ctx.closePath();
-    ctx.fillStyle = style.pattern === 'outline' ? withAlpha(style.fill, 0.15) : style.fill;
-    ctx.fill();
+    // Pips deliberately skip the bars' below-12px dash-to-solid fallback —
+    // a closed diamond outline has no broken-corner failure mode, and a
+    // cancelled INSTANT must carry the same dashed signature as a
+    // cancelled span. strokePip holds that geometry, shared with the
+    // sprite bake so a blitted pip and a drawn one cannot diverge.
+    this.strokePip(ctx, style, cx, cy, r);
     const emphasis = style.glyph === 'bang' || style.border === t.emphasis;
-    ctx.strokeStyle = style.border;
-    ctx.lineWidth = emphasis ? 2 : 1;
-    // A dashed state (cancelled) reads dashed at pip size too: the declared
-    // pattern is rescaled so a whole number of dash+gap cycles (3-5) closes
-    // around the diamond's perimeter. Pips deliberately skip the bars'
-    // below-12px dash-to-solid fallback — a closed diamond outline has no
-    // broken-corner failure mode, and a cancelled INSTANT must carry the
-    // same dashed signature as a cancelled span.
-    const dashSum = style.dash ? style.dash.reduce((a, b) => a + b, 0) : 0;
-    if (style.dash && dashSum > 0) {
-      const perim = Math.hypot(rx, r) * 4;
-      const cycles = Math.max(3, Math.min(5, Math.round(perim / 10)));
-      const unit = perim / cycles / (dashSum * (style.dash.length % 2 === 1 ? 2 : 1));
-      ctx.setLineDash(style.dash.map((d) => d * unit));
-    }
-    ctx.stroke();
-    if (style.dash) ctx.setLineDash(EMPTY_DASH);
     // Ghost copies (the back layers of a cluster's 3-stack) draw fill +
     // border only: no emphasis stem (an emphasis cluster shows ONE stem on
     // its front copy, never a comb) and no hover ring (callers pass
@@ -4453,13 +4621,38 @@ export class TimelineViewElement extends HTMLElement {
     const rv = this.renderView();
     const plotW = this.plotWidth();
     const th = this.laneTrackHeight(c.laneIdx);
-    const r = Math.max(2, Math.min(th * 0.42, 8));
+    const r = this.pipRadius(th);
     const marginMs = ((r + 2) * (rv.end - rv.start)) / plotW;
     const mt = clusterMarkerTime(c.extent, rv, marginMs);
     if (mt === null) return null;
     const m = this.metrics();
     const y = AXIS_H + this.layout.tops[c.laneIdx] - this.laneScroll + trackTop(c.track, m, th);
     return { cx: this.gutterW + timeToX(mt, rv, plotW), cy: y + th / 2, y, th, r };
+  }
+
+  /**
+   * Screen geometry of a SPREAD cluster's marks — shared by drawing and
+   * hit testing so the two can never disagree. Every mark is exactly
+   * CLUSTER_MARK_PX wide: no width here is derived from a time range,
+   * which is the mechanical reason marks cannot fuse into a bar (see
+   * docs/timeline/zoom-out-never-merges.md). Off-screen marks are
+   * dropped; null while the cluster is unplaced or none is on screen.
+   */
+  private clusterMarks(c: NCluster): { y: number; th: number; r: number; pips: { cx: number; mark: ClusterMark }[] } | null {
+    if (c.track < 0) return null;
+    const rv = this.renderView();
+    const plotW = this.plotWidth();
+    const th = this.laneTrackHeight(c.laneIdx);
+    const m = this.metrics();
+    const y = AXIS_H + this.layout.tops[c.laneIdx] - this.laneScroll + trackTop(c.track, m, th);
+    const r = this.pipRadius(th);
+    const pips: { cx: number; mark: ClusterMark }[] = [];
+    for (const mark of c.marks) {
+      const cx = timeToX(mark.time, rv, plotW);
+      if (cx < -r || cx > plotW + r) continue;
+      pips.push({ cx: this.gutterW + cx, mark });
+    }
+    return pips.length > 0 ? { y, th, r, pips } : null;
   }
 
   /**
@@ -4480,74 +4673,79 @@ export class TimelineViewElement extends HTMLElement {
    * marker has no clipped extent.
    */
   /**
-   * A lane's cluster markers, BATCHED. Each marker is a 3-diamond stack, so
-   * the obvious loop issues six canvas path operations per cluster — and a
-   * dense hour of traffic puts ~400 clusters on screen, which measured as the
-   * single largest slice of frame time (31 ms of a 59 ms draw budget across a
-   * load, ~5 us per cluster).
+   * A lane's cluster markers, from a BAKED sprite. Each marker is a
+   * 3-diamond stack — six canvas path operations drawn live, and a dense
+   * hour of traffic puts ~400 on screen, which measured as the single
+   * largest slice of frame time (31 ms of a 59 ms draw budget across a
+   * load). The whole stack bakes into one image per (style, radius, dpr),
+   * so a marker costs one blit (pipSprite carries the measurements).
    *
-   * A lane's markers almost always share ONE resolved style, and the three
-   * stack layers are three globalAlpha values, so a lane draws as
-   * (layers x styles x ceil(n/CLUSTER_BATCH_MAX)) paths instead of
-   * (layers x clusters). The cap is not incidental: batching wins only up to
-   * a few dozen subpaths per path and REVERSES past a few hundred (see
-   * CLUSTER_BATCH_MAX).
-   *
-   * Only the plain case batches. A hovered marker, an emphasis stem or a
-   * dashed outline is per-marker geometry, so those fall back to drawCluster —
-   * and draw AFTER the batch, which is where they belong anyway (a hover ring
-   * under a neighbour's ghost was always a latent glitch).
+   * A hovered marker or an emphasis stem is per-marker geometry, so those
+   * fall back to drawCluster — and draw AFTER the blits, which is where
+   * they belong anyway (a hover ring under a neighbour's ghost was always
+   * a latent glitch).
    */
   private drawClusters(ctx: CanvasRenderingContext2D, ncs: NCluster[]): void {
     if (ncs.length === 0) return;
     const t = this.theme;
-    let batched: Map<ResolvedStyle, { cx: number; cy: number; r: number; rx: number; s: number }[]> | null = null;
     let fallback: NCluster[] | null = null;
+    // Grouped by the glyph they blit, so one bake and one transform switch
+    // serve the whole group.
+    let groups: Map<string, { style: ResolvedStyle; r: number; at: NCluster[] }> | null = null;
     for (const c of ncs) {
       const style = this.resolved(c.catKey, c.state, null);
+      if (!c.point) {
+        this.drawClusterMarks(ctx, c, style);
+        continue;
+      }
       const emphasis = style.glyph === 'bang' || style.border === t.emphasis;
-      const dashed = style.dash !== null && style.dash.length > 0;
-      if (emphasis || dashed || this.hoverClusterId === c.members[0].id) {
+      if (emphasis || this.hoverClusterId === c.members[0].id) {
         (fallback ??= []).push(c);
         continue;
       }
-      const p = this.clusterPos(c);
-      if (!p) continue;
-      const r = Math.max(2, Math.min(p.th * 0.42, 8));
-      const map = (batched ??= new Map());
-      let list = map.get(style);
-      if (list === undefined) map.set(style, (list = []));
-      list.push({ cx: p.cx, cy: p.cy, r, rx: r * 0.78, s: Math.max(1, Math.min(2, p.r * 0.35)) });
+      const r = this.pipRadius(this.laneTrackHeight(c.laneIdx));
+      const key = `${this.styleId(style)}|${r}`;
+      const map = (groups ??= new Map());
+      let g = map.get(key);
+      if (g === undefined) map.set(key, (g = { style, r, at: [] }));
+      g.at.push(c);
     }
-    if (batched) {
-      for (const [style, items] of batched) {
-        ctx.fillStyle = style.pattern === 'outline' ? withAlpha(style.fill, 0.15) : style.fill;
-        ctx.strokeStyle = style.border;
-        ctx.lineWidth = 1;
-        // Back and mid ghosts first (offset right, faded), then the fronts —
-        // so a front is never covered by a neighbour's ghost.
-        for (const [alpha, off] of [[CLUSTER_BACK_ALPHA, 2], [CLUSTER_MID_ALPHA, 1], [1, 0]] as const) {
-          ctx.globalAlpha = alpha;
-          for (let i = 0; i < items.length; i += CLUSTER_BATCH_MAX) {
-            const to = Math.min(i + CLUSTER_BATCH_MAX, items.length);
-            ctx.beginPath();
-            for (let k = i; k < to; k++) {
-              const it = items[k];
-              const cx = it.cx + off * it.s;
-              ctx.moveTo(cx, it.cy - it.r);
-              ctx.lineTo(cx + it.rx, it.cy);
-              ctx.lineTo(cx, it.cy + it.r);
-              ctx.lineTo(cx - it.rx, it.cy);
-              ctx.closePath();
-            }
-            ctx.fill();
-            ctx.stroke();
-          }
+    if (groups) {
+      for (const g of groups.values()) {
+        const sprite = this.pipSprite(g.style, g.r, true);
+        const blits: { sprite: typeof sprite; cx: number; cy: number }[] = [];
+        for (const c of g.at) {
+          const p = this.clusterPos(c);
+          if (p) blits.push({ sprite, cx: p.cx, cy: p.cy });
         }
-        ctx.globalAlpha = 1;
+        this.blitPips(ctx, blits);
       }
     }
     if (fallback) for (const c of fallback) this.drawCluster(ctx, c);
+  }
+
+  /**
+   * A SPREAD cluster's marks: the members' OWN pips, at their own
+   * timestamps, thinned to a pitch so they never collide. An instant is a
+   * diamond (a dot once the row is compact) at every zoom — nothing here
+   * substitutes a different glyph for one, and a run of them stays a run
+   * of separated pips no matter how far out you go.
+   */
+  private drawClusterMarks(ctx: CanvasRenderingContext2D, c: NCluster, style: ResolvedStyle): void {
+    const geo = this.clusterMarks(c);
+    if (!geo) return;
+    const cy = geo.y + geo.th / 2;
+    const hovered = this.hoverClusterId ?? this.hoverIntervalId;
+    const pips = geo.pips;
+    const hoverAt = hovered === null ? -1 : pips.findIndex((p) => c.members[p.mark.from].id === hovered);
+    const sprite = this.pipSprite(style, geo.r, false);
+    this.blitPips(
+      ctx,
+      pips.map((p) => ({ sprite, cx: p.cx, cy })),
+    );
+    // The hovered mark redraws whole, on top: its ring and any emphasis
+    // stem are per-marker geometry the sprite omits.
+    if (hoverAt >= 0) this.drawInstant(ctx, style, pips[hoverAt].cx, cy, geo.th, true);
   }
 
   private drawCluster(ctx: CanvasRenderingContext2D, c: NCluster): void {
