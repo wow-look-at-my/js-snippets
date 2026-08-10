@@ -69,9 +69,16 @@ thinning it. Thin it.
 ## Where this is enforced
 
 - `src/ui/timeline-view-math.ts` — `clusterInstants` builds the thinned
-  `marks`; `CLUSTER_MARK_PX` / `CLUSTER_MARK_GAP_PX` set the pitch.
-- `src/ui/timeline-view-math.test.ts` — "halving the width halves the
-  marks" and "marks never touch" are asserted directly; they fail if
-  anything reintroduces merging.
-- `src/ui/timeline-view.ts` — `drawClusterMarks` draws one fixed-width
-  tick per mark. Nothing there computes a width from a time range.
+  `marks`. The pitch is the drawn pip's own width times
+  `CLUSTER_OVERLAP_FRAC` (0.5, so consecutive marks OVERLAP by half a
+  glyph rather than sitting in a comb), floored at
+  `CLUSTER_MIN_PITCH_PX`. One constant decides both chaining and
+  thinning, so the two can never disagree.
+- `src/ui/timeline-view-math.test.ts` — "ZOOMING OUT HALVES THE MARKS —
+  it never fuses them into one shape" and "a run of marks fills its
+  extent — no fixed-pitch comb, no single blob" assert it directly; they
+  fail if anything reintroduces merging.
+- `src/ui/timeline-view.ts` — `drawClusterMarks` draws each mark as the
+  ordinary instant glyph (a diamond, a dot once the row is compact), off
+  the shared `pipSprite` bake. Nothing there computes a width from a time
+  range, and no other glyph is substituted at any zoom.

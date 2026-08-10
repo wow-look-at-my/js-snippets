@@ -422,9 +422,16 @@ function spanPath(n, pts, hatched) {
 	}
 }
 
+// Hatch periods per baked middle tile. Every tile boundary damages about a
+// pixel of the diagonal — the blit resamples the slice's edge — so at one
+// period (5px) a fifth of the content sits on a seam and the hatch reads as
+// dashes instead of lines. Widening the tile spends memory to push that
+// fraction down; it does not remove it.
+const HATCH_TILE_PERIODS = 4;
+
 /** Bake [leftCap | middle | rightCap] once, at device resolution. */
 function bakeStrip(hatched) {
-	const midW = hatched ? HATCH_PERIOD : 1;
+	const midW = hatched ? HATCH_PERIOD * HATCH_TILE_PERIODS : 1;
 	const w = CAP * 2 + midW;
 	const s = document.createElement('canvas');
 	s.width = Math.ceil(w * DPR); s.height = Math.ceil(BAR_H * DPR);
@@ -453,15 +460,23 @@ function bakeStrip(hatched) {
 const stripSolid = bakeStrip(false);
 const stripHatch = bakeStrip(true);
 
-function span9Patch(n, pts, hatched) {
+// `snap` is the whole comparison, not a detail. Snapping every bar to whole
+// device pixels keeps the blits crisp and unresampled, and it is what a
+// naive 9-patch row measures — but a chart that pans by fractional pixels
+// cannot snap per bar without every bar jittering against its neighbours,
+// so the useful number is the sub-pixel one. The path row has always drawn
+// at the raw fractional position; comparing it against a snapped 9-patch is
+// comparing two different jobs.
+function span9Patch(n, pts, hatched, snap) {
 	const strip = hatched ? stripHatch : stripSolid;
 	const { img, capPx, midPx } = strip;
 	const sCap = capPx * DPR, sMid = midPx * DPR, sH = BAR_H * DPR;
+	const q = snap ? Math.round : (v) => v;
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
 	ctx.clearRect(0, 0, W, H);
 	for (let i = 0; i < n; i++) {
-		const x = Math.round(pts[i * 2] * DPR), y = Math.round(pts[i * 2 + 1] * DPR);
-		const w = Math.round(barWidth(i) * DPR);
+		const x = q(pts[i * 2] * DPR), y = q(pts[i * 2 + 1] * DPR);
+		const w = q(barWidth(i) * DPR);
 		const midW = w - sCap * 2;
 		ctx.drawImage(img, 0, 0, sCap, sH, x, y, sCap, sH);
 		if (midW > 0) {
@@ -494,9 +509,11 @@ const METHODS = [
 	['canvas2d sprite blit', c2Blit, false, 0],
 	...Object.entries(glMethods).map(([name, fn]) => [name, fn, true, GL_BYTES[name] ?? 0]),
 	['span path, solid', (n, p) => spanPath(n, p, false), false, 0],
-	['span 9-patch, solid', (n, p) => span9Patch(n, p, false), false, 0],
+	['span 9-patch solid, snapped', (n, p) => span9Patch(n, p, false, true), false, 0],
+	['span 9-patch solid, subpx', (n, p) => span9Patch(n, p, false, false), false, 0],
 	['span path, hatched', (n, p) => spanPath(n, p, true), false, 0],
-	['span 9-patch, hatched', (n, p) => span9Patch(n, p, true), false, 0],
+	['span 9-patch hatch, snapped', (n, p) => span9Patch(n, p, true, true), false, 0],
+	['span 9-patch hatch, subpx', (n, p) => span9Patch(n, p, true, false), false, 0],
 ];
 
 
