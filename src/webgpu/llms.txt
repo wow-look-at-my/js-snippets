@@ -1,199 +1,122 @@
 ### webgpu/hdr-loader.js
 Parses Radiance RGBE (.hdr) files. Supports new-style RLE scanlines.
 
-Exports: loadHDR(url: string) → Promise<{ width, height, data: Float32Array }>
-  Returns 4 floats per pixel (RGBA), suitable for rgba32float textures.
+Exports: loadHDR(url: string) → Promise<{ width, height, data: Float32Array }> Returns 4 floats per pixel (RGBA), suitable for rgba32float textures.
 
 ### webgpu/mip-generator.js
-AMD Single Pass Downsampler for WebGPU. Generates a full mip chain in two
-compute dispatches (box-filter average). WGSL shader is embedded at build time.
+AMD Single Pass Downsampler for WebGPU. Generates a full mip chain in two compute dispatches (box-filter average). WGSL shader is embedded at build time.
 
-Exports: generateMips(device: GPUDevice, texture: GPUTexture, mipCount?: number) → void
-  Texture must be rgba32float with COPY_DST usage. Mip 0 must be populated.
-  mipCount defaults to texture.mipLevelCount.
+Exports: generateMips(device: GPUDevice, texture: GPUTexture, mipCount?: number) → void Texture must be rgba32float with COPY_DST usage. Mip 0 must be populated. mipCount defaults to texture.mipLevelCount.
 
 ### webgpu/env-prefilter.js
-IBL environment map prefiltering with GGX importance sampling and Hammersley
-sequence. Generates roughness-based mip chain where each level is convolved
-with a GGX specular lobe. Use with split-sum approximation for PBR.
+IBL environment map prefiltering with GGX importance sampling and Hammersley sequence. Generates roughness-based mip chain where each level is convolved with a GGX specular lobe. Use with split-sum approximation for PBR.
 
-Exports: prefilterEnvMap(device: GPUDevice, texture: GPUTexture, numSamples?: number) → void
-  Mip 0 = sharp (roughness 0), mip N = fully diffuse (roughness 1).
-  numSamples defaults to 1024. Higher = better quality, slower.
+Exports: prefilterEnvMap(device: GPUDevice, texture: GPUTexture, numSamples?: number) → void Mip 0 = sharp (roughness 0), mip N = fully diffuse (roughness 1). numSamples defaults to 1024. Higher = better quality, slower.
+
   Sample with: textureSampleLevel(tex, sampler, uv, roughness * maxMip)
 
 ### webgpu/geometry.js
-Procedural mesh generators. Each returns { positions: Float32Array,
-normals: Float32Array, indices: Uint16Array }. Winding convention: all
-generators emit triangles counter-clockwise viewed from outside the surface —
-front-facing under WebGPU's default frontFace: 'ccw'.
+Procedural mesh generators. Each returns { positions: Float32Array, normals: Float32Array, indices: Uint16Array }. Winding convention: all generators emit triangles counter-clockwise viewed from outside the surface — front-facing under WebGPU's default frontFace: 'ccw'.
 
-Exports: createCube(size?), createSphere(radius?, segments?),
-  createCylinder(radiusTop?, radiusBottom?, height?, segments?),
-  createPlane(width?, depth?),
-  createBox(width?, height?, depth?),
-  createTorus(radius?, tube?, radialSegments?, tubularSegments?),
-  flipWinding(mesh: Mesh) → Mesh
-  - createBox: axis-aligned box with independent full extents per axis
-    (createCube is the uniform-size special case).
-  - createTorus: ring in the XZ plane; radius = major, tube = minor radius;
-    radialSegments subdivide the tube, tubularSegments the ring.
-  - flipWinding: returns a NEW mesh with each triangle (a, b, c) → (a, c, b)
-    (input unmutated; positions/normals passed through as the same arrays,
-    only a new index array). For rendering interiors, or pre-flipping geometry
-    drawn under a mirror (determinant < 0) transform so back-face culling
-    keeps working.
+Exports: createCube(size?), createSphere(radius?, segments?), createCylinder(radiusTop?, radiusBottom?, height?, segments?), createPlane(width?, depth?), createBox(width?, height?, depth?), createTorus(radius?, tube?, radialSegments?, tubularSegments?),
+  - flipWinding(mesh: Mesh) → Mesh
+  - createBox: axis-aligned box with independent full extents per axis (createCube is the uniform-size special case).
+  - createTorus: ring in the XZ plane. Radius = major, tube = minor radius. RadialSegments subdivide the tube, tubularSegments the ring.
+  - flipWinding: returns a NEW mesh with each triangle (a, b, c) → (a, c, b) (input unmutated. Positions/normals passed through as the same arrays, only a new index array). For rendering interiors, or pre-flipping geometry drawn under a mirror (determinant < 0) transform so back-face culling keeps working.
 
 ### webgpu/buffer.js
 GPU buffer creation helper.
 
-Exports: createBuffer(device: GPUDevice, data: ArrayBufferView, usage: GPUBufferUsageFlags) → GPUBuffer
-  Creates a buffer pre-filled with data via mappedAtCreation.
+Exports: createBuffer(device: GPUDevice, data: ArrayBufferView, usage: GPUBufferUsageFlags) → GPUBuffer Creates a buffer pre-filled with data via mappedAtCreation.
 
 ### webgpu/context.js
 WebGPU device + canvas context initialization.
 
-Exports: initWebGPU(canvas: HTMLCanvasElement, features?: GPUFeatureName[],
-    options?: { powerPreference?: GPUPowerPreference, limits?: Record<string, number> })
-  → Promise<{ device, ctx, format, adapter } | null>
-  Returns null if WebGPU is unavailable. Features are only requested if
-  the adapter supports them. options.powerPreference is passed to
-  requestAdapter; options.limits raises device limits by name to
-  min(adapter's supported value, your cap) (Infinity = adapter max; names the
-  adapter doesn't report are skipped). The result includes the GPUAdapter
-  (for adapter.info / limits / features).
+Exports: initWebGPU(canvas: HTMLCanvasElement, features?: GPUFeatureName[], options?: { powerPreference?: GPUPowerPreference, limits?: Record<string, number> }) → Promise<{ device, ctx, format, adapter } | null> Returns null if WebGPU is unavailable. Features are only requested if the adapter supports them. options.powerPreference is passed to requestAdapter. Options.limits raises device limits by name to min(adapter's supported value, your cap) (Infinity = adapter max. Names the adapter does not report are skipped). The result includes the GPUAdapter (for adapter.info / limits / features).
 
 ### webgpu/sky.js
-Equirectangular HDRI sky renderer. Fullscreen triangle, no vertex buffer.
-Includes Reinhard tonemapping.
+Equirectangular HDRI sky renderer. Fullscreen triangle, no vertex buffer. Includes Reinhard tonemapping.
 
 Exports:
-  createSky(device, format, hdriView, hdriSampler, depthFormat?) → Sky
-  drawSky(pass, sky) → void
-  Write invViewProj to sky.uniformBuffer before calling drawSky.
+  - createSky(device, format, hdriView, hdriSampler, depthFormat?) → Sky
+  - drawSky(pass, sky) → void Write invViewProj to sky.uniformBuffer before calling drawSky.
 
 ### webgpu/shaders.js
-Shader-source loading (backend-agnostic; works for WGSL or GLSL text). Typical
-call site: const base = new URL('./shaders/', import.meta.url); then
-loadShaders(base, ['a.wgsl', 'b.wgsl']).
+Shader-source loading (backend-agnostic. Works for WGSL or GLSL text). Typical call site: const base = new URL('./shaders/', import.meta.url). Then loadShaders(base, ['a.wgsl', 'b.wgsl']).
 
 Exports:
-  loadShader(url: string | URL) → Promise<string>
-    Fetches the URL as text; throws (with the URL) on a non-OK response.
-  loadShaders(baseUrl: string | URL, names: string[]) → Promise<string[]>
-    Resolves each name against baseUrl (pass a directory URL ending in '/');
-    returns the sources in the same order as names.
+  - loadShader(url: string | URL) → Promise<string> Fetches the URL as text. Throws (with the URL) on a non-OK response.
+  - loadShaders(baseUrl: string | URL, names: string[]) → Promise<string[]> Resolves each name against baseUrl (pass a directory URL ending in '/'). Returns the sources in the same order as names.
 
 ### webgpu/canvas.js
 Canvas backing-store sizing for HiDPI rendering (backend-agnostic).
 
-Type: ResizeCanvasOptions = { maxDpr?: number; roundTo?: number }
+Type:
+
+```ts
+ResizeCanvasOptions = { maxDpr?: number; roundTo?: number };
+```
+
 Exports:
-  resizeCanvasToDisplay(canvas, options?) → boolean
-    Sets canvas.width/height from clientWidth/Height * min(maxDpr, devicePixelRatio)
-    (maxDpr default 2, roundTo default 1). Returns true if the size changed, so
-    callers reconfigure the swap chain / depth buffer only when needed.
+  - resizeCanvasToDisplay(canvas, options?) → boolean Sets canvas.width/height from clientWidth/Height * min(maxDpr, devicePixelRatio) (maxDpr default 2, roundTo default 1). Returns true if the size changed, so callers reconfigure the swap chain / depth buffer only when needed.
 
 ### webgpu/camera.js
-Orbit + first-person look cameras: spherical eye + drag-to-rotate + wheel-zoom,
-and drag-to-look yaw/pitch. The math helpers are pure (no DOM);
-createOrbitController / createLookController wire pointer (+ wheel) events onto
-an element. Imports Vec3/Mat4 helpers from ../math.
+Orbit + first-person look cameras: spherical eye + drag-to-rotate + wheel-zoom, and drag-to-look yaw/pitch. The math helpers are pure (no DOM). CreateOrbitController / createLookController wire pointer (+ wheel) events onto an element. Imports Vec3/Mat4 helpers from ../math.
 
-Types: OrbitControllerOptions = { azimuth?, elevation?, distance?, target?,
-  rotateSpeed?, minDistance?, maxDistance?, minElevation?, maxElevation?, zoomSpeed? };
-  OrbitController = { azimuth, elevation, distance, target, eye(): Vec3,
-  viewMatrix(up?: Vec3): Mat4, dispose(): void };
-  LookState = { azDeg, elDeg } (degrees; azDeg wrapped to (-180, 180], 0 = +Z);
-  LookDragOptions = { sensDegPerPx? = 0.25, invertY?, minElDeg? = -89, maxElDeg? = 89 };
-  LookControllerOptions = LookDragOptions + { azDeg?, elDeg?, onChange?(state) };
-  LookController = { azDeg, elDeg, dir(): Vec3, viewMatrix(eye, up?): Mat4,
-  dispose(): void }.
+Types:
+
+```ts
+OrbitControllerOptions = { azimuth?, elevation?, distance?, target?, rotateSpeed?, minDistance?, maxDistance?, minElevation?, maxElevation?, zoomSpeed? };
+OrbitController = { azimuth, elevation, distance, target, eye(): Vec3, viewMatrix(up?: Vec3): Mat4, dispose(): void };
+LookState = { azDeg, elDeg };
+LookDragOptions = { sensDegPerPx? = 0.25, invertY?, minElDeg? = -89, maxElDeg? = 89 };
+LookControllerOptions = LookDragOptions + { azDeg?, elDeg?, onChange?(state) };
+LookController = { azDeg, elDeg, dir(): Vec3, viewMatrix(eye, up?): Mat4, dispose(): void };
+```
+
+LookState is in degrees. AzDeg wraps to (-180, 180], and 0 = +Z.
+
 Exports:
-  orbitEye(target, azimuth, elevation, distance) → Vec3
-    target + distance * [cosEl*sinAz, sinEl, cosEl*cosAz].
-  dirFromAzEl(azimuth, elevation) → Vec3
-    unit direction [cosEl*sinAz, sinEl, cosEl*cosAz] (e.g. a sun/light vector).
-  createOrbitController(canvas, options?) → OrbitController
-    Drag updates azimuth/elevation (clamped); the wheel scales distance
-    exponentially (clamped), normalising deltaMode line/page units to pixels.
-  applyLookDrag(state, dxPx, dyPx, opts?) → LookState
-    Pure look-drag step, owning THE sign convention: pointer right = look right
-    (azDeg -= dx*sens), pointer up = look up (invertY flips); elevation clamped,
-    azimuth wrapped; returns a new state. dirFromAzEl(azDeg*PI/180, elDeg*PI/180)
-    is the matching view direction.
-  createLookController(element, options?) → LookController
-    Pointer-drag first-person look at a fixed eye, feeding applyLookDrag (same
-    convention); live azDeg/elDeg, dir()/viewMatrix(eye, up?) per frame,
-    onChange(state) per drag update.
+  - orbitEye(target, azimuth, elevation, distance) → Vec3 target + distance * [cosEl*sinAz, sinEl, cosEl*cosAz].
+  - dirFromAzEl(azimuth, elevation) → Vec3 unit direction [cosEl*sinAz, sinEl, cosEl*cosAz] (e.g. a sun/light vector).
+  - createOrbitController(canvas, options?) → OrbitController Drag updates azimuth/elevation (clamped). The wheel scales distance exponentially (clamped), normalising deltaMode line/page units to pixels.
+  - applyLookDrag(state, dxPx, dyPx, opts?) → LookState Pure look-drag step, owning THE sign convention: pointer right = look right (azDeg -= dx*sens), pointer up = look up (invertY flips). Elevation clamped, azimuth wrapped. Returns a new state. dirFromAzEl(azDeg*PI/180, elDeg*PI/180) is the matching view direction.
+  - createLookController(element, options?) → LookController Pointer-drag first-person look at a fixed eye, feeding applyLookDrag (same convention). Live azDeg/elDeg, dir()/viewMatrix(eye, up?) per frame, onChange(state) per drag update.
 
 ### webgpu/scan.js
-GPU exclusive prefix scan (Blelloch, 512 elements/block, recursive levels —
-3 levels cover 134M elements) over a u32 region of a storage buffer. The
-input, output, and scratch regions live in ONE buffer at arbitrary ELEMENT
-offsets (bases travel in a uniform, so no 256-byte bind-offset alignment and
-no second writable binding — fused buffer layouts just work). planScan is
-pure (unit-tested); createScan/prepare/encode are GPU-bound. Workgroups are
-256 threads (WebGPU default limits suffice); dispatches auto-split into 2D
-grids when a level exceeds maxComputeWorkgroupsPerDimension. The pure level
-math lives in webgpu/scan-plan.js (no shader import — loads under node) and
-is re-exported by scan.js, so consumers import scan.js alone.
+GPU exclusive prefix scan (Blelloch, 512 elements/block, recursive levels — 3 levels cover 134M elements) over a u32 region of a storage buffer. The input, output, and scratch regions live in ONE buffer at arbitrary ELEMENT offsets (bases travel in a uniform, so no 256-byte bind-offset alignment and no second writable binding — fused buffer layouts just work). planScan is pure (unit-tested). CreateScan/prepare/encode are GPU-bound. Workgroups are 256 threads (WebGPU default limits suffice). Dispatches auto-split into 2D grids when a level exceeds maxComputeWorkgroupsPerDimension. The pure level math lives in webgpu/scan-plan.js (no shader import — loads under node) and is re-exported by scan.js, so consumers import scan.js alone.
 
-Types: ScanDispatch = { x, y };
-  ScanLevelPlan = { count, blocks, sumsBase, scanDispatch, addbackDispatch };
-  ScanPlan = { count, levels: ScanLevelPlan[], scratchElems, grandTotalElem };
-  ScanRegion = { buffer: GPUBuffer, count, srcElem, dstElem, scratchElem };
-  PreparedScan = { plan, grandTotalElem, encode(pass), destroy() };
-  GpuScan = { prepare(region): PreparedScan }.
+Types:
+
+```ts
+ScanDispatch = { x, y };
+ScanLevelPlan = { count, blocks, sumsBase, scanDispatch, addbackDispatch };
+ScanPlan = { count, levels: ScanLevelPlan[], scratchElems, grandTotalElem };
+ScanRegion = { buffer: GPUBuffer, count, srcElem, dstElem, scratchElem };
+PreparedScan = { plan, grandTotalElem, encode(pass), destroy() };
+GpuScan = { prepare(region): PreparedScan };
+```
+
 Exports:
-  SCAN_BLOCK_SIZE = 512, SCAN_ADDBACK_SIZE = 256
-  planScan(count, maxWorkgroupsPerDim? = 65535) → ScanPlan
-    PURE level math: level 0 scans src→dst, each next level scans the previous
-    level's block sums in place inside scratch until one block remains; the
-    LAST level's sums[0] is the grand total (sum of all inputs, written even
-    for count 0). scratchElems = u32 elements the caller must reserve;
-    grandTotalElem is scratch-relative.
-  createScan(device) → GpuScan
-    Compiles the two pipelines once per device.
-  GpuScan.prepare({ buffer, count, srcElem, dstElem, scratchElem }) → PreparedScan
-    Bakes one region layout into per-level uniforms + bind groups (create
-    once; re-prepare only when buffer/count/bases change; destroy() the old
-    one). dstElem may equal srcElem (in-place). buffer needs STORAGE usage
-    and is bound whole (must fit maxStorageBufferBindingSize).
-  PreparedScan.encode(pass: GPUComputePassEncoder) → void
-    Records the dispatches into a CALLER-owned compute pass (wrap it in your
-    own timestamp window, keep issuing dependent dispatches in the same
-    pass); zero per-frame allocation. Afterwards dst[i] = sum of src[0..i)
-    and the grand total sits at the ABSOLUTE element PreparedScan.grandTotalElem
-    (copyBufferToBuffer it out if needed). Resets pipeline/bind group 0 —
-    restore yours after.
+
+  - SCAN_BLOCK_SIZE = 512, SCAN_ADDBACK_SIZE = 256
+  - planScan(count, maxWorkgroupsPerDim? = 65535) → ScanPlan PURE level math. Level 0 scans src→dst. Each next level scans the previous level's block sums in place inside scratch until one block remains. The LAST level's sums[0] is the grand total (sum of all inputs, written even for count 0). scratchElems = u32 elements the caller must reserve. GrandTotalElem is scratch-relative.
+  - createScan(device) → GpuScan Compiles the two pipelines once per device.
+  - GpuScan.prepare({ buffer, count, srcElem, dstElem, scratchElem }) → PreparedScan Bakes one region layout into per-level uniforms + bind groups (create once. Re-prepare only when buffer/count/bases change. Destroy() the old one). dstElem may equal srcElem (in-place). buffer needs STORAGE usage and is bound whole (must fit maxStorageBufferBindingSize).
+  - PreparedScan.encode(pass: GPUComputePassEncoder) → void Records the dispatches into a CALLER-owned compute pass (wrap it in your own timestamp window, keep issuing dependent dispatches in the same pass). Zero per-frame allocation. Afterwards dst[i] = sum of src[0..i) and the grand total sits at the ABSOLUTE element PreparedScan.grandTotalElem (copyBufferToBuffer it out if needed). Resets pipeline/bind group 0 — restore yours after.
 
 ### webgpu/fly-camera.js
-First-person fly ("noclip") camera building on webgpu/camera.js: applyLookDrag
-supplies the look half (pointer-up = look-up), this adds WASD-style key
-flight, wheel dolly, and two-finger pinch dolly. flyMoveDelta/dollyDelta are
-pure (unit-tested); createFlyController is DOM-bound. Backend-agnostic
-(WebGL or WebGPU — it only produces positions/matrices).
+First-person fly ("noclip") camera building on webgpu/camera.js. applyLookDrag supplies the look half (pointer-up = look-up). This adds WASD-style key flight, wheel dolly, and two-finger pinch dolly. flyMoveDelta/dollyDelta are pure (unit-tested). CreateFlyController is DOM-bound. Backend-agnostic (WebGL or WebGPU — it only produces positions/matrices).
 
-Types: FlyMoveState = { forward, back, left, right, up, down: boolean };
-  FlyControllerOptions = LookDragOptions + { position?, azDeg?, elDeg?,
-  moveSpeed? = 5 (units/s), wheelSpeed? = 0.01 (units per normalized wheel px),
-  pinchSpeed? = 0.08 (units per pinch px), up? = [0,1,0],
-  keyMap? (KeyboardEvent.code → FlyMoveState key; default WASD + Space/E up, Q down),
-  dragButtons? = [0, 2] };
-  FlyController = { position, azDeg, elDeg, dir(): Vec3, update(dt): void,
-  viewMatrix(): Mat4, dispose(): void }.
+Types:
+
+```ts
+FlyMoveState = { forward, back, left, right, up, down: boolean };
+FlyControllerOptions = LookDragOptions + { position?, azDeg?, elDeg?, moveSpeed? = 5 (units/s), wheelSpeed? = 0.01 (units per normalized wheel px), pinchSpeed? = 0.08 (units per pinch px), up? = [0,1,0], keyMap? (KeyboardEvent.code → FlyMoveState key; default WASD + Space/E up, Q down), dragButtons? = [0, 2] };
+FlyController = { position, azDeg, elDeg, dir(): Vec3, update(dt): void, viewMatrix(): Mat4, dispose(): void };
+```
+
 Exports:
-  flyMoveDelta(look, move, distance, up? = [0,1,0]) → Vec3
-    Pure displacement for one movement step: forward/back along the full 3D
-    view dir, left/right along normalize(cross(dir, up)), up/down along the
-    world up axis; opposite keys cancel, diagonals sum (not renormalized).
-  dollyDelta(look, amount) → Vec3
-    Pure dolly along the view direction (positive = toward the view).
-  createFlyController(element, options?) → FlyController
-    Drag-to-look via applyLookDrag (buttons filtered by dragButtons; suppresses
-    contextmenu when right-drag is enabled), key events on the element's
-    document, wheel dolly (deltaMode-normalized, wheel-up dollies in), pinch
-    dolly; call update(dt) once per frame to apply held keys. Held keys are
-    cleared on window blur so an alt-tab mid-flight can't leave the camera
-    drifting.
+  - flyMoveDelta(look, move, distance, up? = [0,1,0]) → Vec3 Pure displacement for one movement step. Forward/back runs along the full 3D view dir, left/right along normalize(cross(dir, up)), up/down along the world up axis. Opposite keys cancel, diagonals sum (not renormalized).
+  - dollyDelta(look, amount) → Vec3 Pure dolly along the view direction (positive = toward the view).
+  - createFlyController(element, options?) → FlyController Drag-to-look via applyLookDrag (buttons filtered by dragButtons. Suppresses contextmenu when right-drag is enabled), key events on the element's document, wheel dolly (deltaMode-normalized, wheel-up dollies in), pinch dolly. Call update(dt) once per frame to apply held keys. Held keys are cleared on window blur so an alt-tab mid-flight cannot leave the camera drifting.

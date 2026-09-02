@@ -16,9 +16,11 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-// The same set the CI job checks: the docs tree, every category's llms.txt,
-// and the preamble they are assembled with.
-const DEFAULT_FILES = 'docs/**/*.md src/**/llms.txt llms-header.txt';
+// The same set deploy.yml's `ste-lint` job checks. src/ui/llms.txt is NOT in
+// it yet and is the one file left to convert -- pass it explicitly to see
+// what it still reports.
+const DEFAULT_FILES =
+	'docs/**/*.md llms-header.txt src/math/llms.txt src/webgl2/llms.txt src/auto-refresh/llms.txt src/editor/llms.txt src/apng/llms.txt src/webgpu/llms.txt';
 
 const files = process.argv.slice(2).join(' ') || DEFAULT_FILES;
 const dir = resolve(process.env.STE_LINT_DIR ?? '.ste-lint');
