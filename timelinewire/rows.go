@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wow-look-at-my/go-containers/set"
 )
 
 // Rows: encode and decode a slice of TAGGED STRUCTS, so a producer declares
@@ -303,7 +305,7 @@ func buildPlan(t reflect.Type) (*plan, error) {
 		return nil, fmt.Errorf("timelinewire: row type must be a struct, got %s", t.Kind())
 	}
 	p := &plan{}
-	seen := map[string]bool{}
+	seen := set.New[string](t.NumField())
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 		tag, ok := f.Tag.Lookup("wire")
@@ -317,12 +319,13 @@ func buildPlan(t reflect.Type) (*plan, error) {
 		if !found || name == "" || kind == "" {
 			return nil, fmt.Errorf(`timelinewire: %s.%s has tag %q, want "name,kind"`, t.Name(), f.Name, tag)
 		}
-		if seen[name] {
+		// Add reports whether the name was new, so the duplicate check and the
+		// insert are one hash rather than two.
+		if !seen.Add(name) {
 			// Two fields under one name would encode twice and decode into
 			// whichever won, silently dropping the other.
 			return nil, fmt.Errorf("timelinewire: %s declares column %q twice", t.Name(), name)
 		}
-		seen[name] = true
 
 		c := column{name: name, index: f.Index}
 		switch kind {
