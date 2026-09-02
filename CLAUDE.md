@@ -156,6 +156,7 @@ docs/timeline/zoom-out-never-merges.md ← THE rule for dense instants: N discre
 docs/timeline/span-9patch.md ← why spans stay path-drawn while pips are sprited: the 9-patch only wins when every bar is snapped to whole device pixels, which the single global rounding step forbids
 docs/timeline-view.png     ← the README's <timeline-view> picture. Captured from the built showcase by scripts/screenshot-showcase.mjs (playwright + the preinstalled chromium), so it is the REAL component and cannot drift; regenerate after a visual change: pnpm build:showcase && node scripts/screenshot-showcase.mjs
 scripts/screenshot-showcase.mjs ← that capture (fails on any page error rather than writing a half-upgraded chart)
+scripts/check-timeline-bounds.mjs ← browser check for `minTime`/`maxTime` on the REAL element (drives pointer/wheel input against the built showcase; the math under it is node-tested, these are the element-level properties nothing under `node --test` can reach). Run: `pnpm build:showcase && NODE_PATH=/opt/node22/lib/node_modules node scripts/check-timeline-bounds.mjs`
 bench/bench-gl.html        ← how many instant pips one frame can draw and still hold 30fps, per draw method: canvas2d path (batched / one each), canvas2d sprite blit, GL instanced quads, GL vert+index 4v/6i, GL path 12v/30i (the diamond as triangles, no texture), and spans path vs 9-patch. Run: `NODE_PATH=/opt/node22/lib/node_modules node scripts/run-bench.mjs bench/bench-gl.html`. It prints the GL renderer — a GPU-less runner falls back to SwiftShader and every GL row is then a software rasterizer's, so never quote one without it. On an M1 the ordering is GL quads >800k > sprite blit 30k > canvas2d path 4.6k markers/frame; the software numbers invert that, which is why no drawing decision may be made from a SwiftShader run. That M1 run predates the per-method size caps and the per-round ramp deadline, so its GL rows are FLOORS (they pressed against a shared 1M cap, and one resolved at 120fps without ever converging) — re-run before quoting a GL ceiling. For the span rows only the sub-pixel 9-patch variants mean anything; see docs/timeline/span-9patch.md
 llms-header.txt            ← preamble for combined llms.txt
 ts0.json                   ← ts0 config (js library target, .wgsl/.glsl text loaders)
@@ -248,7 +249,12 @@ Sections, in page order:
   instant-pip bursts, a viewport-crossing long span, packing bursts,
   markers, connectors, lazy backward history with an end-of-history
   boundary), plus a second compact instance demoing `--timeline-*`
-  retheming and auto-fit. Data is generated deterministically as a pure
+  retheming and auto-fit, plus the two STATIC-BOUNDS instances: `#floor`
+  (`minTime` only — on the same live feed, so a hard left stop and a
+  clock-following right edge are visibly independent) and `#static`
+  (both bounds, its own one-shot closed window — no now line, no pill,
+  no follow, and bars still running at the end stop exactly at it).
+  Data is generated deterministically as a pure
   function of absolute time (`fake-data.ts`), so live ticks, lazy history
   and resyncs always agree and the demo never runs dry.
 - **`<data-table>`** (`data-table-demo.ts`) — three instances: full

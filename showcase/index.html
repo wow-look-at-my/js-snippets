@@ -36,6 +36,12 @@
 				<timeline-view id="main" history-end-text="demo history ends here"></timeline-view>
 				<h3>same feed, compact + retheme <span class="sub">(auto-fit demotes lanes; <code>--timeline-*</code> custom properties)</span></h3>
 				<timeline-view id="mini" class="light" no-live-pill history-end-text="demo history ends here"></timeline-view>
+
+				<h3>back-limited, still live <span class="sub">(<code>minTime</code> alone &mdash; pan left and it stops dead at the floor; nothing is ever requested before it, yet the right edge still follows the clock)</span></h3>
+				<timeline-view id="floor"></timeline-view>
+
+				<h3>static content <span class="sub">(<code>minTime</code> + <code>maxTime</code> &mdash; a finished window: no now line, no jump-to-live pill, no follow, and the bars that were still running at the end stop exactly at it)</span></h3>
+				<timeline-view id="static"></timeline-view>
 			</section>
 
 			<section id="data-table">

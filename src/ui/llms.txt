@@ -1028,6 +1028,27 @@ Viewport / follow:
   jumpToNow()       — re-engage follow, keeping the span: a fast ~250ms
                       glide from wherever the view is to the followed
                       position, never a teleport (reduced motion snaps).
+                      Under maxTime it parks the view at that stop
+                      instead — the same "take me to the end" gesture.
+  minTime           — number|Date|null (default null): the earliest time
+                      the view may scroll back to. Every gesture, jump
+                      and default-span re-derivation stops there, the
+                      minimap extent starts there, the zoom-out ceiling
+                      becomes the bounded range (with maxTime), and
+                      loadRange is never probed for a range before it —
+                      set it to the first timestamp you can serve.
+  maxTime           — number|Date|null (default null): the latest time
+                      the view may reach. INDEPENDENT of minTime: either
+                      side can be set alone. Setting it stops the forward
+                      scroll — this instant REPLACES the clock as the
+                      live edge, so the right stop, ongoing (end = null)
+                      bar ends and hit tests read it, and follow mode,
+                      the now line, the jump-to-now pill and feed
+                      staleness all switch off. That is what makes a
+                      chart of finished content static: nothing moves
+                      without a gesture, and the render loop idles.
+                      Setting it while following glides the follow lead
+                      out rather than teleporting the view.
   fullscreen        — boolean property, reflected as the `fullscreen`
                       attribute: viewport-fill mode. The host goes
                       position:fixed inset:0 over the whole viewport
@@ -1362,6 +1383,15 @@ Exports:
     the decisive-flip thresholds, both required, on normalized pixels),
     clampViewToNow(view, now) → TimeView (the hard right
     end stop: a user view's end never passes now, span preserved),
+    TimeBounds {min: number|null, max: number|null} (static scroll
+    bounds; each side independent, null = unbounded),
+    clampViewToBounds(view, bounds) → TimeView (clamp into the bounds,
+    span preserved: past max shifts back, before min shifts forward; a
+    span wider than the range collapses onto [min, max] exactly;
+    null/non-finite sides are ignored),
+    boundedMaxSpan(bounds, maxSpan?, minSpan?) → number (the zoom-out
+    ceiling: the range when both sides are set, else maxSpan; never
+    below minSpan),
     followAfterGesture(wasFollowing, prevEnd, next, now, isPan,
     msPerDevicePx) → boolean (the follow rule: a backward pan always
     disengages; while already following anything else stays pinned —

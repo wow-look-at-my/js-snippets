@@ -76,6 +76,8 @@ import {
   feedIsStale,
   liveEdgeTarget,
   clampViewToNow,
+  clampViewToBounds,
+  boundedMaxSpan,
   snapViewToDevicePixels,
   snapTextOrigin,
   nowLineX,
@@ -1752,6 +1754,71 @@ test('clampViewToNow: the hard end stop — end never passes now, span preserved
   assert.deepEqual(clampViewToNow(before, now), before);
   const at: TimeView = { start: now - span, end: now };
   assert.deepEqual(clampViewToNow(at, now), at);
+});
+
+test('clampViewToBounds: each side clamps independently, span preserved', () => {
+  const min = 1_000_000_000;
+  const max = min + 3_600_000;
+  const span = 600_000;
+  // Unbounded on both sides: identity, whatever the view.
+  const v: TimeView = { start: min - 5 * span, end: min - 4 * span };
+  assert.deepEqual(clampViewToBounds(v, { min: null, max: null }), v);
+  // min alone: a view before it shifts forward; the right side is free to
+  // sit anywhere later (this is the live-chart case).
+  const back = clampViewToBounds({ start: min - span, end: min }, { min, max: null });
+  assert.deepEqual(back, { start: min, end: min + span });
+  assert.deepEqual(clampViewToBounds({ start: max, end: max + span }, { min, max: null }), { start: max, end: max + span });
+  // max alone: a view past it shifts back over an unlimited past.
+  const fwd = clampViewToBounds({ start: max, end: max + span }, { min: null, max });
+  assert.deepEqual(fwd, { start: max - span, end: max });
+  assert.deepEqual(clampViewToBounds({ start: min - 99 * span, end: min - 98 * span }, { min: null, max }), {
+    start: min - 99 * span,
+    end: min - 98 * span,
+  });
+  // Both: inside is untouched, either overshoot parks at its own stop.
+  const inside: TimeView = { start: min + span, end: min + 2 * span };
+  assert.deepEqual(clampViewToBounds(inside, { min, max }), inside);
+  assert.deepEqual(clampViewToBounds({ start: max, end: max + span }, { min, max }), { start: max - span, end: max });
+  assert.deepEqual(clampViewToBounds({ start: min - span, end: min }, { min, max }), { start: min, end: min + span });
+  // A span wider than the range cannot keep both stops: it collapses onto
+  // the range exactly, from either direction.
+  for (const wide of [max - min + 1, 10 * (max - min)]) {
+    assert.deepEqual(clampViewToBounds({ start: min - wide, end: min }, { min, max }), { start: min, end: max });
+    assert.deepEqual(clampViewToBounds({ start: max, end: max + wide }, { min, max }), { start: min, end: max });
+  }
+  // Non-finite sides read as unbounded, never as NaN arithmetic.
+  assert.deepEqual(clampViewToBounds(v, { min: NaN, max: Infinity }), v);
+});
+
+test('boundedMaxSpan: the range when both sides are set, never under the zoom floor', () => {
+  const min = 1_000_000_000;
+  assert.equal(boundedMaxSpan({ min: null, max: null }), MAX_SPAN_MS);
+  assert.equal(boundedMaxSpan({ min, max: null }), MAX_SPAN_MS);
+  assert.equal(boundedMaxSpan({ min: null, max: min + 1000 }), MAX_SPAN_MS);
+  assert.equal(boundedMaxSpan({ min, max: min + 600_000 }), 600_000);
+  // A range wider than the hard ceiling still stops at the ceiling; one
+  // narrower than the floor still zooms to the floor.
+  assert.equal(boundedMaxSpan({ min, max: min + 30 * MAX_SPAN_MS }), MAX_SPAN_MS);
+  assert.equal(boundedMaxSpan({ min, max: min + 1 }), MIN_SPAN_MS);
+});
+
+test('clampViewToBounds: a min stop and the live-now stop compose without fighting', () => {
+  // The element clamps every gesture through both at once — min from the
+  // configured bound, max from the follow ceiling. A view dragged far past
+  // either stop must land inside the range, not oscillate between them.
+  const min = 1_000_000_000;
+  const now = min + 7_200_000;
+  const span = 900_000;
+  for (const raw of [
+    { start: min - 10 * span, end: min - 9 * span },
+    { start: now, end: now + span },
+    { start: min + span, end: min + 2 * span },
+  ]) {
+    const c = clampViewToBounds(raw, { min, max: now });
+    assert.ok(c.start >= min, 'never before the min stop');
+    assert.ok(c.end <= now, 'never past the now stop');
+    assert.equal(c.end - c.start, span, 'span preserved — the range is wider than it');
+  }
 });
 
 test('clampViewToNow + followAfterGesture: any forward overshoot parks at the stop and reliably re-docks', () => {
