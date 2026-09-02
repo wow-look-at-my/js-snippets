@@ -70,7 +70,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      # NOT YET COVERED, and that count is real failures rather than an exemption: src/ui/llms.txt, 1805 across 1591 lines. Add it here once converted; `node scripts/run-ste-lint.mjs 'src/ui/llms.txt'` reports what is left.
+      # NOT YET COVERED, and that count is real failures rather than an exemption: src/ui/llms.txt, 1805 across 1591 lines. Add it to `files` once converted; add it here temporarily to see what is left.
       - uses: wow-look-at-my/actions@ste-lint#latest
         with:
           files: docs/**/*.md llms-header.txt src/math/llms.txt src/webgl2/llms.txt src/auto-refresh/llms.txt src/editor/llms.txt src/apng/llms.txt src/webgpu/llms.txt
