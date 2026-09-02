@@ -1,6 +1,9 @@
 name: CI / Deploy
 
-on: push
+# Every branch, no tags: the go job pushes a timelinewire/vX.Y.Z tag, which would otherwise start this workflow again.
+on:
+  push:
+    branches: ['**']
 
 permissions:
   contents: read
