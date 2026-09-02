@@ -5,18 +5,11 @@ on: push
 permissions:
   contents: read
   id-token: write # buildhost OIDC auth
-  # The buildhost-publish-site action (consumed @master) now front-runs the
-  # org's no-all-builds shadow guard, which scans this run's jobs and the
-  # head commit's check runs — it FAILS CLOSED without these two reads.
+  # The publish guard scans this run's jobs and the head SHA's check runs, and fails CLOSED without both reads.
   actions: read
   checks: read
-  # buildhost#193 made recording an upload on the org's linked artifacts page
-  # part of publishing rather than a separate best-effort step, so a publish
-  # now FAILS without this rather than skipping the recording.
-  artifact-metadata: write
-  # Same story, one step further along the same publish chain: registering
-  # the publish as a GitHub Deployment is also part of publishing now.
-  deployments: write
+  artifact-metadata: write # recording the upload is part of publishing; without it a publish FAILS
+  deployments: write # same chain: registering the GitHub Deployment is part of publishing too
 
 env:
   COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
@@ -31,48 +24,22 @@ jobs:
         with:
           node-version: 22
 
-      # pnpm, pinned via package.json "packageManager" and provisioned by
-      # corepack (ships with Node) — no third-party setup action needed.
+      # pnpm is pinned by package.json "packageManager" and provisioned by corepack, so no third-party action.
       - name: Enable pnpm
         run: corepack enable
 
-      # No lockfile is committed (so ts0 is never pinned to a commit) — `pnpm
-      # install` resolves the ts0 branch dependency to its current HEAD on every
-      # run. ts0's git-dep build script is allowlisted via package.json
-      # "pnpm.onlyBuiltDependencies".
+      # No lockfile is committed, so this resolves the ts0 branch dependency to its current HEAD every run.
       - run: pnpm install
 
       - name: Test
-        # ts0 test type-checks the project (sources + *.test.ts) and runs them
-        # under Node's built-in test runner. A failing test fails CI, and — the
-        # publish step being later in this same job — gates the deploy too.
+        # Type-checks sources AND tests, then runs them; the publish is later in this same job, so a failure gates it.
         run: pnpm test
 
       - name: Build
-        # ts0 build type-checks (tsc --noEmit) and compiles src/ -> dist/;
-        # the build script then assembles dist/llms.txt.
+        # Type-checks, compiles src/ -> dist/, then assembles dist/llms.txt.
         run: pnpm build
 
-      # The library used to deploy to GitHub Pages, but GH Pages deploys
-      # ride Actions artifacts and the org's artifact storage quota is
-      # exhausted — the Pages deploy has failed since 2026-07-19
-      # ("Artifact storage quota has been hit"), freezing the published
-      # library at its 07-15 content. Same migration as webhook-runner#93:
-      # buildhost-publish-site PUTs one tar.gz straight to
-      # sites.pazer.build (GitHub OIDC auth) — no Actions artifacts
-      # anywhere. master publishes the stable 'library' site (the
-      # canonical consumption URL); every other branch publishes
-      # 'library-<flattened-branch>' so a change can be verified from a
-      # real URL before merge. The bare flattened branch name is the
-      # showcase preview's site (below) — the 'library-' prefix keeps the
-      # two from overwriting each other. The repo is private, so the
-      # buildhost project is private; `public: 'true'` (the X-Public-Site
-      # mechanism) opens just these library site branches for anonymous
-      # reads — consumers (the webhook-runner dashboard) import the
-      # component at runtime with no credential, exactly like the old
-      # github.io URL. The legacy GitHub Pages site was unpublished on
-      # 2026-07-20 in the org-wide GitHub Pages shutdown — these buildhost
-      # sites are now the library's only host.
+      # master publishes the canonical 'library' site, every other branch 'library-<flattened>' — the prefix is what keeps these clear of the showcase previews below.
       - name: Library site name
         id: sitename
         uses: wow-look-at-my/actions@typescript#latest
@@ -93,10 +60,7 @@ jobs:
           source_dir: dist
           public: 'true' # the library must stay anonymously importable
 
-  # timelinewire/ is the ENCODER half of src/ui/timeline-wire.ts, in Go — a
-  # nested module so the repo root stays TypeScript. It is a library (no main
-  # package), so autorelease is off: there is no binary to publish, and a
-  # consumer pulls it as a module, not a download.
+  # timelinewire/ is a nested Go LIBRARY module (no main package), so autorelease is off: there is no binary to publish.
   go:
     runs-on: ubuntu-latest
     permissions:
@@ -115,16 +79,7 @@ jobs:
           working-directory: timelinewire
           autorelease: 'false'
 
-      # A Go consumer cannot follow a branch: go.mod always records a concrete
-      # version. Left alone that means every consumer pins a pseudoversion --
-      # a bare commit sha that says nothing, goes stale the moment master
-      # moves, and (when it came from a PR branch that was squash-merged and
-      # deleted) points at a commit no clone can even name.
-      #
-      # So master PUBLISHES. Every push that changes the module cuts the next
-      # patch tag, and a consumer tracks the library with `go get ...@latest`
-      # instead of copying a sha. The tag is `timelinewire/vX.Y.Z` because Go
-      # requires a nested module's tags to carry its subdirectory prefix.
+      # master PUBLISHES, so a consumer tracks this with `go get ...@latest` instead of a pseudoversion; Go requires the subdirectory prefix on a nested module's tags.
       - name: Tag the Go module
         if: github.ref_name == 'master'
         uses: wow-look-at-my/actions@typescript#latest
@@ -164,27 +119,13 @@ jobs:
             core.info(`published ${next} at ${context.sha}`);
             core.summary.addRaw(`Published \`${next}\`. Consumers: \`go get github.com/wow-look-at-my/js-snippets/timelinewire@latest\``).write();
 
-  # Publish the component gallery — showcase/'s single self-contained HTML
-  # page demoing every DOM-bound src/ui/ component on fake local data — to
-  # buildhost as a per-branch static site:
-  # https://sites.pazer.build/js-snippets/branch/<branch>/. Those components
-  # are not node-tested, so this preview is the only place a rendering
-  # regression can be seen before merge.
-  # The project MUST be "js-snippets": buildhost's OIDC auto-provisioning
-  # authorizes a repo's identity only for the project named after the repo
-  # (or its slash-namespace), and the sites router takes single-segment
-  # project names only — any other name 404s ("project not found").
-  # Publishes only when the BRANCH touches src/ui/ or the showcase (always on
-  # master); otherwise the steps no-op and the job still succeeds, so the
-  # org's all-builds aggregation never trips over it.
+  # The component gallery, per branch: src/ui/'s components are not node-tested, so this preview is the only place a rendering regression shows before merge.
   showcase:
     runs-on: ubuntu-latest
     permissions:
       id-token: write # buildhost OIDC auth
       contents: read
-      # Job-level permissions REPLACE the workflow-level block, so the
-      # publish guard's two reads and the recording write (see the
-      # workflow-level comments) must all be re-granted here too.
+      # A job-level block REPLACES the workflow-level one, so every grant the publish needs is re-granted here.
       actions: read
       checks: read
       artifact-metadata: write
@@ -230,8 +171,7 @@ jobs:
       - run: pnpm install
         if: steps.gate.outputs.publish == 'true'
 
-      # ts0's single-HTML target: type-checks, bundles the branch's own
-      # src/ui/timeline-view.ts (CSS inlined), emits showcase/dist/index.html.
+      # ts0's single-HTML target: bundles THIS branch's own src/ui (CSS inlined) into showcase/dist/index.html.
       - run: pnpm build:showcase
         if: steps.gate.outputs.publish == 'true'
 
