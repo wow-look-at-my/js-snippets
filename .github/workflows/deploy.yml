@@ -63,6 +63,18 @@ jobs:
           source_dir: dist
           public: 'true' # the library must stay anonymously importable
 
+  # Prose style (ASD-STE100's mechanical subset) over the docs and the llms.txt files this repo serves to consumers.
+  ste-lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      # NOT YET COVERED, and each is a real failure count, not an exemption: src/ui/llms.txt (445), src/webgpu/llms.txt (51), src/apng/llms.txt (26), src/editor/llms.txt (15). Add each path here as it is converted; `node scripts/run-ste-lint.mjs '<glob>'` reports what is left.
+      - uses: wow-look-at-my/actions@ste-lint#latest
+        with:
+          files: docs/**/*.md llms-header.txt src/math/llms.txt src/webgl2/llms.txt src/auto-refresh/llms.txt
+
   # timelinewire/ is a nested Go LIBRARY module (no main package), so autorelease is off: there is no binary to publish.
   go:
     runs-on: ubuntu-latest
