@@ -49,19 +49,30 @@ main code {
 	font-size: 11px;
 	color: #9aa3b2;
 }
+/* Every chart in the section shares the frame; only sizing differs per
+   instance. :where() keeps this at type specificity so a plain #id rule
+   below still wins. */
+:where(#timeline-view) timeline-view {
+	border: 1px solid rgba(200, 205, 216, 0.12);
+	border-radius: 6px;
+}
 #main {
 	flex: 1;
 	min-height: 320px;
-	border: 1px solid rgba(200, 205, 216, 0.12);
-	border-radius: 6px;
 }
 /* The compact strip: a hard height cap so auto-fit has to demote lanes,
    plus a light retheme via the --timeline-* custom properties. */
 #mini {
 	height: 150px;
 	flex: none;
-	border: 1px solid rgba(20, 25, 35, 0.2);
-	border-radius: 6px;
+	border-color: rgba(20, 25, 35, 0.2);
+}
+/* The bounded pair: fixed height, no growth — they are here to show where
+   the view STOPS, not to fill the page. */
+#floor,
+#static {
+	height: 240px;
+	flex: none;
 }
 #mini.light {
 	--timeline-bg: #f4f6fa;

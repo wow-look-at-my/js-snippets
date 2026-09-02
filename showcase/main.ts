@@ -9,8 +9,9 @@
 // merges. A new component in src/ui/ gets a section here; that is the
 // contract, not a nicety (see CLAUDE.md, "Showcase").
 //
-// Two <timeline-view> instances fed by the deterministic fake generator in
-// ./fake-data.ts. The page adds NOTHING interactive of its own —
+// Four <timeline-view> instances fed by the deterministic fake generator in
+// ./fake-data.ts: two live, one live behind a minTime floor, one frozen
+// between both stops. The page adds NOTHING interactive of its own —
 // pan/zoom/hover/click/fullscreen are the component's — it only feeds data
 // on the real advancing clock and prunes so a day-long tab stays lean.
 //
@@ -60,7 +61,13 @@ const PRUNE_EVERY_MS = 5 * MIN;
 
 const main = document.getElementById('main') as TimelineViewElement;
 const mini = document.getElementById('mini') as TimelineViewElement;
-const els: TimelineViewElement[] = [main, mini];
+// Back-limited but LIVE: minTime alone. It rides the same live feed as the
+// other two, so the two bounds are visibly independent — the left stop is
+// hard while the right edge keeps following the clock.
+const floorEl = document.getElementById('floor') as TimelineViewElement;
+// Frozen: both bounds, its own one-shot window, no live feed at all.
+const staticEl = document.getElementById('static') as TimelineViewElement;
+const els: TimelineViewElement[] = [main, mini, floorEl];
 
 // -- Styles: consumer style-map keys on top of the built-ins ---------------------
 
@@ -125,6 +132,16 @@ const boot = Date.now();
 const floor = boot - FLOOR_MS;
 let lastTick = boot;
 
+// -- Static bounds: the two stops, one each and then both together ---------------
+
+/** How far back #floor may scroll — well inside the lazy-history floor. */
+const FLOOR_DEMO_MS = 10 * MIN;
+/** The frozen window #static shows, as an offset back from boot. */
+const STATIC_FROM_MS = 45 * MIN;
+const STATIC_TO_MS = 15 * MIN;
+
+floorEl.minTime = boot - FLOOR_DEMO_MS;
+
 function feed(el: TimelineViewElement, t0: number, now: number, reset: boolean): void {
   const b = batchForRange(t0, now, now);
   const payload = {
@@ -140,6 +157,22 @@ function feed(el: TimelineViewElement, t0: number, now: number, reset: boolean):
 
 // Boot: pre-roll recent history so the default view is already populated.
 for (const el of els) feed(el, boot - PREROLL_MS, boot, true);
+
+// The frozen instance: ONE batch over a closed window, then both stops.
+// Its "now" is the window's end, so the runs that were still going then stay
+// ongoing — their bars must terminate at maxTime instead of growing, which
+// is the treatment this instance exists to keep on screen.
+{
+  const from = boot - STATIC_FROM_MS;
+  const to = boot - STATIC_TO_MS;
+  staticEl.styles = styles;
+  staticEl.tooltipFor = tooltipFor;
+  const b = batchForRange(from, to, to);
+  staticEl.setData({ lanes: LANES, intervals: b.intervals, connectors: b.connectors, markers: b.markers, coverage: { start: from, end: to } });
+  staticEl.minTime = from;
+  staticEl.maxTime = to;
+  staticEl.setViewport(from, to);
+}
 
 // Live tick: re-snapshot every run overlapping the recent window. Plans are
 // pure functions of absolute time, so a throttled/late tick (hidden tab)

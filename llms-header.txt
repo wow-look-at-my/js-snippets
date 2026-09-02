@@ -1,7 +1,6 @@
 # js-snippets
 
-Reusable ES modules served via buildhost sites. Source is TypeScript + WGSL,
-built to plain JS by ts0. Import directly by URL — no bundler needed.
+Reusable ES modules served via buildhost sites. Source is TypeScript + WGSL, built to plain JS by ts0. Import directly by URL — no bundler needed.
 
 Base URL: https://sites.pazer.build/js-snippets/branch/library
 
@@ -12,8 +11,6 @@ import { loadHDR } from 'https://sites.pazer.build/js-snippets/branch/library/we
 import * as mat4 from 'https://sites.pazer.build/js-snippets/branch/library/math/mat4.js';
 ```
 
-Every module also serves a TypeScript declaration at the same URL with
-`.d.ts` in place of `.js` (e.g. …/math/mat4.d.ts) — fetch types alongside
-the code.
+Every module also serves a TypeScript declaration at the same URL, with `.d.ts` in place of `.js` (e.g. …/math/mat4.d.ts). Fetch types alongside the code.
 
 ## Modules

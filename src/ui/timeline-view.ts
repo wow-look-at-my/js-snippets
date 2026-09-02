@@ -137,7 +137,8 @@ import {
   timeToX,
   xToTime,
   panView,
-  clampViewToNow,
+  clampViewToBounds,
+  boundedMaxSpan,
   zoomView,
   zoomFactorForWheel,
   WheelGestureRouter,
@@ -509,6 +510,14 @@ const LEGEND_ROWS: readonly { swatch: string; text: string }[] = [
  * the in-place glyph dictionary; consumers append their own rows via the
  * `legendEntries` property).
  *
+ * STATIC BOUNDS (`minTime` / `maxTime`, both null by default) limit the
+ * scrollable range. They are INDEPENDENT: `minTime` alone caps how far
+ * back a live chart scrolls, `maxTime` alone freezes the right edge over
+ * an unlimited past, and both together bound a finished window. Setting
+ * `maxTime` is what makes a chart STATIC — it replaces the clock as the
+ * live edge, so follow mode, the now line, the jump-to-now pill and feed
+ * staleness switch off and nothing moves without a gesture.
+ *
  * Auto-fit (default ON): each layout pass compares the natural lane stack
  * (every lane at --timeline-track-height) against the host's plot height;
  * while it overflows, whole lanes are demoted to the compact track height
@@ -644,6 +653,15 @@ export class TimelineViewElement extends HTMLElement {
   // the default governs the SPAN alone.
   private viewTouched = false;
   private laneScroll = 0;
+  // -- Static bounds (null = unbounded; the two sides are independent) --
+  // minTimeMs is the hard LEFT stop: no gesture, jump or default-span
+  // re-derivation may start the view before it, and history loads are
+  // never probed past it. maxTimeMs REPLACES the clock as the live edge:
+  // the right stop, ongoing-bar ends and the follow pin all read it, so
+  // the chart holds still — follow mode, the now line, the jump-to-now
+  // pill and feed staleness are all off while it is set.
+  private minTimeMs: number | null = null;
+  private maxTimeMs: number | null = null;
   // The ONE scalar behind every follow transition: the current lead of the
   // view's end over "now", as a fraction of the span. Steady follow pins
   // end = now + span * leadFrac with leadFrac == FOLLOW_LEAD_FRAC; steady
@@ -1383,7 +1401,7 @@ export class TimelineViewElement extends HTMLElement {
     // (applyUserView latches too — this is the explicit belt for the one
     // programmatic path consumers call directly).
     this.viewTouched = true;
-    const span = Math.min(Math.max(e - s, MIN_SPAN_MS), MAX_SPAN_MS);
+    const span = Math.min(Math.max(e - s, MIN_SPAN_MS), this.maxZoomSpan());
     this.applyUserView({ start: s, end: s + span }, { jump: true });
   }
 
@@ -1404,6 +1422,77 @@ export class TimelineViewElement extends HTMLElement {
     return true;
   }
 
+  /**
+   * The earliest time the view may scroll back to (ms since epoch; null =
+   * unbounded, the default). Every gesture, jump and default-span
+   * re-derivation stops here, and `loadRange` is never probed for a range
+   * before it — set it to the first timestamp the consumer can serve.
+   * Independent of `maxTime`: the right edge keeps following the live
+   * clock unless that one is set too.
+   */
+  get minTime(): number | null {
+    return this.minTimeMs;
+  }
+  set minTime(v: number | Date | null) {
+    const next = v === null ? null : toMs(v);
+    if (next !== null && !Number.isFinite(next)) return;
+    if (next === this.minTimeMs) return;
+    this.minTimeMs = next;
+    this.applyBounds();
+  }
+
+  /**
+   * The latest time the view may reach (ms since epoch; null = unbounded,
+   * the default). Setting it STOPS the forward scroll: this instant
+   * becomes the live edge, so the right stop, ongoing (end = null) bar
+   * ends and hit tests read it instead of the clock, and follow mode, the
+   * now line, the jump-to-now pill and feed staleness all switch off —
+   * a chart of finished content instead of a live feed. Independent of
+   * `minTime`: the past stays unlimited unless that one is set too.
+   */
+  get maxTime(): number | null {
+    return this.maxTimeMs;
+  }
+  set maxTime(v: number | Date | null) {
+    const next = v === null ? null : toMs(v);
+    if (next !== null && !Number.isFinite(next)) return;
+    if (next === this.maxTimeMs) return;
+    this.maxTimeMs = next;
+    if (next !== null && this.following) {
+      // Same continuous exit as followNow = false: the view keeps its
+      // position and whatever lead it holds glides out (decayLead), so
+      // freezing a live chart never teleports it.
+      this.following = false;
+      const span = this.view.end - this.view.start;
+      this.glideLead(Math.max(0, gestureLeadFrac(this.view.end, next, span, this.currentLead())), 0, FOLLOW_LEAD_TWEEN_MS);
+    }
+    this.updateStale();
+    this.applyBounds();
+  }
+
+  /** Re-clamp the current view after a bounds change and republish it. */
+  private applyBounds(): void {
+    this.view = this.clampBounds(this.view);
+    this.syncChrome();
+    this.emitViewport();
+    this.invalidate();
+  }
+
+  /**
+   * Clamp a view into the configured bounds. `max` overrides the right
+   * stop with the caller's own ceiling — the follow lead's decaying one
+   * on the gesture paths, which is never past maxTime once the lead has
+   * glided out.
+   */
+  private clampBounds(v: TimeView, max?: number): TimeView {
+    return clampViewToBounds(v, { min: this.minTimeMs, max: max ?? this.maxTimeMs });
+  }
+
+  /** The zoom-out ceiling: the whole bounded range when both sides are set. */
+  private maxZoomSpan(): number {
+    return boundedMaxSpan({ min: this.minTimeMs, max: this.maxTimeMs }, MAX_SPAN_MS, MIN_SPAN_MS);
+  }
+
   /** Whether the right edge is pinned to live "now" (default true). */
   get followNow(): boolean {
     return this.following;
@@ -1411,6 +1500,12 @@ export class TimelineViewElement extends HTMLElement {
   set followNow(v: boolean) {
     if (v === this.following) return;
     if (v) {
+      // There is no live edge to follow while maxTime freezes it: park at
+      // the stop instead of pinning to an instant that never moves.
+      if (this.maxTimeMs !== null) {
+        this.jumpToNow();
+        return;
+      }
       this.engageFollowGlide(JUMP_TO_NOW_TWEEN_MS);
     } else {
       this.following = false;
@@ -1428,8 +1523,15 @@ export class TimelineViewElement extends HTMLElement {
    * Re-engage follow mode, keeping the current span: a fast
    * JUMP_TO_NOW_TWEEN_MS glide from wherever the view is to the followed
    * position — never a single-frame teleport (reduced motion snaps).
+   * Under `maxTime` there is nothing to follow, so it parks the view at
+   * that stop instead: the same "take me to the end" gesture.
    */
   jumpToNow(): void {
+    if (this.maxTimeMs !== null) {
+      const span = this.view.end - this.view.start;
+      this.applyUserView({ start: this.maxTimeMs - span, end: this.maxTimeMs }, { jump: true });
+      return;
+    }
     this.engageFollowGlide(JUMP_TO_NOW_TWEEN_MS);
     this.syncChrome();
     this.emitViewport();
@@ -2201,6 +2303,9 @@ export class TimelineViewElement extends HTMLElement {
    * transition teleports the view. Reduced motion snaps.
    */
   private liveEdge(): number {
+    // A configured maxTime IS the edge: nothing about it is live, so it
+    // neither eases nor goes stale.
+    if (this.maxTimeMs !== null) return this.maxTimeMs;
     const target = this.feedStale && this.lastFreshMs !== null ? this.lastFreshMs : this.nowMs();
     const a = this.edgeAnim;
     if (!a) return target;
@@ -2219,6 +2324,15 @@ export class TimelineViewElement extends HTMLElement {
    * passes the edge it captured before moving the stamp.
    */
   private updateStale(edgeFrom?: number): void {
+    // Frozen content has no live feed to fall behind: no stale note, and
+    // no dashed-and-muted treatment on a chart that is static by design.
+    if (this.maxTimeMs !== null) {
+      this.feedStale = false;
+      this.edgeAnim = null;
+      this.staleEl.hidden = true;
+      this.staleNoteText = '';
+      return;
+    }
     const now = this.nowMs();
     const stale = feedIsStale(now, this.lastFreshMs, this.staleAfter);
     if (stale !== this.feedStale) {
@@ -2284,6 +2398,7 @@ export class TimelineViewElement extends HTMLElement {
    * already is.
    */
   private engageFollowGlide(dur: number): void {
+    if (this.maxTimeMs !== null) return; // nothing to follow — see jumpToNow
     this.following = true;
     const span = this.view.end - this.view.start;
     this.glideLead(gestureLeadFrac(this.view.end, this.liveEdge(), span, this.currentLead()), FOLLOW_LEAD_FRAC, dur);
@@ -2293,7 +2408,7 @@ export class TimelineViewElement extends HTMLElement {
   private pinToNow(): void {
     const span = this.view.end - this.view.start;
     const end = this.liveEdge() + span * this.currentLead();
-    this.view = { start: end - span, end };
+    this.view = this.clampBounds({ start: end - span, end }, end);
   }
 
   /**
@@ -2315,7 +2430,7 @@ export class TimelineViewElement extends HTMLElement {
     }
     const span = this.view.end - this.view.start;
     const ceil = now + span * this.currentLead();
-    if (this.view.end > ceil) this.view = { start: ceil - span, end: ceil };
+    if (this.view.end > ceil) this.view = this.clampBounds({ start: ceil - span, end: ceil }, ceil);
   }
 
   /**
@@ -2326,9 +2441,11 @@ export class TimelineViewElement extends HTMLElement {
    * to "now" one by one and horizontal panning never escaped follow mode).
    * The follow rule reads the RAW gesture (an overshoot past now must
    * count as "at the stop"); the view actually applied hard-stops at now
-   * (clampViewToNow), so every input path — wheel, drag, pinch, keyboard,
-   * setViewport — parks exactly at the end stop, which is what makes the
-   * tiny re-engage zone reliably hittable. Non-zoom interactive gestures
+   * and at the configured bounds (clampBounds), so every input path —
+   * wheel, drag, pinch, keyboard, setViewport — parks exactly at the end
+   * stop, which is what makes the tiny re-engage zone reliably hittable.
+   * A set `maxTime` replaces that clock stop with a fixed instant, and a
+   * gesture that docks there stays parked: static content never follows. Non-zoom interactive gestures
    * keep the pin while following (a forward pan at the stop stays live);
    * ZOOMS (`zoom`) and programmatic setViewport (`jump`) are exempt.
    * Zooms because the ANCHOR must win during the gesture: while pinned,
@@ -2361,20 +2478,23 @@ export class TimelineViewElement extends HTMLElement {
     const wasFollowing = this.following;
     const msPerDevPx = span / (this.plotWidth() * this.dpr);
     const stayPinned = wasFollowing && opts?.jump !== true && opts?.zoom !== true;
-    this.following = followAfterGesture(stayPinned, this.view.end, next, now, opts?.pan === true, msPerDevPx);
+    // A gesture that parks at the stop re-docks into follow — but only
+    // when the stop is the live clock. Under maxTime it is a fixed
+    // instant, so docking there must stay parked.
+    this.following = this.maxTimeMs === null && followAfterGesture(stayPinned, this.view.end, next, now, opts?.pan === true, msPerDevPx);
     if (this.following) {
       // ENGAGE (or a jump landing in the snap zone) seeds the lead ease
       // from where the gesture parked; while ALREADY pinned the current
       // (possibly still easing) lead simply carries over.
       if (!stayPinned) this.glideLead(gestureLeadFrac(next.end, now, span, this.currentLead()), FOLLOW_LEAD_FRAC, FOLLOW_LEAD_TWEEN_MS);
       const end = now + span * this.currentLead();
-      this.view = { start: end - span, end };
+      this.view = this.clampBounds({ start: end - span, end }, end);
     } else {
       // DISENGAGE by a backward pan: the delta consumed lead; the residual
       // glides out. The hard forward bound is the (decaying) ceiling —
       // plain "now" once the residual is gone, i.e. for every parked view.
       if (wasFollowing) this.glideLead(Math.max(0, gestureLeadFrac(next.end, now, span, this.currentLead())), 0, FOLLOW_LEAD_TWEEN_MS);
-      this.view = clampViewToNow(next, now + span * this.currentLead());
+      this.view = this.clampBounds(next, now + span * this.currentLead());
     }
     if (wasFollowing !== this.following) this.syncChrome();
     // The content moved under a resting cursor — keep hover/tooltip honest.
@@ -2447,7 +2567,8 @@ export class TimelineViewElement extends HTMLElement {
   // -- Chrome (DOM) sync ---------------------------------------------------------
 
   private syncChrome(): void {
-    this.pillEl.hidden = this.following || this.hasAttribute('no-live-pill');
+    // No live edge to jump to while maxTime freezes it.
+    this.pillEl.hidden = this.following || this.maxTimeMs !== null || this.hasAttribute('no-live-pill');
     this.legendEl.hidden = this.hasAttribute('no-legend');
     if (this.legendEl.hidden) this.closeLegend();
     const fs = this.fullscreen;
@@ -2507,6 +2628,8 @@ export class TimelineViewElement extends HTMLElement {
     // nothing moves, so no frames (the watchdog interval keeps the note's
     // counter alive and notices recovery).
     if (this.following && !this.feedStale) return true;
+    // Frozen content: ongoing bars end at maxTime, so nothing grows.
+    if (this.maxTimeMs !== null) return false;
     if (this.reducedMotion || this.feedStale) return false; // frozen stale bars don't pulse
     // Ongoing intervals grow/pulse only while their live edge is in view.
     const now = this.nowMs();
@@ -2614,6 +2737,11 @@ export class TimelineViewElement extends HTMLElement {
   private pumpLoad(): void {
     const fn = this.loadRangeFn;
     if (!fn) return;
+    // Two different clocks: the probe's forward bound is the live edge —
+    // maxTime when the chart is frozen — while nextRequest/settle time the
+    // retry cadence against the REAL clock, which a maxTime in the past
+    // would park forever.
+    const edge = this.maxTimeMs ?? this.nowMs();
     const now = this.nowMs();
     // loadRange fills BACKWARD gaps only: the probe is clamped to the
     // covered end (historyProbe), so the sliver between the last covered
@@ -2621,9 +2749,14 @@ export class TimelineViewElement extends HTMLElement {
     // belongs to the consumer's live merges. Without the clamp, follow
     // mode reopened a fresh forward gap every frame and refired loadRange
     // serially at ~one request per round-trip, forever (~30 req/s).
-    const probe = historyProbe(this.view, now, this.coverage.coveredEnd());
+    const probe = historyProbe(this.view, edge, this.coverage.coveredEnd());
     if (!probe) return;
-    const req = this.coverage.nextRequest(probe, now);
+    // minTime is the consumer's own statement that nothing exists before
+    // it: asking for that range would fail (or answer empty) forever.
+    const min = this.minTimeMs;
+    const want = min !== null && probe.start < min ? { start: min, end: probe.end } : probe;
+    if (!(want.end > want.start)) return;
+    const req = this.coverage.nextRequest(want, now);
     if (!req) return;
     const tick = this.loadTick;
     const tracker = this.coverage;
@@ -2695,7 +2828,8 @@ export class TimelineViewElement extends HTMLElement {
       if (hostW > 0 && hostH > 0) {
         const span = defaultSpanForAspect(hostW, hostH);
         if (span !== this.view.end - this.view.start) {
-          this.view = { start: this.view.end - span, end: this.view.end };
+          // Grows backward from the end, so a bounded past clamps it.
+          this.view = this.clampBounds({ start: this.view.end - span, end: this.view.end });
         }
       }
     }
@@ -3068,7 +3202,7 @@ export class TimelineViewElement extends HTMLElement {
       if (e.deltaMode === 0) {
         // Pixel-precise trackpad pinch: apply 1:1, no smoothing, no lag.
         const anchor = xToTime(p.x - this.gutterW, this.view, this.plotWidth());
-        this.applyUserView(zoomView(this.view, anchor, zoomFactorForWheel(route.zoomPx)), { zoom: true });
+        this.applyUserView(zoomView(this.view, anchor, zoomFactorForWheel(route.zoomPx), MIN_SPAN_MS, this.maxZoomSpan()), { zoom: true });
         this.glidePx = 0;
       } else {
         // Discrete wheel steps: glide over ~130ms so they feel smooth.
@@ -3097,7 +3231,7 @@ export class TimelineViewElement extends HTMLElement {
     if (Math.abs(this.glidePx - apply) < 0.5) apply = this.glidePx;
     this.glidePx -= apply;
     const anchor = xToTime(this.glideX - this.gutterW, this.view, this.plotWidth());
-    this.applyUserView(zoomView(this.view, anchor, zoomFactorForWheel(apply)), { zoom: true });
+    this.applyUserView(zoomView(this.view, anchor, zoomFactorForWheel(apply), MIN_SPAN_MS, this.maxZoomSpan()), { zoom: true });
   }
 
   private onPointerDown = (e: PointerEvent): void => {
@@ -3133,7 +3267,7 @@ export class TimelineViewElement extends HTMLElement {
       const zoomed = distPrev > 8 && distNow > 8;
       if (zoomed) {
         const anchor = xToTime(midX - this.gutterW, next, this.plotWidth());
-        next = zoomView(next, anchor, distNow / distPrev);
+        next = zoomView(next, anchor, distNow / distPrev, MIN_SPAN_MS, this.maxZoomSpan());
       }
       this.applyUserView(next, { pan: !zoomed, zoom: zoomed });
       return;
@@ -3219,11 +3353,11 @@ export class TimelineViewElement extends HTMLElement {
         break;
       case '+':
       case '=':
-        this.applyUserView(zoomView(this.view, center, 1.5), { zoom: true });
+        this.applyUserView(zoomView(this.view, center, 1.5, MIN_SPAN_MS, this.maxZoomSpan()), { zoom: true });
         break;
       case '-':
       case '_':
-        this.applyUserView(zoomView(this.view, center, 1 / 1.5), { zoom: true });
+        this.applyUserView(zoomView(this.view, center, 1 / 1.5, MIN_SPAN_MS, this.maxZoomSpan()), { zoom: true });
         break;
       case 'End':
         this.jumpToNow();
@@ -3262,13 +3396,18 @@ export class TimelineViewElement extends HTMLElement {
       if (per.length > 0 && per[0].start < earliest) earliest = per[0].start;
     }
     const cov = this.coverage.coveredRanges();
-    return minimapExtent(
+    const ext = minimapExtent(
       Number.isFinite(earliest) ? earliest : null,
       Number.isFinite(this.mmLatestEnd) ? this.mmLatestEnd : null,
       this.liveEdge(),
       this.coverage.exhaustedBefore,
       cov.length > 0 ? cov[0].start : null,
     );
+    // The strip maps the range the view can actually reach: an extent
+    // reaching before minTime would leave a slice of it permanently dead.
+    const min = this.minTimeMs;
+    if (ext && min !== null && ext.start < min) return ext.end > min ? { start: min, end: ext.end } : null;
+    return ext;
   }
 
   private mmLocalX(e: PointerEvent): { x: number; w: number } {
@@ -3701,7 +3840,7 @@ export class TimelineViewElement extends HTMLElement {
     // The live edge, frozen + muted while the feed is stale (the main
     // now line's language). Live overdraw — never baked into the texture.
     const nx = timeToX(now, ext, w);
-    if (nx >= 0 && nx <= w) {
+    if (this.maxTimeMs === null && nx >= 0 && nx <= w) {
       ctx.fillStyle = this.feedStale ? t.muted : withAlpha(t.now, 0.8);
       ctx.fillRect(nx - 0.5, 0, 1, h);
     }
@@ -4853,6 +4992,9 @@ export class TimelineViewElement extends HTMLElement {
     // carries a per-frame quantization error that used to flip the
     // rounded x between adjacent device pixels — a visible wiggle in the
     // one state where the line must hold perfectly still (see nowLineX).
+    // Frozen content has no "now" to mark — the edge is just where the
+    // data stops, and a line there would read as a live clock.
+    if (this.maxTimeMs !== null) return;
     const view = this.view;
     if (now < view.start || now > view.end) return;
     const t = this.theme;
