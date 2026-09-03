@@ -1579,7 +1579,9 @@ Properties:
   viewport: {x, y, scale}         get/set the pan and zoom
   info: DagInfo                   counts, critical path, crossings, cycles, rejected
   fullscreen: boolean             reflected viewport-fill mode
-  fit(pad?)                       fit the whole graph on screen
+  fit(pad?)                       fit the whole graph on screen, never
+                                  magnified past 1:1 -- a graph that already
+                                  fits is not improved by being blown up
   focusNode(id, zoom?)            centre + select a node (zoom defaults to current)
 
 Attributes: orientation, no-search, no-toolbar, no-fullscreen-button,

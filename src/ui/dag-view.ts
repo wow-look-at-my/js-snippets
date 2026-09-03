@@ -538,11 +538,19 @@ export class DagViewElement extends HTMLElement {
     this.dispatchEvent(new CustomEvent('fullscreenchange', { detail: { fullscreen: v } }));
   }
 
-  /** Fit the whole graph on screen. */
+  /**
+   * Fit the whole graph on screen, never magnified past 1:1.
+   *
+   * A graph small enough to fit already is not improved by being blown up:
+   * the boxes turn into slabs and the labels into headlines. Fit means
+   * "show me everything", and once everything is showing there is nothing
+   * left for more zoom to do. Use `focusNode(id, zoom)` to magnify
+   * deliberately.
+   */
   fit(pad = 32): void {
     this.ensureLayout();
     if (this.layout.nodes.length === 0) return;
-    this.view = fitViewport(this.bounds, this.cssW, this.cssH, pad);
+    this.view = fitViewport(this.bounds, this.cssW, this.cssH, pad, MIN_SCALE, 1);
     this.viewTouched = true;
     this.invalidate();
   }
@@ -570,7 +578,7 @@ export class DagViewElement extends HTMLElement {
   /** Fit the graph on the next frame if the consumer has not set a viewport. */
   private fitIfUntouched(): void {
     if (this.viewTouched || this.layout.nodes.length === 0 || this.cssW <= 0) return;
-    this.view = fitViewport(this.bounds, this.cssW, this.cssH, 32);
+    this.view = fitViewport(this.bounds, this.cssW, this.cssH, 32, MIN_SCALE, 1);
   }
 
   // -- Layout ----------------------------------------------------------------------
