@@ -8,19 +8,56 @@
 // about any of them.
 //
 //   pnpm build:showcase
-//   NODE_PATH=/opt/node22/lib/node_modules node scripts/check-dag-view.mjs
+//   NODE_PATH=/opt/node22/lib/node_modules node scripts/check-dag-view.ts
+//
+// Node runs this .ts directly by stripping the types (22.18+, on by default).
+// The types are not decoration: `ts0 build` type-checks scripts/ too, so an
+// element API this file misuses fails the build instead of failing here at
+// 11pm. That is what DagViewElement below is imported for.
 //
 // Writes a screenshot of each graph next to the built gallery unless
 // --no-shots is passed. Exits non-zero on the first failed check or on any
 // page error, so it can gate a change rather than merely describe one.
 
-// Node's ESM resolver ignores NODE_PATH, and playwright is preinstalled
-// globally rather than depended on here, so it comes through CJS
-// resolution, which honours it. A bare import throws ERR_MODULE_NOT_FOUND.
 import { createRequire } from 'node:module';
-const { chromium } = createRequire(import.meta.url)('playwright');
 import { pathToFileURL } from 'node:url';
 import { resolve, dirname, join } from 'node:path';
+import type { DagViewElement } from '../src/ui/dag-view.ts';
+
+// The slice of playwright this file drives. Playwright is preinstalled
+// globally rather than depended on here, so its own types are not
+// resolvable -- these describe what is called, and nothing else.
+interface ElementHandle {
+	screenshot(options: { path: string }): Promise<unknown>;
+}
+interface ConsoleMessage {
+	type(): string;
+	text(): string;
+}
+interface Page {
+	on(event: 'console', fn: (m: ConsoleMessage) => void): void;
+	on(event: 'pageerror', fn: (e: unknown) => void): void;
+	goto(url: string, options?: { waitUntil?: string }): Promise<unknown>;
+	waitForTimeout(ms: number): Promise<void>;
+	evaluate<T>(fn: () => T): Promise<Awaited<T>>;
+	$(selector: string): Promise<ElementHandle | null>;
+	mouse: { move(x: number, y: number): Promise<void>; click(x: number, y: number): Promise<void> };
+	keyboard: { press(key: string): Promise<void> };
+}
+interface Browser {
+	newPage(options: {
+		viewport: { width: number; height: number };
+		deviceScaleFactor: number;
+	}): Promise<Page>;
+	close(): Promise<void>;
+}
+
+// Node's ESM resolver ignores NODE_PATH, and playwright comes from the
+// global install, so it is pulled through CJS resolution, which honours it.
+// A bare import throws ERR_MODULE_NOT_FOUND.
+const { chromium } = createRequire(import.meta.url)('playwright') as {
+	chromium: { launch(options: { args?: string[] }): Promise<Browser> };
+};
 
 // Flags are stripped so the positional path stays positional -- passing
 // `--readme` alone must not be read as "the page lives at ./--readme".
@@ -29,10 +66,10 @@ const file = args[0] ?? 'showcase/dist/index.html';
 const shots = !process.argv.includes('--no-shots');
 const outDir = process.env.DAG_SHOT_DIR ?? dirname(resolve(file));
 
-const failures = [];
+const failures: string[] = [];
 let checks = 0;
 
-function check(name, ok, detail) {
+function check(name: string, ok: boolean, detail?: string): void {
 	checks++;
 	if (ok) {
 		console.log(`  ok  ${name}`);
@@ -44,7 +81,7 @@ function check(name, ok, detail) {
 
 const browser = await chromium.launch({ args: ['--no-sandbox'] });
 const page = await browser.newPage({ viewport: { width: 1500, height: 1000 }, deviceScaleFactor: 2 });
-const pageErrors = [];
+const pageErrors: string[] = [];
 page.on('console', (m) => {
 	if (m.type() === 'error') pageErrors.push(m.text());
 });
@@ -59,7 +96,7 @@ await page.waitForTimeout(1200);
 // exists to catch.
 
 const upgrade = await page.evaluate(() => {
-	const out = [];
+	const out: { id: string; upgraded: boolean; hasCanvas: boolean; w: number; h: number }[] = [];
 	for (const el of document.querySelectorAll('dag-view')) {
 		const canvas = el.shadowRoot?.querySelector('canvas');
 		out.push({
@@ -83,9 +120,9 @@ for (const u of upgrade) {
 // proof is pixels that are not the background.
 
 const painted = await page.evaluate(() => {
-	const el = document.getElementById('demo-dag');
-	const canvas = el.shadowRoot.querySelector('canvas');
-	const ctx = canvas.getContext('2d');
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	const canvas = el.shadowRoot!.querySelector('canvas')!;
+	const ctx = canvas.getContext('2d')!;
 	const d = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
 	const first = [d[0], d[1], d[2]];
 	let different = 0;
@@ -103,9 +140,9 @@ check(
 // -- What the layout could not honour is REPORTED ---------------------------------
 
 const info = await page.evaluate(() => {
-	const el = document.getElementById('demo-dag');
-	const notice = el.shadowRoot.querySelector('.notice');
-	return { info: el.info, noticeHidden: notice.hidden, noticeText: notice.textContent };
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	const notice = el.shadowRoot!.querySelector<HTMLElement>('.notice')!;
+	return { info: el.info, noticeHidden: notice.hidden, noticeText: notice.textContent ?? '' };
 });
 check('every node is placed', info.info.nodeCount === 13, `nodeCount ${info.info.nodeCount}`);
 check(
@@ -117,9 +154,9 @@ check('the build graph has no cycle', info.info.cycles.length === 0);
 check('the notice strip states the finding', !info.noticeHidden && /not drawn/.test(info.noticeText), info.noticeText);
 
 const cycleInfo = await page.evaluate(() => {
-	const el = document.getElementById('demo-dag-cycle');
-	const notice = el.shadowRoot.querySelector('.notice');
-	return { info: el.info, noticeText: notice.textContent, noticeHidden: notice.hidden };
+	const el = document.getElementById('demo-dag-cycle') as DagViewElement;
+	const notice = el.shadowRoot!.querySelector<HTMLElement>('.notice')!;
+	return { info: el.info, noticeText: notice.textContent ?? '', noticeHidden: notice.hidden };
 });
 check('the cycle is found and named', cycleInfo.info.cycles.length === 1, JSON.stringify(cycleInfo.info.cycles));
 check(
@@ -136,8 +173,8 @@ check(
 // -- Orientation ------------------------------------------------------------------
 
 const orient = await page.evaluate(() => {
-	const tb = document.getElementById('demo-dag');
-	const lr = document.getElementById('demo-dag-lr');
+	const tb = document.getElementById('demo-dag') as DagViewElement;
+	const lr = document.getElementById('demo-dag-lr') as DagViewElement;
 	return { tb: tb.info, lrOrientation: lr.orientation, lrNodes: lr.info.nodeCount };
 });
 check('the LR instance reports its orientation', orient.lrOrientation === 'LR', orient.lrOrientation);
@@ -149,13 +186,13 @@ check('the LR instance lays out the same graph', orient.lrNodes === orient.tb.no
 // the viewport before a mouse coordinate means anything. Scrolling first,
 // then reading the rect, is the difference between clicking the graph and
 // clicking whatever happens to be at those coordinates.
-await page.evaluate(() => document.getElementById('demo-dag').scrollIntoView({ block: 'center' }));
+await page.evaluate(() => document.getElementById('demo-dag')!.scrollIntoView({ block: 'center' }));
 await page.waitForTimeout(300);
 
 // focusNode centers the node in the element, so its screen position is the
 // element's center -- no reliance on private layout state.
 const nodeScreenPoint = await page.evaluate(() => {
-	const el = document.getElementById('demo-dag');
+	const el = document.getElementById('demo-dag') as DagViewElement;
 	el.focusNode('bundle');
 	el.selected = null;
 	const r = el.getBoundingClientRect();
@@ -164,16 +201,16 @@ const nodeScreenPoint = await page.evaluate(() => {
 await page.waitForTimeout(200);
 check(
 	'focusNode leaves nothing selected once cleared',
-	(await page.evaluate(() => document.getElementById('demo-dag').selected)) === null,
+	(await page.evaluate(() => (document.getElementById('demo-dag') as DagViewElement).selected)) === null,
 );
 
 await page.mouse.move(nodeScreenPoint.x, nodeScreenPoint.y);
 await page.waitForTimeout(150);
 
 const hovered = await page.evaluate(() => {
-	const el = document.getElementById('demo-dag');
-	const tip = el.shadowRoot.querySelector('.tooltip');
-	return { visible: tip.classList.contains('visible'), text: tip.textContent };
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	const tip = el.shadowRoot!.querySelector<HTMLElement>('.tooltip')!;
+	return { visible: tip.classList.contains('visible'), text: tip.textContent ?? '' };
 });
 check('hovering a node shows its tooltip', hovered.visible, JSON.stringify(hovered));
 check('the tooltip names the node', /bundle/.test(hovered.text), hovered.text);
@@ -182,8 +219,8 @@ await page.mouse.click(nodeScreenPoint.x, nodeScreenPoint.y);
 await page.waitForTimeout(150);
 
 const selected = await page.evaluate(() => {
-	const el = document.getElementById('demo-dag');
-	return { selected: el.selected, readout: document.getElementById('demo-dag-click').textContent };
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	return { selected: el.selected, readout: document.getElementById('demo-dag-click')!.textContent ?? '' };
 });
 check('clicking a node selects it', selected.selected === 'bundle', String(selected.selected));
 check('the nodeclick event reaches the page', /bundle/.test(selected.readout), selected.readout);
@@ -192,34 +229,34 @@ check('the nodeclick event reaches the page', /bundle/.test(selected.readout), s
 
 await page.keyboard.press('ArrowDown');
 await page.waitForTimeout(120);
-const walked = await page.evaluate(() => document.getElementById('demo-dag').selected);
+const walked = await page.evaluate(() => (document.getElementById('demo-dag') as DagViewElement).selected);
 check(
 	'ArrowDown walks to a dependent of the selected node',
-	walked !== 'bundle' && ['e2e', 'docs', 'sign'].includes(walked),
+	walked !== 'bundle' && ['e2e', 'docs', 'sign'].includes(walked ?? ''),
 	String(walked),
 );
 
 await page.keyboard.press('ArrowUp');
 await page.waitForTimeout(120);
-const walkedBack = await page.evaluate(() => document.getElementById('demo-dag').selected);
+const walkedBack = await page.evaluate(() => (document.getElementById('demo-dag') as DagViewElement).selected);
 check('ArrowUp walks back toward a dependency', walkedBack !== walked, `${walked} -> ${walkedBack}`);
 
 await page.keyboard.press('Escape');
 await page.waitForTimeout(120);
 check(
 	'Escape clears the selection',
-	(await page.evaluate(() => document.getElementById('demo-dag').selected)) === null,
+	(await page.evaluate(() => (document.getElementById('demo-dag') as DagViewElement).selected)) === null,
 );
 
 // -- Interaction: the toolbar moves the viewport ----------------------------------------
 
-const zoomed = await page.evaluate(async () => {
-	const el = document.getElementById('demo-dag');
+const zoomed = await page.evaluate(() => {
+	const el = document.getElementById('demo-dag') as DagViewElement;
 	el.fit();
 	const before = el.viewport.scale;
-	el.shadowRoot.querySelector('.zoom-in-btn').click();
+	el.shadowRoot!.querySelector<HTMLButtonElement>('.zoom-in-btn')!.click();
 	const after = el.viewport.scale;
-	el.shadowRoot.querySelector('.zoom-out-btn').click();
+	el.shadowRoot!.querySelector<HTMLButtonElement>('.zoom-out-btn')!.click();
 	const back = el.viewport.scale;
 	return { before, after, back };
 });
@@ -227,9 +264,9 @@ check('the zoom-in button zooms in', zoomed.after > zoomed.before, JSON.stringif
 check('the zoom-out button undoes it', Math.abs(zoomed.back - zoomed.before) < 1e-6, JSON.stringify(zoomed));
 
 const fitted = await page.evaluate(() => {
-	const el = document.getElementById('demo-dag');
+	const el = document.getElementById('demo-dag') as DagViewElement;
 	el.viewport = { x: 9999, y: 9999, scale: 3 };
-	el.shadowRoot.querySelector('.fit-btn').click();
+	el.shadowRoot!.querySelector<HTMLButtonElement>('.fit-btn')!.click();
 	return el.viewport;
 });
 check('the fit button brings the graph back on screen', Math.abs(fitted.x) < 5000 && fitted.scale < 3, JSON.stringify(fitted));
@@ -237,8 +274,8 @@ check('the fit button brings the graph back on screen', Math.abs(fitted.x) < 500
 // -- Search highlights rather than filters -----------------------------------------------
 
 const searched = await page.evaluate(async () => {
-	const el = document.getElementById('demo-dag');
-	const input = el.shadowRoot.querySelector('.search');
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	const input = el.shadowRoot!.querySelector<HTMLInputElement>('.search')!;
 	input.value = 'sign';
 	input.dispatchEvent(new Event('input'));
 	await new Promise((r) => requestAnimationFrame(r));
@@ -253,19 +290,19 @@ check(
 // -- The empty instance says so ----------------------------------------------------------
 
 const empty = await page.evaluate(() => {
-	const el = document.getElementById('demo-dag-empty');
-	const hint = el.shadowRoot.querySelector('.empty-hint');
-	return { hidden: hint.hidden, text: hint.textContent, nodes: el.info.nodeCount };
+	const el = document.getElementById('demo-dag-empty') as DagViewElement;
+	const hint = el.shadowRoot!.querySelector<HTMLElement>('.empty-hint')!;
+	return { hidden: hint.hidden, text: hint.textContent ?? '', nodes: el.info.nodeCount };
 });
 check('an empty graph shows its empty state', !empty.hidden && empty.nodes === 0, JSON.stringify(empty));
-check('the empty text is the consumer\'s', /No dependencies recorded/.test(empty.text), empty.text);
+check("the empty text is the consumer's", /No dependencies recorded/.test(empty.text), empty.text);
 
 // -- Screenshots -------------------------------------------------------------------------
 
 if (shots) {
 	await page.evaluate(() => {
-		const el = document.getElementById('demo-dag');
-		const input = el.shadowRoot.querySelector('.search');
+		const el = document.getElementById('demo-dag') as DagViewElement;
+		const input = el.shadowRoot!.querySelector<HTMLInputElement>('.search')!;
 		input.value = '';
 		input.dispatchEvent(new Event('input'));
 		el.fit();
@@ -275,12 +312,13 @@ if (shots) {
 	// the highlight rather than the component.
 	await page.mouse.move(2, 2);
 	await page.waitForTimeout(400);
-	for (const [id, name] of [
+	const gallery: [string, string][] = [
 		['demo-dag', 'dag-view.png'],
 		['demo-dag-cycle', 'dag-view-cycle.png'],
 		['demo-dag-lr', 'dag-view-lr.png'],
 		['demo-dag-theme', 'dag-view-theme.png'],
-	]) {
+	];
+	for (const [id, name] of gallery) {
 		const el = await page.$(`#${id}`);
 		if (el === null) continue;
 		const out = join(outDir, name);
@@ -301,7 +339,7 @@ if (shots) {
 	// One shot at 1:1, where the labels are at their real size -- the fitted
 	// view is the picture, this is the legibility check.
 	await page.evaluate(() => {
-		const el = document.getElementById('demo-dag');
+		const el = document.getElementById('demo-dag') as DagViewElement;
 		el.focusNode('bundle', 1);
 		el.selected = null;
 	});

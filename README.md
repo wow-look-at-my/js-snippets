@@ -28,7 +28,7 @@ drawn, dashed and in the emphasis colour, with its arrow still pointing the
 true way; an edge naming a node that does not exist is dropped and
 **counted**. The notice strip says so, and `info` returns the same facts as
 data. Captured from the [showcase gallery](#deploy) by
-`node scripts/check-dag-view.mjs --readme`.
+`node scripts/check-dag-view.ts --readme`.
 
 ## Usage
 
