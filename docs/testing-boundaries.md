@@ -1,57 +1,46 @@
 # What is unit-tested under node, and what is not
 
-`pnpm test` type-checks the project and runs every `*.test.ts` under Node's
-built-in runner. Node has no DOM, no canvas, no GPU and no `fetch`-backed
-text loader, so a whole class of module in this repo cannot be covered by
-it at all.
+`pnpm test` type-checks the project. It then runs every `*.test.ts` file under Node's own test runner. Node has no DOM. It has no canvas, no GPU, and no text loader for a `.css` or `.wgsl` import. A whole class of module here is out of reach of that runner.
 
-The rule this repo follows is: **split the module, do not fake the
-environment.** A module that mixes pure logic with a bound surface gets its
-logic extracted into a sibling `-math` / `-logic` / `-parse` module, which
-is then tested exhaustively, and the bound half is left to a browser
-harness or to manual testing. Nothing here mocks a canvas, a GPU device or
-a `<select>` popup — a fake environment tests the fake.
+The rule this repo follows is simple. **Split the module. Do not fake the environment.** A module that mixes pure logic with a bound surface gets its logic moved into a sibling module. The sibling is named `-math`, `-logic` or `-parse`. It is tested in full. The bound half goes to a browser harness or to manual testing. Nothing here mocks a canvas, a GPU device or a popup. A fake environment tests the fake.
 
-The consequence is worth stating plainly: **a green `pnpm test` says
-nothing about whether any element renders.** For the components that have
-one, the browser harness is the check that does (see the bottom of this
-file).
+One consequence is worth stating plainly. **A green `pnpm test` says nothing about whether an element renders.** The browser harnesses at the bottom of this file are the checks that do.
 
 ## Not node-tested at all: they need a real browser or GPU
 
-`webgpu/shaders.ts`, `webgpu/canvas.ts`, `webgpu/context.ts`,
-`webgpu/buffer.ts`, `webgpu/sky.ts`, `webgpu/mip-generator.ts`,
-`webgpu/env-prefilter.ts`, `webgpu/hdr-loader.ts`,
-`webgl2/video-texture.ts`, `webgl2/fullscreen.ts` (its `.glsl` import also
-only resolves under the build's text loader, not `node --test`),
-`editor/code-editor.ts`, and `auto-refresh/`. These are left to
-manual/integration testing.
+These modules are left to manual and integration testing.
+
+- `webgpu/shaders.ts`, `webgpu/canvas.ts`, `webgpu/context.ts`, `webgpu/buffer.ts`
+- `webgpu/sky.ts`, `webgpu/mip-generator.ts`, `webgpu/env-prefilter.ts`, `webgpu/hdr-loader.ts`
+- `webgl2/video-texture.ts`
+- `webgl2/fullscreen.ts`. Its `.glsl` import also resolves only under the build's text loader.
+- `editor/code-editor.ts`
+- `auto-refresh/`
 
 ## Split modules: the pure half is tested, the bound half is not
 
-- `webgpu/camera.ts` tests `orbitEye`/`dirFromAzEl`/`applyLookDrag` but not the DOM-bound controllers.
-- `webgpu/fly-camera.ts` tests `flyMoveDelta`/`dollyDelta` but not `createFlyController`.
+- `webgpu/camera.ts` tests `orbitEye`, `dirFromAzEl` and `applyLookDrag`. The DOM-bound controllers are not tested.
+- `webgpu/fly-camera.ts` tests `flyMoveDelta` and `dollyDelta`. `createFlyController` is not tested.
 - `webgl2/program.ts` tests `annotateShaderLog` and `injectChunk`.
 - `webgl2/mesh.ts` tests `chooseIndexArray`.
-- `webgl2/fbo.ts` tests `makePingPong` but not the GL-bound `createFloatFbo`/`createPingPong`.
-- `webgpu/scan.ts` splits its pure half into `webgpu/scan-plan.ts` (planScan level math, tested incl. a plan-driven JS emulation of the WGSL) because scan.ts's own `.wgsl` import cannot load under node — the GPU wrapper (`createScan`) is covered by consumer browser harnesses.
-- `ui/perf-graph.ts` is DOM/canvas-bound (the `<perf-graph>` element), so its logic lives in `ui/perf-graph-math.ts` (ring buffer / stats / range / ticks / binning / formatting), which is its fully node-tested pure half.
-- `ui/timeline-view.ts` (the `<timeline-view>` element — its `.css` text import also only resolves under the build's loader) splits its logic into `ui/timeline-view-math.ts` (scales / zoom / ticks / packing / label fit / hit tests / hues / coverage) the same way.
-- `ui/combobox.ts` (the `<combo-box>` element / select-fallback popup — DOM-bound, and its `.css` text import likewise only resolves under the build's loader) splits its logic into `ui/combobox-logic.ts` (activation gating / enabled-option navigation / type-ahead / popup placement), which is its fully node-tested pure half.
-- `ui/canvas-text.ts` tests its pure fitting surface (deriveLabelTiers / selectTier / clipToWidth / fitTieredText) but not the canvas-bound `FadeTextPainter`.
-- `ui/timeline-wire.ts` is pure and FULLY node-tested (it is bytes in, columns out) — its frame-paced driver degrades to a plain yield off-browser, so the tests cover the codec and the driver's completion contract, not real frames.
-- `ui/data-table.ts` (the `<data-table>` element — its `.css` text import also only resolves under the build's loader) and `ui/activity-feed.ts` (a thin wrapper over it) are DOM-bound and not node-tested, with their logic in `ui/data-table-math.ts` (comparison / stable sort / the sort cycle / multi-group facet selection / stored-filter parsing) and `ui/activity-feed-math.ts` (severity + family derivation, query and facet selection) respectively — note that a group declared `local: false` is filtered by the HOST, so `selectRows` deliberately never sees it.
-- `ui/markdown.ts` is the DOM walker (createElement/createTextNode) and is not node-tested, with its logic in `ui/markdown-parse.ts` — and because that module's `sanitizeTree` runs BEFORE any node reaches the walker, the safety properties proved there hold for the rendered output too, which is the reason the sanitizing lives in the tree rather than in the renderer.
-- `apng/worker.ts` is Worker/DOM-bound (it constructs the worker and owns the message protocol) and is not node-tested, while everything it runs — `apng/png.ts`, `apng/diff.ts`, `apng/palette.ts`, `apng/encoder.ts` — is pure and fully node-tested, and `apng/raster.ts` splits the same way (fitRect/clampSize tested, the OffscreenCanvas draw not), the encoder against a decoder written in its own test file.
-- `ui/dag-view.ts` (the `<dag-view>` element — its `.css` text import likewise only resolves under the build's loader) splits the same way, with its whole layout pipeline in `ui/dag-view-math.ts` (graph normalization / cycle breaking / layering / crossing reduction / coordinates / routing / viewport / culling / hit tests / reachability) — fully node-tested, including the invariants that decide whether the picture is right at all: no box overlaps another in its layer, a straight chain draws straight, every edge points down the page, a zoom holds the world point under the cursor, and a cycle-reversed edge is still routed from its true source.
-- `ui/color.ts` and `ui/hit-test.ts` are the pure primitives the canvas-painted components share; their coverage lives in `ui/timeline-view-math.test.ts`, which still imports them through that module's re-exports.
+- `webgl2/fbo.ts` tests `makePingPong`. The GL-bound `createFloatFbo` and `createPingPong` are not tested.
+- `webgpu/scan.ts` keeps its pure half in `webgpu/scan-plan.ts`. That module holds the `planScan` level math. Its tests include a plan-driven JS emulation of the WGSL. The split exists because `scan.ts` imports a `.wgsl` file. That file cannot load under node. Consumer browser harnesses cover the GPU wrapper `createScan`.
+- `ui/perf-graph.ts` is the DOM and canvas-bound `<perf-graph>` element. Its logic lives in `ui/perf-graph-math.ts`. That module covers the ring buffer, the stats, the range, the ticks, the binning and the formatting. It is node-tested in full.
+- `ui/timeline-view.ts` is the `<timeline-view>` element. Its `.css` text import also resolves only under the build's loader. Its logic lives in `ui/timeline-view-math.ts`. That module covers the scales, the zoom, the ticks, the packing, the label fit, the hit tests, the hues and the coverage bookkeeping.
+- `ui/combobox.ts` is the `<combo-box>` element and the select-fallback popup. It is DOM-bound. Its `.css` text import resolves only under the build's loader. Its logic lives in `ui/combobox-logic.ts`. That module covers the activation gating, the enabled-option navigation, the type-ahead and the popup placement.
+- `ui/canvas-text.ts` tests its pure fitting surface: `deriveLabelTiers`, `selectTier`, `clipToWidth` and `fitTieredText`. The canvas-bound `FadeTextPainter` is not tested.
+- `ui/timeline-wire.ts` is pure and node-tested in full. It is bytes in and columns out. Its frame-paced driver falls back to a plain yield off-browser. The tests therefore cover the codec and the driver's completion contract, not real frames.
+- `ui/data-table.ts` is the `<data-table>` element. `ui/activity-feed.ts` is a thin wrapper over it. Both are DOM-bound and not node-tested. Their logic lives in `ui/data-table-math.ts` and `ui/activity-feed-math.ts`. The first covers the comparison, the stable sort, the sort cycle, the multi-group facet selection and the stored-filter parsing. The second covers the severity and family derivation, the query and the facet selection. Note that the HOST filters a group declared `local: false`. `selectRows` therefore never sees it.
+- `ui/markdown.ts` is the DOM walker over `createElement` and `createTextNode`. It is not node-tested. Its logic lives in `ui/markdown-parse.ts`. That module's `sanitizeTree` runs BEFORE any node reaches the walker. The safety properties proved there therefore hold for the rendered output too. That is the reason the sanitizing lives in the tree rather than in the renderer.
+- `apng/worker.ts` constructs the worker and owns the message protocol. It is Worker and DOM-bound. It is not node-tested. Everything it runs is pure and node-tested in full: `apng/png.ts`, `apng/diff.ts`, `apng/palette.ts` and `apng/encoder.ts`. The encoder's oracle is a decoder written in its own test file. `apng/raster.ts` splits the same way. `fitRect` and `clampSize` are tested. The OffscreenCanvas draw is not.
+- `ui/dag-view.ts` is the `<dag-view>` element. Its `.css` text import likewise resolves only under the build's loader. Its whole layout pipeline lives in `ui/dag-view-math.ts`. That module covers the graph normalization, the cycle breaking, the layering and the crossing reduction. It also covers the coordinates, the routing, the viewport, the culling, the hit tests and the reachability. Its tests include the invariants that decide whether the picture is right at all. No box overlaps another in its layer. A straight chain draws straight. Every edge points down the page. A zoom holds the world point under the cursor. A cycle-reversed edge is still routed from its true source.
+- `ui/color.ts` and `ui/hit-test.ts` are the pure primitives the canvas-painted components share. Their coverage lives in `ui/timeline-view-math.test.ts`. That file imports them through this module's re-exports.
 
 ## What covers the gap
 
-- **`showcase/`** — the component gallery. Every DOM-bound `src/ui/` component has a section, published per branch, so a rendering change is verifiable from a real URL before it merges. See the Showcase section of CLAUDE.md.
-- **`scripts/check-dag-view.mjs`** — a real Chromium driving `<dag-view>`: that the element upgrades, that the canvas paints anything at all, that the cycle and rejected-edge reporting reaches the notice strip, that a hover shows a tooltip, that a click selects, that the arrow keys walk the edges, that the toolbar moves the viewport, and that search highlights rather than filters. It also writes the reference screenshots.
-- **`scripts/check-timeline-bounds.mjs`** — the same idea for `<timeline-view>`'s `minTime`/`maxTime`, which are element-level properties nothing under `node --test` can reach.
-- **`scripts/screenshot-showcase.mjs`** — captures the README's `<timeline-view>` picture from the real component, so the image cannot drift.
+- **`showcase/`** is the component gallery. Every DOM-bound `src/ui/` component has a section there. The gallery publishes per branch. A rendering change is therefore verifiable from a real URL before it merges. See the Showcase section of CLAUDE.md.
+- **`scripts/check-dag-view.mjs`** drives `<dag-view>` in a real Chromium. It checks that the element upgrades and that the canvas paints anything at all. It checks that the cycle and rejected-edge reporting reaches the notice strip. It checks the hover tooltip, the click selection, the arrow-key graph walk and the toolbar. It checks that search highlights rather than filters. It also writes the reference screenshots.
+- **`scripts/check-timeline-bounds.mjs`** does the same for `<timeline-view>`'s `minTime` and `maxTime`. Those are element-level properties that no node test can reach.
+- **`scripts/screenshot-showcase.mjs`** captures the README's `<timeline-view>` picture from the real component, so the image cannot drift.
 
-When you add a module that mixes pure and bound code, split it the same way
-and add a line here. Note the gap rather than forcing a fake.
+Add a line here when you add a module that mixes pure and bound code. Split it the same way. Note the gap rather than forcing a fake.
