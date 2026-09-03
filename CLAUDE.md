@@ -58,6 +58,19 @@ src/
 │   │                        badge); no table logic of its own
 │   ├── activity-feed.css  ← its shadow-DOM styles, passed INTO the inner
 │   │                        table via that element's styleText escape hatch
+│   ├── color.ts           ← shared canvas colour primitives: category hue
+│   │                        hashing + jitter, oklch/hsl category colour, the
+│   │                        uniform dim transform, the label halo
+│   ├── hit-test.ts        ← shared pointer hit shapes: HitRect, rect and
+│   │                        polyline tests, distSqToSegment
+│   ├── dag-view-math.ts   ← pure layered (Sugiyama) DAG layout: cycle
+│   │                        breaking, layering, crossing reduction,
+│   │                        coordinates, routing, viewport, hit tests,
+│   │                        reachability
+│   ├── dag-view-math.test.ts ← colocated node:test tests for the layout
+│   ├── dag-view.ts        ← <dag-view> custom element (canvas pan/zoom
+│   │                        dependency graph; re-exports dag-view-math)
+│   ├── dag-view.css       ← its shadow-DOM styles (text import)
 │   ├── markdown.ts        ← markdown -> DOM renderer (re-exports markdown-parse)
 │   ├── markdown-parse.ts  ← its pure half: micromark/GFM -> mdast + the
 │   │                        sanitizeTree safety transform + safeHref
@@ -149,14 +162,17 @@ showcase/                  ← the COMPONENT GALLERY: one section per DOM-bound 
 ├── main.ts                ← gallery entry: adopts page.css, mounts the static sections, owns the live <timeline-view> feed
 ├── data-table-demo.ts     ← <data-table> section (three instances: full / minimal / filtered-to-nothing)
 ├── activity-feed-demo.ts  ← <activity-feed> section (kinds the severity rules know, and kinds they do not)
+├── dag-view-demo.ts       ← <dag-view> section (five instances: the build graph with every node state, a cycle, LR, a retheme, and empty)
 ├── fake-data.ts           ← deterministic fake-run generator (pure fn of absolute time) + mulberry32, shared by every section
 ├── page.css               ← page chrome (adopted from main.ts as a text import)
 └── assets.d.ts            ← ambient *.css/*.wgsl/*.glsl decls for the nested project's own type-check
+docs/testing-boundaries.md ← which modules are node-tested, which are not and why, and what covers the gap. Read it before adding a module that mixes pure and bound code
 docs/timeline/zoom-out-never-merges.md ← THE rule for dense instants: N discrete events never render as one contiguous shape; zooming out drops marks, never fuses them. Names the two failures that produced it and where it is enforced
 docs/timeline/span-9patch.md ← why spans stay path-drawn while pips are sprited: the 9-patch only wins when every bar is snapped to whole device pixels, which the single global rounding step forbids
 docs/timeline-view.png     ← the README's <timeline-view> picture. Captured from the built showcase by scripts/screenshot-showcase.mjs (playwright + the preinstalled chromium), so it is the REAL component and cannot drift; regenerate after a visual change: pnpm build:showcase && node scripts/screenshot-showcase.mjs
 scripts/screenshot-showcase.mjs ← that capture (fails on any page error rather than writing a half-upgraded chart)
 .github/workflows/deploy.yml `ste-lint` job ← the org's ASD-STE100 mechanical-subset prose gate, `wow-look-at-my/actions@ste-lint#latest`, over the docs and the llms.txt files this repo serves. Six rules FAIL (hard-wrapped paragraphs, semicolons, sentences over 25 words, should/shall/could/might/would, comma splices, contractions); everything else warns. Run it through the action, never a local re-driver. STILL TO CONVERT (that count is real failures, not an exemption): src/ui/llms.txt — 1805 across 1591 lines, three quarters of them the hard-wrap rule. Add it to the job's `files` input once it passes
+scripts/check-dag-view.mjs ← browser check for `<dag-view>` on the REAL element: upgrade, actual painted pixels, the cycle/rejected-edge reporting, hover tooltips, click selection, the arrow-key graph walk, the toolbar, and that search highlights rather than filters. NONE of this is reachable under `node --test`, and it also writes the reference screenshots. Run: `pnpm build:showcase && NODE_PATH=/opt/node22/lib/node_modules node scripts/check-dag-view.mjs`
 scripts/check-timeline-bounds.mjs ← browser check for `minTime`/`maxTime` on the REAL element (drives pointer/wheel input against the built showcase; the math under it is node-tested, these are the element-level properties nothing under `node --test` can reach). Run: `pnpm build:showcase && NODE_PATH=/opt/node22/lib/node_modules node scripts/check-timeline-bounds.mjs`
 bench/bench-gl.html        ← how many instant pips one frame can draw and still hold 30fps, per draw method: canvas2d path (batched / one each), canvas2d sprite blit, GL instanced quads, GL vert+index 4v/6i, GL path 12v/30i (the diamond as triangles, no texture), and spans path vs 9-patch. Run: `NODE_PATH=/opt/node22/lib/node_modules node scripts/run-bench.mjs bench/bench-gl.html`. It prints the GL renderer — a GPU-less runner falls back to SwiftShader and every GL row is then a software rasterizer's, so never quote one without it. On an M1 the ordering is GL quads >800k > sprite blit 30k > canvas2d path 4.6k markers/frame; the software numbers invert that, which is why no drawing decision may be made from a SwiftShader run. That M1 run predates the per-method size caps and the per-round ramp deadline, so its GL rows are FLOORS (they pressed against a shared 1M cap, and one resolved at 120fps without ever converging) — re-run before quoting a GL ceiling. For the span rows only the sub-pixel 9-patch variants mean anything; see docs/timeline/span-9patch.md
 llms-header.txt            ← preamble for combined llms.txt
@@ -205,7 +221,7 @@ Conventions:
 - Each test file uses `import { test } from 'node:test'` + `import assert from 'node:assert/strict'`, imports the **source** module directly with the `.ts` extension (e.g. `import { … } from './mat4.ts'`), and uses `import type { … }` for type-only symbols — Node's strip-types loader elides `import type` but would fail to import a type as a value at runtime.
 - Source modules import sibling modules with the `.ts` extension on **value** imports (e.g. `import { lookAt } from '../math/mat4.ts'`) and `import type` for type-only ones. Both esbuild (the build) and Node's runtime ESM resolver accept this; an extensionless **value** import resolves under esbuild but NOT under `node --test`, so keep the extension.
 - Pure/algorithmic modules are unit-tested here; several tests are ports of the proven `smoke.mjs` oracles from the `scratch` repo (`sdf` from distance-field-shadows, `gaussian-kernel` from local-contrast).
-- **DOM/fetch/GPU-bound modules are NOT unit-tested under node** — `webgpu/shaders.ts`, `webgpu/canvas.ts`, `webgpu/context.ts`, `webgpu/buffer.ts`, `webgpu/sky.ts`, `webgpu/mip-generator.ts`, `webgpu/env-prefilter.ts`, `webgpu/hdr-loader.ts`, `webgl2/video-texture.ts`, `webgl2/fullscreen.ts` (its `.glsl` import also only resolves under the build's text loader, not `node --test`), `editor/code-editor.ts`, and `auto-refresh/` need a real browser/GPU, so they're left to manual/integration testing. Modules mixing pure + bound code are split: `webgpu/camera.ts` tests `orbitEye`/`dirFromAzEl`/`applyLookDrag` but not the DOM-bound controllers; `webgpu/fly-camera.ts` tests `flyMoveDelta`/`dollyDelta` but not `createFlyController`; `webgl2/program.ts` tests `annotateShaderLog` and `injectChunk`; `webgl2/mesh.ts` tests `chooseIndexArray`; `webgl2/fbo.ts` tests `makePingPong` but not the GL-bound `createFloatFbo`/`createPingPong`; `webgpu/scan.ts` splits its pure half into `webgpu/scan-plan.ts` (planScan level math, tested incl. a plan-driven JS emulation of the WGSL) because scan.ts's own `.wgsl` import cannot load under node — the GPU wrapper (`createScan`) is covered by consumer browser harnesses; `ui/perf-graph.ts` is DOM/canvas-bound (the `<perf-graph>` element), so its logic lives in `ui/perf-graph-math.ts` (ring buffer / stats / range / ticks / binning / formatting), which is its fully node-tested pure half; `ui/timeline-view.ts` (the `<timeline-view>` element — its `.css` text import also only resolves under the build's loader) splits its logic into `ui/timeline-view-math.ts` (scales / zoom / ticks / packing / label fit / hit tests / hues / coverage) the same way; `ui/combobox.ts` (the `<combo-box>` element / select-fallback popup — DOM-bound, and its `.css` text import likewise only resolves under the build's loader) splits its logic into `ui/combobox-logic.ts` (activation gating / enabled-option navigation / type-ahead / popup placement), which is its fully node-tested pure half; `ui/canvas-text.ts` tests its pure fitting surface (deriveLabelTiers / selectTier / clipToWidth / fitTieredText) but not the canvas-bound `FadeTextPainter`; `ui/timeline-wire.ts` is pure and FULLY node-tested (it is bytes in, columns out) — its frame-paced driver degrades to a plain yield off-browser, so the tests cover the codec and the driver's completion contract, not real frames; `ui/data-table.ts` (the `<data-table>` element — its `.css` text import also only resolves under the build's loader) and `ui/activity-feed.ts` (a thin wrapper over it) are DOM-bound and not node-tested, with their logic in `ui/data-table-math.ts` (comparison / stable sort / the sort cycle / multi-group facet selection / stored-filter parsing) and `ui/activity-feed-math.ts` (severity + family derivation, query and facet selection) respectively — note that a group declared `local: false` is filtered by the HOST, so `selectRows` deliberately never sees it; `ui/markdown.ts` is the DOM walker (createElement/createTextNode) and is not node-tested, with its logic in `ui/markdown-parse.ts` — and because that module's `sanitizeTree` runs BEFORE any node reaches the walker, the safety properties proved there hold for the rendered output too, which is the reason the sanitizing lives in the tree rather than in the renderer; `apng/worker.ts` is Worker/DOM-bound (it constructs the worker and owns the message protocol) and is not node-tested, while everything it runs — `apng/png.ts`, `apng/diff.ts`, `apng/palette.ts`, `apng/encoder.ts` — is pure and fully node-tested, and `apng/raster.ts` splits the same way (fitRect/clampSize tested, the OffscreenCanvas draw not), the encoder against a decoder written in its own test file.
+- **DOM/fetch/GPU-bound modules are NOT unit-tested under node.** The rule is to SPLIT the module, never to fake the environment: the logic moves to a sibling `-math`/`-logic`/`-parse` module and is tested exhaustively, the bound half is left to a browser harness. Which module is on which side of that line, and what covers the gap (the `showcase/` gallery, `scripts/check-dag-view.mjs`, `scripts/check-timeline-bounds.mjs`) -- docs/testing-boundaries.md.
 
 ## Deploy
 
@@ -265,6 +281,18 @@ Sections, in page order:
 - **`<activity-feed>`** (`activity-feed-demo.ts`) — a `<data-table>`
   underneath; the fixture mixes kinds the severity rules claim with kinds
   no rule mentions, which is the derived-not-enumerated claim made visible.
+- **`<dag-view>`** (`dag-view-demo.ts`) — five instances. A build graph
+  carrying every node state in the style map plus a state no rule
+  mentions, a node with no category, a label far too long for its box, a
+  long edge that must bend around two layers, and two edges the graph
+  cannot draw (an unknown target and a self-loop) which the notice strip
+  must name. Then a three-service CYCLE — the case a layered drawing
+  cannot render without breaking something, so what is checked is that the
+  broken edge is still drawn, still points the true way, and is announced.
+  Then the same graph in `LR`, so an axis bug shows up as a difference
+  between two pictures on one page; a `--dag-*` retheme; and an empty one.
+  The fixture is hand-written, not generated: every node is carrying a
+  specific case and a random one would lose them.
 
 No network anywhere: every fixture is generated locally.
 

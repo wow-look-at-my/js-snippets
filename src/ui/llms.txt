@@ -90,65 +90,6 @@ Exports:
 
 Types: ActivityEntry, Severity, FeedFilter, FeedSelection, StoredFilter
 
-### ui/combobox.js
-Custom `<select>` dropdown replacement for browsers whose native dropdown is
-broken or unusable — the motivating case is Tesla's in-car browser, which
-renders the native dropdown in a separate OS window the page never captures, so
-the option list is invisible. Replaces a `<select>` with an in-page popup
-listbox built from ordinary DOM and appended to `<body>`, so no native dropdown
-is ever opened. The original `<select>` stays in the DOM as the model: it is
-hidden but keeps its value, and choosing an option sets that value and
-dispatches `input` + `change`, so any existing listener (or framework, e.g.
-lil-gui) runs unchanged. Options are read live at open time, so a select whose
-`<option>`s are repopulated later keeps working. Keyboard: arrows/Home/End move,
-Enter/Space choose, Escape close, type-ahead. Rendered in the light DOM; injects
-its own themeable stylesheet once. No dependencies.
-
-Importing the module auto-registers `<combo-box>` (unless that tag is taken).
-
-  import { installSelectFallback } from '.../ui/combobox.js';
-  installSelectFallback();              // Tesla UA by default; { force: true } for any browser
-
-  import '.../ui/combobox.js';          // registers <combo-box>
-  //  <combo-box><select>…</select></combo-box>
-
-Activation (installSelectFallback / shouldEnable): the UA gate matches Tesla by
-default; override with `match: (ua) => boolean`, bypass with `force: true`, or
-force at runtime via `?combobox=force`, `localStorage['js-combobox']='force'`,
-or `globalThis.__JS_COMBOBOX_FORCE__ = true`.
-
-Exports:
-  installSelectFallback(opts?) → () => void
-    Upgrade all current <select>s and (unless observe:false) watch for new ones
-    via a MutationObserver. No-op unless shouldEnable(opts) passes. Returns a
-    disposer that stops observing. Opts: force, match, root (ParentNode,
-    default document), observe (default true), existingTrigger.
-  upgradeSelect(select, opts?) → void
-    Upgrade one <select>. Idempotent; skips multi-selects. opts.existingTrigger
-    (select) => HTMLElement|null lets you reuse a host's own trigger that
-    already paints the value (e.g. a lil-gui .widget whose .display stays in
-    sync) instead of generating one.
-  upgradeAll(root?, opts?) → void
-    Upgrade every <select> under root (default document).
-  openPopup(select, trigger, syncLabel?) → void
-    Open the popup for a (hidden) select anchored to a trigger element.
-  closePopup() → void
-    Close the open popup, if any (one is open at a time).
-  shouldEnable(opts?) → boolean
-    Whether the fallback should activate (see Activation above).
-  injectStyles() → void
-    Inject the component stylesheet once (idempotent; no-op without a DOM).
-    Called automatically by upgradeSelect.
-  COMBOBOX_CSS: string
-    The stylesheet source. Theme by overriding the --cb-* custom properties
-    (--cb-bg, --cb-fg, --cb-border, --cb-accent, --cb-radius, --cb-popup-bg,
-    --cb-popup-fg, --cb-popup-border, --cb-active).
-  class ComboBox extends HTMLElement
-    Backs <combo-box>; upgrades its child <select> on connect (no UA gate).
-    Exported so you can register under another name.
-
-Types: EnableOptions, UpgradeOptions, FallbackOptions.
-
 ### ui/data-table.js
 Declarative filterable/sortable table as a <data-table> custom element.
 You declare columns and hand over rows; it owns the header and sort cycle,
@@ -1589,3 +1530,213 @@ Exports:
     delivery is the caller's rAF loop skipping frames on an even
     due-time grid, never a timer; degenerate geometry falls back to
     tierBudgetMs).
+
+### ui/dag-view.js
+Canvas-painted, pan/zoom directed graph as a <dag-view> custom element.
+You hand it nodes and edges; it lays them out in layers, routes the edges,
+and owns panning, zooming, hover, selection, search and keyboard
+navigation. Re-exports everything from ui/dag-view-math.js, so one import
+serves both. No dependencies.
+
+CANVAS, NOT SVG: a few hundred nodes with their edges is a few thousand
+SVG elements, and every pan then asks the engine to re-style and re-layout
+all of them. Canvas makes a pan one transform plus a redraw of what is on
+screen, which is what makes a whole org's repositories usable rather than
+merely possible.
+
+WHAT THE LAYOUT COULD NOT HONOUR IS SHOWN, NEVER SWALLOWED. A circular
+dependency is drawn dashed in the emphasis colour with its arrow still
+pointing the true way; an edge naming a node that does not exist, a
+self-loop and a duplicate are dropped and COUNTED. A dismissible notice
+strip names all of it, and `info` returns the same facts as data.
+
+  <dag-view id="deps" orientation="TB" empty-text="No dependencies">
+    <p>loading graph...</p>   <!-- light DOM: shown until upgrade -->
+  </dag-view>
+
+  const el = document.getElementById('deps');
+  el.setData({
+    nodes: [{id: 'a', label: 'api', sublabel: 'org/api', category: 'svc'}],
+    edges: [{from: 'a', to: 'b'}],   // read "b depends on a"
+  });
+
+INPUT: drag pans; ctrl/cmd+wheel and pinch zoom; a PLAIN wheel PANS rather
+than zooming, so an embedded graph never swallows a page scroll that was
+meant for the page. Hovering a node fades everything outside its
+dependency neighbourhood; clicking pins that; double-click zooms to the
+neighbourhood; the arrow keys walk the graph along its edges once
+something is selected, and pan when nothing is. +/- zoom, 0 fits, Escape
+clears. The search box HIGHLIGHTS rather than filters, because the edges
+are the reason a match matters.
+
+Properties:
+  nodes: DagNode[] / edges: DagEdge[] / setData({nodes?, edges?})
+  orientation: 'TB' | 'LR'        mirrors the attribute
+  styles: DagStyleMap             state -> treatment, merged over DEFAULT_STYLES
+  tooltipFor: (hit) => {title?, rows?} | null    null = no tooltip
+  colorFor: (node) => string | null             null = derived category hue
+  selected: string | null         the selected node's id, settable
+  viewport: {x, y, scale}         get/set the pan and zoom
+  info: DagInfo                   counts, critical path, crossings, cycles, rejected
+  fullscreen: boolean             reflected viewport-fill mode
+  fit(pad?)                       fit the whole graph on screen
+  focusNode(id, zoom?)            centre + select a node (zoom defaults to current)
+
+Attributes: orientation, no-search, no-toolbar, no-fullscreen-button,
+no-minimap, empty-text, fullscreen.
+
+Events (all CustomEvent): `nodeclick` {node, placed}, `edgeclick` {edge,
+placed}, `nodehover` {hit|null}, `selectionchange` {node|null},
+`layoutchange` (detail is DagInfo), `fullscreenchange` {fullscreen}.
+
+Node states: a `state` string picks a treatment from the style map.
+Built-ins are done (solid), blocked (hatched), pending (dashed outline),
+missing (dim dashed outline) and failed (stippled). A state with no entry
+draws as a plain solid node in its category colour -- a readable node,
+never a blank one, so a producer can add a state tomorrow.
+
+Colour is DERIVED: a node's `category` (falling back to its own id) hashes
+to a stable hue, so one category is one colour forever and an
+uncategorised graph is still multi-coloured rather than one wall of blue.
+
+Level of detail: below scale 0.4 labels stop being drawn; below 0.22 a
+node is a plain filled mark. Accessibility: the host is focusable with
+role="application", and a selection change is announced through a live
+region with its dependency and dependent counts.
+
+Theme via --dag-* custom properties (dag-view.css): --dag-bg (MUST be
+opaque -- the canvas is opaque so text keeps subpixel antialiasing), --dag-fg,
+--dag-muted, --dag-grid, --dag-hairline, --dag-edge, --dag-accent,
+--dag-emphasis, --dag-font, --dag-font-size, --dag-node-radius,
+--dag-cat-lightness, --dag-cat-chroma, --dag-gap, --dag-layer-gap.
+
+### ui/dag-view-math.js
+The pure half of <dag-view>: the layered (Sugiyama) layout pipeline, the
+viewport transform, culling, hit tests and reachability. No DOM, so it
+runs and is unit-tested under node. Import it alone to lay a graph out
+without rendering one.
+
+The pipeline, each stage exported separately so a consumer can stop after
+any of them: buildGraph -> breakCycles -> assignLayers -> insertDummies ->
+orderLayers -> assignCoordinates. `layoutDag(nodes, edges, opts?)` is all
+of it, returning placed boxes and routed polylines.
+
+DETERMINISM IS A CONTRACT: every tie breaks on the node's index in the
+input, never on Map iteration order and never on a random source, so the
+same graph draws identically on every machine and every reload. A graph
+that reshuffles on refresh cannot be compared to what you saw a minute
+ago.
+
+Exports:
+  buildGraph(nodes, edges) → DagGraph
+    Dense indices, both adjacency directions, and `rejected`: every edge
+    naming an unknown node, every self-loop and every duplicate, WITH its
+    reason. Nothing is dropped in silence.
+  breakCycles(graph) → {reversed, out, in}
+    Reverses the back edges a DFS finds, and REPORTS them. A layered
+    drawing must break a cycle to draw at all; hiding which edge it cut
+    would hide the finding the reader opened the graph for.
+  assignLayers(graph, acyclic, {align?}) → {layers, maxLayer, ignoredPins}
+    Longest-path layering. A node's `layer` hint can push it DOWN but
+    never above one of its own dependencies; an overruled hint is named in
+    ignoredPins. align: 'sources' (default) or 'sinks' (bottom-aligned).
+  topoOrder(out, n) → number[]
+    Kahn order, ties on index. A node left inside a cycle is APPENDED,
+    never lost.
+  insertDummies(graph, acyclic, layered) → ProperLayering
+    Splits every multi-layer edge into per-layer bend points, so a long
+    edge occupies real width in each layer it crosses instead of cutting a
+    chord across the drawing. Slots are keyed by IDENTITY, not position,
+    because the next stage permutes every layer.
+  orderLayers(proper, sweeps?) → number
+    Weighted-median sweeps plus adjacent transpose. Keeps the best
+    arrangement seen, so it can never return a worse one than it started
+    with. Returns the crossing count it settled on.
+  countCrossings(proper) / crossingsBetween(proper, layer) → number
+  assignCoordinates(proper, sizes, opts?) → CoordResult
+    Cross-axis placement: pack, then repeatedly pull each slot to the
+    median of its neighbours and re-separate. A straight chain comes out
+    straight, and no two boxes in a layer ever overlap.
+  layoutDag(nodes, edges, opts?) → DagLayout
+    {nodes, edges, byId, width, height, orientation, crossings,
+    cycleEdges, rejected, ignoredPins}. A reversed edge's `points` still
+    run from its TRUE source to its TRUE target, so an arrowhead always
+    means what it says. Opts: orientation, gap, layerGap, dummyWidth,
+    passes, sweeps, align, sizeOf.
+  anchorPoint(placed, orientation, 'in'|'out') → {x, y}
+    Mid-point of the facing edge -- an arrowhead at a box centre is one
+    nobody can see.
+  measureNode(node, opts?) → {w, h}
+    Default box size from the label text, clamped between DEFAULT_NODE_MIN_W
+    (72) and DEFAULT_NODE_MAX_W (240) so one long title cannot set the
+    whole layout.
+  Viewport: worldToScreen / screenToWorld / panViewport /
+    zoomViewportAt(v, ax, ay, factor, min?, max?) (the world point under
+    the anchor does not move) / zoomFactorForWheel(px) /
+    fitViewport(rect, vw, vh, pad?) / clampViewport(v, bounds, vw, vh,
+    margin?) (a leash, not a fence: it only stops the drawing being
+    flicked out of sight) / layoutBounds(layout) / visibleWorldRect.
+    MIN_SCALE = 0.05, MAX_SCALE = 4, ZOOM_PX_PER_DOUBLE = 260.
+  Culling: rectsOverlap, visibleNodes(layout, rect), visibleEdges(layout, rect).
+  Hit tests: hitTestNodes(layout, wx, wy) (topmost wins),
+    hitTestEdges(layout, wx, wy, tol) (NEAREST wins, not first), nodeRect.
+  neighbourhood(layout, index) → {ancestors, descendants, edges}
+    Everything up-stream and down-stream, transitively, following the TRUE
+    edge directions including the ones cycle-breaking reversed.
+  criticalPathLength(layout) → number   longest dependency chain, in nodes.
+  nodeHue(node) → 0..359                category, else the id.
+
+Types: DagNode, DagEdge, DagOrientation, DagGraph, RejectedEdge,
+CycleResult, LayerResult, LayerOptions, LayerSlot, ProperLayering,
+NodeSize, CoordOptions, SlotPlacement, CoordResult, PlacedNode,
+PlacedEdge, DagLayout, DagLayoutOptions, MeasureOptions, DagViewport,
+WorldRect, Neighbourhood.
+
+### ui/color.js
+Deterministic category colours, the uniform dim transform and the label
+halo -- the colour primitives shared by the canvas-painted components
+(<timeline-view>, <dag-view>). Pure; no DOM, no clock, no random source.
+Re-exported by ui/timeline-view-math.js, so an existing import of these
+from there keeps working.
+
+  hashString(s) → uint32              FNV-1a, stable across platforms.
+  categoryHue(category) → 0..359      golden-ratio scattered, so similar
+                                      strings land far apart. Same string,
+                                      same hue, forever.
+  categoryJitter(category) → {dl, dc} A second discriminator: tone offsets
+                                      (|dl|<=0.05, |dc|<=0.02) so two
+                                      categories that hash to nearby hues
+                                      still separate.
+  categoryColor(hue, opts?) → string  oklch (even perceived lightness
+                                      across hues) or an hsl fallback.
+                                      Opts: mode, lightness, chroma, alpha.
+  dimColor(color) → string            50% saturation, 50% value, hue and
+                                      alpha untouched -- one filter over a
+                                      whole region, so text-vs-fill
+                                      contrast survives. Accepts hex,
+                                      rgb(), hsl(), oklch(); anything else
+                                      is returned unchanged.
+  labelHaloColor(fg) → string         The translucent counter-colour rim
+                                      that keeps canvas label text legible
+                                      over ANY fill. Dark under a light
+                                      fg, light under a dark one.
+
+Types: CategoryColorOptions.
+
+### ui/hit-test.js
+Pointer hit-testing primitives for canvas-painted components. A canvas has
+no DOM to hit-test against, so every component that paints its own surface
+answers "what is under the pointer?" itself. Pure. Re-exported by
+ui/timeline-view-math.js.
+
+  expandHitRect(rect, minW) → HitRect   Widen a hairline target around its
+                                        centre so it stays clickable.
+  hitTestRects(x, y, rects) → index     Topmost (last painted) wins, -1 on
+                                        a miss. Edges inclusive.
+  distSqToSegment(px, py, ax, ay, bx, by) → number
+  hitTestPolyline(px, py, points, tol) → boolean
+
+Coordinates are CSS px in whatever space the caller works in; nothing here
+transforms, so a component with a viewport maps the pointer in first.
+
+Types: HitRect.

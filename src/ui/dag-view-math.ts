@@ -426,7 +426,13 @@ export function orderLayers(proper: ProperLayering, sweeps = ORDER_SWEEPS): numb
   const { layers, succ, pred } = proper;
   let best = layers.map((l) => l.slice());
   let bestCrossings = countCrossings(proper);
-  if (bestCrossings === 0) return 0;
+
+  // Zero crossings is NOT a reason to skip the sweeps. insertDummies
+  // appends every bend point to the END of its layer, so a long edge in an
+  // already-planar graph would keep a column parked off to one side of the
+  // drawing, dragging the whole thing's bounding box out with it. The
+  // sweeps are what pull those bend points in under the edge they belong
+  // to, and they cost nothing at the sizes a person can read.
 
   const positionsIn = (layer: number): Map<string, number> => {
     const m = new Map<string, number>();
@@ -462,10 +468,13 @@ export function orderLayers(proper: ProperLayering, sweeps = ORDER_SWEEPS): numb
     }
     transpose(proper);
     const c = countCrossings(proper);
-    if (c < bestCrossings) {
+    // A TIE is accepted, not just an improvement. The median sweep's other
+    // job is alignment, and refusing an arrangement that crosses no more
+    // than the last one throws that away -- which is exactly what left a
+    // planar graph's bend points where they were first appended.
+    if (c <= bestCrossings) {
       bestCrossings = c;
       best = layers.map((x) => x.slice());
-      if (bestCrossings === 0) break;
     }
   }
   for (let l = 0; l < layers.length; l++) layers[l] = best[l];
