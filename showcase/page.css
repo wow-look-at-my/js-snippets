@@ -87,6 +87,42 @@ main code {
 	--timeline-cat-chroma: 0.12;
 }
 
+/* -- <dag-view> ------------------------------------------------------------
+ *
+ * The main graph gets real room: a dependency graph read at 200px tall is
+ * a diagram of a diagram. The secondary instances are shorter on purpose —
+ * each is here to show ONE property, not to be worked in.
+ */
+#demo-dag {
+	height: 460px;
+	border: 1px solid rgba(200, 205, 216, 0.14);
+	border-radius: 6px;
+}
+#demo-dag-cycle,
+#demo-dag-lr,
+#demo-dag-theme,
+#demo-dag-empty {
+	/* Tall enough that a four-layer graph fits ABOVE the label LOD floor.
+	   A shorter box is not a smaller picture, it is an unlabelled one. */
+	height: 340px;
+	border: 1px solid rgba(200, 205, 216, 0.14);
+	border-radius: 6px;
+}
+#demo-dag-theme.light {
+	--dag-bg: #f4f6fa;
+	--dag-fg: #1a2030;
+	--dag-muted: #5a6372;
+	--dag-grid: rgba(20, 25, 35, 0.09);
+	--dag-hairline: rgba(20, 25, 35, 0.18);
+	--dag-edge: rgba(20, 25, 35, 0.38);
+	--dag-accent: #0b6bcb;
+	--dag-emphasis: #d4383e;
+	--dag-cat-lightness: 0.58;
+	--dag-cat-chroma: 0.13;
+	--dag-node-radius: 2;
+	border-color: rgba(20, 25, 35, 0.2);
+}
+
 /* -- Gallery chrome ---------------------------------------------------------
  *
  * The page grew from one timeline demo into a gallery, so `main` is no

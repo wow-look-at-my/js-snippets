@@ -23,6 +23,7 @@
 				<a href="#timeline-view">&lt;timeline-view&gt;</a>
 				<a href="#data-table">&lt;data-table&gt;</a>
 				<a href="#activity-feed">&lt;activity-feed&gt;</a>
+					<a href="#dag-view">&lt;dag-view&gt;</a>
 			</nav>
 		</header>
 		<main>
@@ -87,6 +88,38 @@
 				<activity-feed id="demo-feed-empty" empty-text="Nothing yet.">
 					<p class="loading">loading activity&hellip;</p>
 				</activity-feed>
+			</section>
+
+			<section id="dag-view">
+				<h2>&lt;dag-view&gt;</h2>
+				<p class="hint">
+					Drag to pan &middot; ctrl/&#8984;+wheel or pinch to zoom &middot; a plain wheel pans, so the
+					page never gets its scroll stolen &middot; the toolbar and the <code>+</code>/<code>-</code>/<code>0</code>
+					keys do the same thing &middot; hover a node to fade everything outside its dependency
+					neighbourhood &middot; click to pin that, double-click to zoom to it &middot; arrow keys walk the
+					graph along its edges once something is selected &middot; type in the box to highlight matches
+					(it highlights rather than filters, because the edges are the reason a match matters).
+					Note the long <code>checkout &rarr; publish</code> edge bending around two layers rather than
+					cutting through them, the over-long label truncating inside its box, and the notice strip
+					top-right naming the two edges the graph could not draw.
+				</p>
+				<dag-view id="demo-dag" empty-text="No graph data">
+					<p class="loading">loading graph&hellip;</p>
+				</dag-view>
+				<p id="demo-dag-info" class="click-readout">(layout facts land here)</p>
+				<p id="demo-dag-click" class="click-readout">(click a node &mdash; the event lands here)</p>
+
+				<h3>a circular dependency <span class="sub">(three services that each wait on the next &mdash; a layered drawing has to break the cycle to draw at all, so the broken edge is drawn dashed in the emphasis colour with its arrow still pointing the TRUE way, and the notice says so)</span></h3>
+				<dag-view id="demo-dag-cycle" no-search></dag-view>
+
+				<h3>left to right <span class="sub">(the same data, <code>orientation="LR"</code> &mdash; two pictures of one graph on one page, so an axis bug has nowhere to hide)</span></h3>
+				<dag-view id="demo-dag-lr" orientation="LR" no-search></dag-view>
+
+				<h3>retheme <span class="sub">(the same data under <code>--dag-*</code> custom properties)</span></h3>
+				<dag-view id="demo-dag-theme" class="light" no-search no-toolbar></dag-view>
+
+				<h3>empty <span class="sub">(a graph with nothing in it says so, rather than looking broken)</span></h3>
+				<dag-view id="demo-dag-empty" empty-text="No dependencies recorded yet." no-search></dag-view>
 			</section>
 		</main>
 		<script type="module" src="./main.ts"></script>

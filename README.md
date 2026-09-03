@@ -15,6 +15,21 @@ real component: it is captured from the [showcase gallery](#deploy) by
 `node scripts/screenshot-showcase.mjs`, so it cannot drift into showing a
 chart the code no longer draws.
 
+## `<dag-view>`
+
+![The dag-view component: a build pipeline drawn as layered boxes joined by arrows, with category colours, hatched and stippled node states, a long edge bending around two layers, and a notice strip naming two edges the graph could not draw](docs/dag-view.png)
+
+A canvas-rendered dependency graph in one custom element — layered
+(Sugiyama) layout, pan/zoom, hover-to-fade-everything-else, search, keyboard
+graph walking and `--dag-*` theming.
+
+What it will not do is quietly tidy your data. A circular dependency is
+drawn, dashed and in the emphasis colour, with its arrow still pointing the
+true way; an edge naming a node that does not exist is dropped and
+**counted**. The notice strip says so, and `info` returns the same facts as
+data. Captured from the [showcase gallery](#deploy) by
+`node scripts/check-dag-view.ts --readme`.
+
 ## Usage
 
 ```js
@@ -42,6 +57,10 @@ import * as mat4 from 'https://sites.pazer.build/js-snippets/branch/library/math
 
 | Module | Description |
 |--------|-------------|
+| `ui/dag-view.js` | `<dag-view>` — canvas-rendered pan/zoom dependency graph. Layered layout, hover-to-fade-everything-else, search, keyboard graph walking, `--dag-*` theming. Cycles and undrawable edges are reported, never swallowed. Re-exports `dag-view-math`. |
+| `ui/dag-view-math.js` | The graph's pure layout: cycle breaking, layering, crossing reduction, coordinates, edge routing, viewport, culling, hit tests, reachability. Deterministic. DOM-free, node-tested. |
+| `ui/color.js` | Shared canvas colour primitives: stable category→hue hashing, oklch/hsl category colours, the uniform dim transform, the label halo. DOM-free. |
+| `ui/hit-test.js` | Shared pointer hit shapes for canvas components: rect and polyline tests, `distSqToSegment`. DOM-free. |
 | `ui/combobox.js` | `<combo-box>` / `installSelectFallback()` — replaces broken native `<select>` dropdowns (e.g. Tesla's in-car browser) with an in-page popup listbox. The original `<select>` stays as the model and keeps firing `input`/`change`; keyboard nav + type-ahead; `--cb-*` theming. Re-exports `combobox-logic`. |
 | `ui/combobox-logic.js` | The combobox's pure logic: `shouldEnable` UA/force gating, enabled-option navigation, `typeAheadTarget` matching, `computePopupPlacement` flip/clamp math. DOM-free, node-tested. |
 | `ui/perf-graph.js` | `<perf-graph>` — compact, stackable, canvas-rendered performance graph custom element. Push-based sampling, label/current/avg/min/max readout drawn as canvas text, autoscale or fixed range with nice gridlines, dashed budget guide line, min-max downsampling when samples outnumber pixels, `--perf-graph-*` CSS-custom-property theming. Re-exports `perf-graph-math`. |
