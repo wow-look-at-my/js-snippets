@@ -14,6 +14,8 @@ import {
   slotIdentity,
   layoutDag,
   wrapWideLayers,
+  wrappedRowCount,
+  CELL_ASPECT,
   anchorPoint,
   measureNode,
   worldToScreen,
@@ -266,11 +268,33 @@ test('wrapWideLayers: a layer too wide to read is split into consecutive rows', 
   const wrapped = wrapWideLayers(assignLayers(g, breakCycles(g)), 14);
   const counts = new Map<number, number>();
   for (const l of wrapped.layers) counts.set(l, (counts.get(l) ?? 0) + 1);
-  assert.equal(counts.size, 3, '30 nodes at a cap of 14 need three rows');
+  // Three rows of ten is what the cap alone allows, and it draws a band far
+  // wider than it is tall. The row count comes from the target shape instead,
+  // so the cap is only the ceiling on a row.
+  assert.equal(counts.size, wrappedRowCount(30, 14), '30 nodes at a cap of 14');
   for (const [layer, n] of counts) assert.ok(n <= 14, `layer ${layer} holds ${n}`);
-  // Evened out rather than filled to the cap with a remainder of two.
-  assert.deepEqual([...counts.values()], [10, 10, 10]);
-  assert.equal(wrapped.maxLayer, 2);
+  // Evened out rather than filled to the cap with a remainder.
+  assert.deepEqual([...new Set(counts.values())], [5]);
+  assert.equal(wrapped.maxLayer, counts.size - 1);
+});
+
+test('wrappedRowCount: a layer that fits in one row is never split', () => {
+  for (let n = 1; n <= 14; n++) assert.equal(wrappedRowCount(n, 14), 1, `${n} nodes`);
+});
+
+test('wrappedRowCount: the cap stays the ceiling on a row', () => {
+  for (const n of [15, 30, 81, 400]) {
+    const rows = wrappedRowCount(n, 14);
+    assert.ok(Math.ceil(n / rows) <= 14, `${n} nodes over ${rows} rows`);
+  }
+});
+
+test('wrappedRowCount: a wrapped block lands near the target shape', () => {
+  // The failure this replaced: 81 nodes drew about 2900 units wide and 670
+  // tall, so `fit` scaled by the width alone and every box became a speck.
+  const rows = wrappedRowCount(81, 14);
+  const aspect = (Math.ceil(81 / rows) * CELL_ASPECT) / rows;
+  assert.ok(aspect > 1 && aspect < 3, `81 nodes draw ${aspect.toFixed(1)}:1`);
 });
 
 test('wrapWideLayers: splitting a layer keeps every edge pointing forward', () => {
