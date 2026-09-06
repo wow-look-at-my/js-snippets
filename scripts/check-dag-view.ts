@@ -266,6 +266,11 @@ try {
 	snap = null;
 }
 check('the clipboard holds parseable JSON', snap !== null, `${dump.text.length} bytes`);
+check(
+	'the dump is indented with tabs',
+	/\n\t"/.test(dump.text) && !/\n {2}"/.test(dump.text),
+	dump.text.split('\n')[1] ?? '',
+);
 
 if (snap !== null) {
 	check('every drawn node is in the dump', snap.nodes.length === info.info.nodeCount, `${snap.nodes.length}`);

@@ -771,7 +771,7 @@ export class DagViewElement extends HTMLElement {
   private onContextMenu = (e: MouseEvent): void => {
     if (e.shiftKey) return;
     e.preventDefault();
-    const text = JSON.stringify(this.snapshot, null, 2);
+    const text = JSON.stringify(this.snapshot, null, '\t');
     void this.copyText(text).then(
       () => {
         const n = this.layout.nodes.length;
