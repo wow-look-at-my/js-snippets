@@ -1578,6 +1578,18 @@ Properties:
   selected: string | null         the selected node's id, settable
   viewport: {x, y, scale}         get/set the pan and zoom
   info: DagInfo                   counts, critical path, crossings, cycles, rejected
+  snapshot: DagSnapshot           the whole drawn state as a plain object:
+                                  capturedAt, orientation, canvas
+                                  {width,height,dpr}, viewport, bounds, info,
+                                  every node and edge in BOTH world units and
+                                  `screen` CSS pixels (origin at the canvas
+                                  top-left), plus `visible` per node. Right-
+                                  clicking the canvas copies this as JSON, so
+                                  a reader can hand over the numbers behind a
+                                  picture that looks wrong -- an empty band
+                                  between columns, a node parked off screen --
+                                  instead of describing it. Shift-right-click
+                                  keeps the browser's own menu.
   fullscreen: boolean             reflected viewport-fill mode
   fit(pad?)                       fit the whole graph on screen, never
                                   magnified past 1:1 -- a graph that already
@@ -1589,7 +1601,8 @@ no-minimap, empty-text, fullscreen.
 
 Events (all CustomEvent): `nodeclick` {node, placed}, `edgeclick` {edge,
 placed}, `nodehover` {hit|null}, `selectionchange` {node|null},
-`layoutchange` (detail is DagInfo), `fullscreenchange` {fullscreen}.
+`layoutchange` (detail is DagInfo), `fullscreenchange` {fullscreen},
+`snapshotcopy` {text} after a right-click copies the state.
 
 Node states: a `state` string picks a treatment from the style map.
 Built-ins are done (solid), blocked (hatched), pending (dashed outline),
@@ -1642,6 +1655,10 @@ Exports:
     Longest-path layering. A node's `layer` hint can push it DOWN but
     never above one of its own dependencies; an overruled hint is named in
     ignoredPins. align: 'sources' (default) or 'sinks' (bottom-aligned).
+  wrapWideLayers(layered, max?) → LayerResult
+    Breaks each too-wide layer into consecutive rows. Safe because
+    longest-path layering never puts an edge's two ends on one layer. max
+    defaults to DEFAULT_MAX_LAYER_WIDTH (14); 0 turns it off.
   topoOrder(out, n) → number[]
     Kahn order, ties on index. A node left inside a cycle is APPENDED,
     never lost.

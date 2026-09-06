@@ -167,11 +167,62 @@ export interface DagInfo {
   rejected: { from: string; to: string; reason: string }[];
 }
 
+/** A rectangle, in whichever coordinate system its field names. */
+export interface DagSnapshotRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** One node, where the layout put it and where that landed on the canvas. */
+export interface DagSnapshotNode {
+  id: string;
+  label: string | null;
+  sublabel: string | null;
+  category: string | null;
+  state: string | null;
+  layer: number;
+  world: DagSnapshotRect;
+  /** CSS pixels, origin at the canvas top-left. */
+  screen: DagSnapshotRect;
+  /** Whether the box overlaps the canvas at all. */
+  visible: boolean;
+}
+
+/** One routed edge, in both coordinate systems. */
+export interface DagSnapshotEdge {
+  from: string;
+  to: string;
+  label: string | null;
+  reversed: boolean;
+  world: { x: number; y: number }[];
+  screen: { x: number; y: number }[];
+}
+
+/**
+ * Everything on screen, as data. See the `snapshot` getter, and the
+ * right-click that copies this to the clipboard.
+ */
+export interface DagSnapshot {
+  capturedAt: string;
+  orientation: DagOrientation;
+  canvas: { width: number; height: number; dpr: number };
+  viewport: DagViewport;
+  bounds: DagSnapshotRect;
+  info: DagInfo;
+  nodes: DagSnapshotNode[];
+  edges: DagSnapshotEdge[];
+}
+
 // -- Constants ---------------------------------------------------------------------
 
 const MAX_DPR = 3;
 /** World-space tolerance for grabbing an edge, in CSS px at scale 1. */
 const EDGE_HIT_TOL = 6;
+
+/** How long the right-click's confirmation stays on screen, in ms. */
+const TOAST_MS = 2600;
 /**
  * Below this scale, node labels stop being drawn. The threshold is the
  * point where an 11px label is under ~4.5px and genuinely unreadable --
@@ -225,6 +276,8 @@ export class DagViewElement extends HTMLElement {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D | null = null;
   private tooltipEl: HTMLDivElement;
+  private toastEl: HTMLDivElement;
+  private toastTimer = 0;
   private emptyEl: HTMLDivElement;
   private noticeEl: HTMLButtonElement;
   private searchEl: HTMLInputElement;
@@ -322,6 +375,13 @@ export class DagViewElement extends HTMLElement {
     this.tooltipEl.className = 'tooltip';
     shadow.appendChild(this.tooltipEl);
 
+    // Says what the right-click did. Separate from the notice, which carries
+    // layout findings a reader dismisses on their own terms.
+    this.toastEl = document.createElement('div');
+    this.toastEl.className = 'toast';
+    this.toastEl.hidden = true;
+    shadow.appendChild(this.toastEl);
+
     this.fitBtn = this.makeButton('fit', 'fit-btn', 'Fit the whole graph on screen');
     this.zoomInBtn = this.makeButton('+', 'zoom-in-btn', 'Zoom in');
     this.zoomOutBtn = this.makeButton('−', 'zoom-out-btn', 'Zoom out');
@@ -369,6 +429,7 @@ export class DagViewElement extends HTMLElement {
     this.canvas.addEventListener('pointerleave', this.onPointerLeave);
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
     this.canvas.addEventListener('dblclick', this.onDoubleClick);
+    this.canvas.addEventListener('contextmenu', this.onContextMenu);
     this.addEventListener('keydown', this.onKeyDown);
     this.searchEl.addEventListener('input', this.onSearchInput);
     this.noticeEl.addEventListener('click', this.onNoticeDismiss);
@@ -394,6 +455,8 @@ export class DagViewElement extends HTMLElement {
     this.canvas.removeEventListener('pointerleave', this.onPointerLeave);
     this.canvas.removeEventListener('wheel', this.onWheel);
     this.canvas.removeEventListener('dblclick', this.onDoubleClick);
+    this.canvas.removeEventListener('contextmenu', this.onContextMenu);
+    clearTimeout(this.toastTimer);
     this.removeEventListener('keydown', this.onKeyDown);
     this.searchEl.removeEventListener('input', this.onSearchInput);
     this.noticeEl.removeEventListener('click', this.onNoticeDismiss);
@@ -524,6 +587,63 @@ export class DagViewElement extends HTMLElement {
     };
   }
 
+  /**
+   * The whole drawn state, in both coordinate systems, as a plain object.
+   *
+   * `world` is what the layout decided. `screen` is where that landed on the
+   * canvas in CSS pixels, with the origin at the canvas top-left, so a reader
+   * can measure what they are looking at: an empty band between two columns,
+   * a node parked off screen, a row that did not line up with the one above.
+   * A description of a gap is a guess. These numbers are the gap.
+   *
+   * `visible` says whether a node's box overlaps the canvas at all, so
+   * everything scrolled out of view is countable rather than merely missing.
+   */
+  get snapshot(): DagSnapshot {
+    this.ensureLayout();
+    const toScreen = (p: { x: number; y: number }): { x: number; y: number } => {
+      const s = worldToScreen(p, this.view);
+      return { x: round(s.x), y: round(s.y) };
+    };
+    return {
+      capturedAt: new Date().toISOString(),
+      orientation: this.orientation,
+      canvas: { width: round(this.cssW), height: round(this.cssH), dpr: this.dpr },
+      viewport: { x: round(this.view.x), y: round(this.view.y), scale: this.view.scale },
+      bounds: {
+        x: round(this.bounds.x),
+        y: round(this.bounds.y),
+        w: round(this.bounds.w),
+        h: round(this.bounds.h),
+      },
+      info: this.info,
+      nodes: this.layout.nodes.map((n) => {
+        const s = toScreen({ x: n.x, y: n.y });
+        const w = round(n.w * this.view.scale);
+        const h = round(n.h * this.view.scale);
+        return {
+          id: n.node.id,
+          label: n.node.label ?? null,
+          sublabel: n.node.sublabel ?? null,
+          category: n.node.category ?? null,
+          state: n.node.state ?? null,
+          layer: n.layer,
+          world: { x: round(n.x), y: round(n.y), w: round(n.w), h: round(n.h) },
+          screen: { x: s.x, y: s.y, w, h },
+          visible: s.x + w > 0 && s.y + h > 0 && s.x < this.cssW && s.y < this.cssH,
+        };
+      }),
+      edges: this.layout.edges.map((e) => ({
+        from: e.edge.from,
+        to: e.edge.to,
+        label: e.edge.label ?? null,
+        reversed: e.reversed,
+        world: e.points.map((p) => ({ x: round(p.x), y: round(p.y) })),
+        screen: e.points.map(toScreen),
+      })),
+    };
+  }
+
   get fullscreen(): boolean {
     return this.hasAttribute('fullscreen');
   }
@@ -635,6 +755,79 @@ export class DagViewElement extends HTMLElement {
     this.noticeDismissed = this.noticeEl.textContent ?? '';
     this.noticeEl.hidden = true;
   };
+
+  // -- The state dump --------------------------------------------------------------
+
+  /**
+   * Right-click copies the whole drawn state as JSON.
+   *
+   * A reader who can see something wrong with the picture usually cannot say
+   * it in numbers, and the numbers are what anybody else needs to act. This
+   * turns "there is a huge gap in the middle" into coordinates.
+   *
+   * It replaces the browser's own menu, which offers nothing for a canvas.
+   * Shift-right-click gets that menu back.
+   */
+  private onContextMenu = (e: MouseEvent): void => {
+    if (e.shiftKey) return;
+    e.preventDefault();
+    const text = JSON.stringify(this.snapshot, null, '\t');
+    void this.copyText(text).then(
+      () => {
+        const n = this.layout.nodes.length;
+        this.toast(`Copied graph state: ${n} node${n === 1 ? '' : 's'}, ${text.length} bytes`);
+        this.dispatchEvent(new CustomEvent('snapshotcopy', { detail: { text }, bubbles: true }));
+      },
+      (err: unknown) => {
+        // Never silent. A reader who thinks they copied and pasted nothing
+        // reports the wrong problem next.
+        this.toast('Could not reach the clipboard. The state is in the console.');
+        console.error('dag-view: copying the state failed', err);
+        console.log(text);
+      },
+    );
+  };
+
+  /**
+   * The clipboard, by whichever route this context allows.
+   *
+   * Two ways the async API comes to nothing, and they need different
+   * handling. A page served over plain http has no `navigator.clipboard` at
+   * all, because it is not a secure context. And a page that HAS it can still
+   * be refused: the write permission is the user's to withhold, and Chromium
+   * denies it outright to a page nobody has interacted with in the way it
+   * wants. Only the second was missed here, which left the failure path
+   * reachable in an ordinary browser. So the selection route runs after a
+   * rejection as well as after an absence.
+   */
+  private async copyText(text: string): Promise<void> {
+    if (navigator.clipboard !== undefined) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return;
+      } catch {
+        // Fall through to the selection route below.
+      }
+    }
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    area.remove();
+    if (!ok) throw new Error('the browser refused the copy');
+  }
+
+  private toast(text: string): void {
+    this.toastEl.textContent = text;
+    this.toastEl.hidden = false;
+    clearTimeout(this.toastTimer);
+    this.toastTimer = setTimeout(() => {
+      this.toastEl.hidden = true;
+    }, TOAST_MS) as unknown as number;
+  }
 
   // -- Search ----------------------------------------------------------------------
 
@@ -1463,6 +1656,14 @@ export class DagViewElement extends HTMLElement {
 // -- Drawing helpers -----------------------------------------------------------------
 
 /** A polyline with its corners rounded, appended to the current path. */
+/**
+ * A coordinate, to two decimals. The snapshot is read by a person, and a
+ * layout float carries seventeen digits of noise past the part that matters.
+ */
+function round(v: number): number {
+  return Math.round(v * 100) / 100;
+}
+
 function roundedPolyline(ctx: CanvasRenderingContext2D, pts: readonly { x: number; y: number }[], r: number): void {
   if (pts.length === 0) return;
   ctx.moveTo(pts[0].x, pts[0].y);
