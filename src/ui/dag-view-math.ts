@@ -311,42 +311,6 @@ export const DEFAULT_MAX_LAYER_WIDTH = 14;
  *
  * `max` of 0 turns this off and restores one row per layer.
  */
-/**
- * The width-to-height ratio a wrapped block is aimed at, in drawn units.
- * Close to the shape of the panel a graph is usually opened in.
- */
-export const WRAPPED_BLOCK_ASPECT = 2;
-
-/**
- * How much wider than tall one node's cell is, including the gaps around it.
- * Measured off this component's own layout of 81 short-labelled nodes: about
- * 226 units per column against 84 per row. A long label widens a cell, so a
- * block of long names comes out wider than the target.
- */
-export const CELL_ASPECT = 2.7;
-
-/**
- * How many rows a layer of `n` nodes wraps onto.
- *
- * `max` alone answers "is a row too wide to read", and it cannot answer
- * "is the drawing the right shape". A layer of 81 with a max of 14 splits
- * into 6 rows of 14, which draws about 2900 units wide and 670 tall. `fit`
- * scales the whole drawing to the panel, so a block that wide is scaled by
- * its width alone, the height goes unused, and every box lands too small to
- * carry its label. That is the picture the wrap was added to prevent, one
- * shape further on.
- *
- * So a layer that must wrap takes the row count that puts the block near
- * WRAPPED_BLOCK_ASPECT, and `max` stays as the ceiling on a row's width. A
- * layer that fits in one row is never split.
- */
-export function wrappedRowCount(n: number, max: number): number {
-  const atMost = Math.ceil(n / max);
-  if (atMost <= 1) return 1;
-  const square = Math.round(Math.sqrt((n * CELL_ASPECT) / WRAPPED_BLOCK_ASPECT));
-  return Math.max(atMost, square);
-}
-
 export function wrapWideLayers(layout: LayerResult, max = DEFAULT_MAX_LAYER_WIDTH): LayerResult {
   if (max <= 0) return layout;
   const members: number[][] = [];
@@ -359,7 +323,7 @@ export function wrapWideLayers(layout: LayerResult, max = DEFAULT_MAX_LAYER_WIDT
   for (const row of members) {
     // An empty layer still consumes its index, so a pinned node that named a
     // far layer keeps the gap it asked for.
-    const rows = row.length === 0 ? 1 : wrappedRowCount(row.length, max);
+    const rows = row.length === 0 ? 1 : Math.ceil(row.length / max);
     // Widen to the flattest split rather than filling every row to `max` and
     // leaving a remainder of one. 15 nodes read better as 8 and 7 than as 14
     // and 1.

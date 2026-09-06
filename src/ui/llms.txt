@@ -1655,16 +1655,10 @@ Exports:
     Longest-path layering. A node's `layer` hint can push it DOWN but
     never above one of its own dependencies; an overruled hint is named in
     ignoredPins. align: 'sources' (default) or 'sinks' (bottom-aligned).
-  wrappedRowCount(n, max) → number
-    How many rows a layer of n nodes wraps onto. `max` is the ceiling on a
-    row's width, and it cannot say what shape the block comes out. So a
-    layer that must wrap takes the row count that puts the block near
-    WRAPPED_BLOCK_ASPECT (2), estimating one cell at CELL_ASPECT (2.7)
-    times wider than tall. A layer that fits in one row is never split.
   wrapWideLayers(layered, max?) → LayerResult
-    Breaks each too-wide layer into consecutive rows, per wrappedRowCount.
-    Safe because longest-path layering never puts an edge's two ends on one
-    layer. max defaults to DEFAULT_MAX_LAYER_WIDTH (14); 0 turns it off.
+    Breaks each too-wide layer into consecutive rows. Safe because
+    longest-path layering never puts an edge's two ends on one layer. max
+    defaults to DEFAULT_MAX_LAYER_WIDTH (14); 0 turns it off.
   topoOrder(out, n) → number[]
     Kahn order, ties on index. A node left inside a cycle is APPENDED,
     never lost.
