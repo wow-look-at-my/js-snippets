@@ -41,7 +41,10 @@ interface Page {
 	waitForTimeout(ms: number): Promise<void>;
 	evaluate<T>(fn: () => T): Promise<Awaited<T>>;
 	$(selector: string): Promise<ElementHandle | null>;
-	mouse: { move(x: number, y: number): Promise<void>; click(x: number, y: number): Promise<void> };
+	mouse: {
+		move(x: number, y: number): Promise<void>;
+		click(x: number, y: number, options?: { button?: 'left' | 'right' | 'middle' }): Promise<void>;
+	};
 	keyboard: { press(key: string): Promise<void> };
 }
 interface Browser {
@@ -225,7 +228,65 @@ const selected = await page.evaluate(() => {
 check('clicking a node selects it', selected.selected === 'bundle', String(selected.selected));
 check('the nodeclick event reaches the page', /bundle/.test(selected.readout), selected.readout);
 
+// -- Interaction: right-click copies the drawn state ----------------------------------
+
+// Driven as the real gesture rather than by calling the getter, because what
+// has to hold is that a reader looking at a wrong picture can hand somebody
+// the numbers. A getter nothing is wired to does not do that.
+// The text is taken off the element's own event rather than read back from
+// the clipboard, which needs a permission this harness does not grant. The
+// toast covers the clipboard write itself: it only says "Copied" once that
+// resolved, and says something else when it did not.
+await page.evaluate(() => {
+	const el = document.getElementById('demo-dag')!;
+	el.addEventListener('snapshotcopy', (e) => {
+		(window as unknown as { __snap?: string }).__snap = (e as CustomEvent<{ text: string }>).detail.text;
+	});
+});
+await page.mouse.click(nodeScreenPoint.x, nodeScreenPoint.y, { button: 'right' });
+await page.waitForTimeout(150);
+
+const dump = await page.evaluate(() => {
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	const toast = el.shadowRoot!.querySelector<HTMLElement>('.toast')!;
+	const text = (window as unknown as { __snap?: string }).__snap ?? '';
+	return { text, toast: toast.textContent ?? '', hidden: toast.hidden };
+});
+check('the right-click says what it did', !dump.hidden && /Copied graph state/.test(dump.toast), dump.toast);
+
+let snap: {
+	canvas: { width: number; height: number };
+	viewport: { scale: number };
+	nodes: { id: string; screen: { x: number; y: number; w: number; h: number }; visible: boolean }[];
+	edges: { screen: { x: number; y: number }[] }[];
+} | null = null;
+try {
+	snap = JSON.parse(dump.text);
+} catch {
+	snap = null;
+}
+check('the clipboard holds parseable JSON', snap !== null, `${dump.text.length} bytes`);
+
+if (snap !== null) {
+	check('every drawn node is in the dump', snap.nodes.length === info.info.nodeCount, `${snap.nodes.length}`);
+	check('every drawn edge is in the dump', snap.edges.length > 0, `${snap.edges.length}`);
+	// The whole point of the screen half: these are canvas pixels, so a band
+	// of empty canvas can be measured off the dump instead of described.
+	const bundle = snap.nodes.find((n) => n.id === 'bundle');
+	const onCanvas =
+		bundle !== undefined &&
+		bundle.visible &&
+		bundle.screen.w > 0 &&
+		bundle.screen.x >= 0 &&
+		bundle.screen.x < snap.canvas.width;
+	check('a visible node carries its canvas pixels', onCanvas, JSON.stringify(bundle));
+	check('edge points carry canvas pixels too', snap.edges.every((e) => e.screen.length >= 2));
+}
+
 // -- Interaction: the arrow keys walk the graph ---------------------------------------
+
+await page.mouse.click(nodeScreenPoint.x, nodeScreenPoint.y);
+await page.waitForTimeout(120);
 
 await page.keyboard.press('ArrowDown');
 await page.waitForTimeout(120);
