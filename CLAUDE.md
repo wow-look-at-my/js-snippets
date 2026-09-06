@@ -310,7 +310,11 @@ No network anywhere: every fixture is generated locally.
 - **CI**: the `showcase` job in deploy.yml publishes `showcase/dist/` to
   buildhost via the org composite action
   `wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master`
-  (OIDC — needs job-level `id-token: write`). Branch preview URL:
+  (OIDC — needs job-level `id-token: write`). That action also hands the
+  published URL to the branch's open pull request, as one sticky comment per
+  site, which is why both publishing jobs grant `pull-requests: write`; the
+  library publish and the showcase publish therefore leave one comment each.
+  Branch preview URL:
   `https://sites.pazer.build/js-snippets/branch/<branch>/` with `/` in
   branch names flattened to `-` (e.g. `claude/foo` → `claude-foo`). The
   buildhost project MUST stay `js-snippets` (repo-derived): OIDC
