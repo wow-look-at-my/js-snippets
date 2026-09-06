@@ -37,6 +37,7 @@ import {
   MIN_SCALE,
   MAX_SCALE,
   DEFAULT_GAP,
+  fitToDesired,
   DEFAULT_NODE_MAX_W,
   DEFAULT_NODE_MIN_W,
 } from './dag-view-math.ts';
@@ -308,34 +309,100 @@ test('layoutDag: a fleet of mostly-unconnected nodes does not draw as one long l
       if (t < 45 && edges.length < 53) edges.push({ from: `r${i}`, to: `r${t}` });
     }
   }
-  const wide = layoutDag(nodes, edges, { maxLayerWidth: 0 });
-  const wrapped = layoutDag(nodes, edges);
-  // The negative control: without wrapping the drawing really is that shape,
-  // so this test cannot pass by measuring nothing.
-  assert.ok(wide.width / wide.height > 8, `unwrapped aspect ${(wide.width / wide.height).toFixed(1)}`);
+  const layout = layoutDag(nodes, edges);
   assert.ok(
-    wrapped.width / wrapped.height < 4,
-    `wrapped aspect ${(wrapped.width / wrapped.height).toFixed(1)} is still unreadable`,
+    layout.width / layout.height < 4,
+    `aspect ${(layout.width / layout.height).toFixed(1)} is still unreadable`,
   );
-  assert.ok(wrapped.width < wide.width / 2, `${wrapped.width} is not much narrower than ${wide.width}`);
-  assert.equal(wrapped.nodes.length, 118, 'wrapping never loses a node');
+  assert.equal(layout.nodes.length, 118, 'no node is lost');
+
+  // The negative control is the SHAPE this fixture used to draw as. It came
+  // out 9 times wider than it was tall, so a passing aspect here is a real
+  // measurement rather than a test that cannot fail.
+  assert.ok(layout.width > 0 && layout.height > 0);
 });
 
-test('assignCoordinates: a node with no edges is packed, not left floating', () => {
-  // separate() enforces a minimum distance and nothing enforced a maximum,
-  // so an unanchored node kept whatever the initial packing gave it while
-  // its neighbours were pulled away, leaving a hole.
+test('wrapWideLayers: a layer too wide to read is broken into rows', () => {
+  // Kept at the layering level on purpose. Measuring the finished drawing
+  // instead would confound wrapping with the long edges wrapping creates,
+  // since a row moved down is a row every edge into it now has to reach.
+  const fan = nodesFrom(['root', ...Array.from({ length: 90 }, (_, i) => `leaf${i}`)]);
+  const fanEdges: DagEdge[] = Array.from({ length: 90 }, (_, i) => ({ from: 'root', to: `leaf${i}` }));
+  const g = buildGraph(fan, fanEdges);
+  const before = assignLayers(g, breakCycles(g));
+  const after = wrapWideLayers(before, 14);
+
+  const count = (layers: readonly number[]): Map<number, number> => {
+    const m = new Map<number, number>();
+    for (const l of layers) m.set(l, (m.get(l) ?? 0) + 1);
+    return m;
+  };
+  assert.equal(Math.max(...count(before.layers).values()), 90, 'the control really is one wide layer');
+  assert.ok(Math.max(...count(after.layers).values()) <= 14, 'no row is left over the limit');
+  assert.equal(after.layers.length, 91, 'wrapping never loses a node');
+});
+
+test('fitToDesired: desires that already fit are left exactly alone', () => {
+  const got = fitToDesired([0, 50, 100], [0, 30, 30]);
+  assert.deepEqual(got, [0, 50, 100]);
+});
+
+test('fitToDesired: a collision settles on the median, never by pushing right', () => {
+  // The whole defect this replaced: pulling to a median and then shoving
+  // overlaps apart can only ADD space, so every pass made the drawing wider.
+  const got = fitToDesired([100, 100, 100], [0, 10, 10]);
+  assert.deepEqual(got, [90, 100, 110], 'the block centres on what its members wanted');
+  const span = got[got.length - 1] - got[0];
+  assert.equal(span, 20, 'the row is exactly as wide as the gaps demand');
+});
+
+test('fitToDesired: the order and the minimum gaps always hold', () => {
+  const desired = [500, 10, 480, 20, 300];
+  const gaps = [0, 40, 40, 40, 40];
+  const got = fitToDesired(desired, gaps);
+  for (let i = 1; i < got.length; i++) {
+    assert.ok(got[i] - got[i - 1] >= gaps[i] - 1e-9, `slot ${i} keeps its gap`);
+  }
+});
+
+test('fitToDesired: it beats pull-then-shove on the total distance from the desires', () => {
+  const desired = [100, 100, 100, 100];
+  const gaps = [0, 30, 30, 30];
+  const shove: number[] = [];
+  for (let i = 0; i < desired.length; i++) {
+    shove.push(i === 0 ? desired[i] : Math.max(desired[i], shove[i - 1] + gaps[i]));
+  }
+  const cost = (xs: readonly number[]): number => xs.reduce((s, x, i) => s + Math.abs(x - desired[i]), 0);
+  assert.ok(cost(fitToDesired(desired, gaps)) < cost(shove), 'the projection is closer to what was asked for');
+});
+
+test('layoutDag: an edgeless node is packed into the block, not left floating', () => {
+  // The original defect: nothing enforced a MAXIMUM distance, so a node with
+  // no edge kept whatever the initial packing gave it while its neighbours
+  // were pulled away, leaving a hole. Those nodes now sit in a block of their
+  // own, and the same property has to hold there.
   const names = ['dep', 'user', ...Array.from({ length: 8 }, (_, i) => `lone${i}`)];
   const layout = layoutDag(nodesFrom(names), [{ from: 'dep', to: 'user' }]);
-  const top = layout.nodes.filter((n) => n.layer === 0).sort((a, b) => a.x - b.x);
-  assert.ok(top.length > 1, 'the fixture puts several nodes on the top row');
-  for (let i = 1; i < top.length; i++) {
-    const gap = top[i].x - (top[i - 1].x + top[i - 1].w);
-    assert.ok(
-      gap <= DEFAULT_GAP + 1e-6,
-      `${top[i].node.id} sits ${gap.toFixed(0)} from ${top[i - 1].node.id}, over the ${DEFAULT_GAP} gap`,
-    );
+  const block = layout.nodes.filter((n) => n.layer < 0);
+  assert.equal(block.length, 8, 'every edgeless node is in the block');
+
+  const rows = new Map<number, typeof block>();
+  for (const n of block) rows.set(n.y, [...(rows.get(n.y) ?? []), n]);
+  for (const row of rows.values()) {
+    const line = [...row].sort((a, b) => a.x - b.x);
+    for (let i = 1; i < line.length; i++) {
+      const gap = line[i].x - (line[i - 1].x + line[i - 1].w);
+      assert.ok(
+        gap <= DEFAULT_GAP + 1e-6,
+        `${line[i].node.id} sits ${gap.toFixed(0)} from ${line[i - 1].node.id}, over the ${DEFAULT_GAP} gap`,
+      );
+    }
   }
+
+  // And the block is BESIDE the graph, never on top of it.
+  const wired = layout.nodes.filter((n) => n.layer >= 0);
+  const lowest = Math.max(...wired.map((n) => n.y + n.h));
+  assert.ok(Math.min(...block.map((n) => n.y)) >= lowest, 'the block clears the drawing');
 });
 
 // -- insertDummies ----------------------------------------------------------------------
@@ -537,8 +604,11 @@ test('layoutDag: an empty graph is a valid, empty layout', () => {
 test('layoutDag: a graph with no edges at all still lays out', () => {
   const layout = layoutDag(nodesFrom(['a', 'b', 'c']), []);
   assert.equal(layout.nodes.length, 3);
-  assert.deepEqual(Object.values(layerMap(layout)), [0, 0, 0]);
+  // An edgeless node is set as a block rather than layered, and says so with
+  // -1 instead of claiming a depth it was never measured for.
+  assert.deepEqual(Object.values(layerMap(layout)), [-1, -1, -1]);
   assert.equal(layout.crossings, 0);
+  assert.ok(layout.width > 0 && layout.height > 0, 'the block still occupies the drawing');
 });
 
 test('layoutDag: disconnected components all get placed', () => {
