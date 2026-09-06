@@ -246,6 +246,59 @@ await page.evaluate(() => {
 await page.mouse.click(nodeScreenPoint.x, nodeScreenPoint.y, { button: 'right' });
 await page.waitForTimeout(150);
 
+// The right-click opens a MENU. Copying on the click itself was invisible:
+// the browser's own menu is suppressed, so a reader who saw nothing open read
+// a working feature as a dead click.
+const menu = await page.evaluate(() => {
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	const m = el.shadowRoot!.querySelector<HTMLElement>('.menu')!;
+	return {
+		hidden: m.hidden,
+		items: [...m.querySelectorAll('.menu-item')].map((b) => b.textContent ?? ''),
+	};
+});
+check('the right-click opens a menu', !menu.hidden, JSON.stringify(menu));
+check(
+	'the menu offers the graph state and the node under the cursor',
+	menu.items.some((t) => /Copy graph state/.test(t)) && menu.items.some((t) => /^Copy id of/.test(t)),
+	menu.items.join(' | '),
+);
+
+// The component's pill rule used to be a bare `button` selector, which took
+// every menu item out of flow and drew all of them at one spot. Reading the
+// text back cannot see that -- only the boxes can.
+const rows = await page.evaluate(() => {
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	return [...el.shadowRoot!.querySelectorAll('.menu-item')].map((b) => {
+		const r = b.getBoundingClientRect();
+		return { top: Math.round(r.top), h: Math.round(r.height) };
+	});
+});
+check(
+	'the menu items are stacked, not piled on one spot',
+	rows.length > 1 && rows.every((r, i) => i === 0 || r.top >= rows[i - 1].top + rows[i - 1].h),
+	JSON.stringify(rows),
+);
+
+// Nothing is copied until an item is chosen.
+const beforeChoice = await page.evaluate(() => (window as unknown as { __snap?: string }).__snap ?? '');
+check('the menu copies nothing on its own', beforeChoice === '', `${beforeChoice.length} bytes`);
+
+await page.evaluate(() => {
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	const items = [...el.shadowRoot!.querySelectorAll<HTMLButtonElement>('.menu-item')];
+	items.find((b) => /Copy graph state/.test(b.textContent ?? ''))?.click();
+});
+await page.waitForTimeout(150);
+
+check(
+	'choosing an item closes the menu',
+	await page.evaluate(() => {
+		const el = document.getElementById('demo-dag') as DagViewElement;
+		return el.shadowRoot!.querySelector<HTMLElement>('.menu')!.hidden;
+	}),
+);
+
 const dump = await page.evaluate(() => {
 	const el = document.getElementById('demo-dag') as DagViewElement;
 	const toast = el.shadowRoot!.querySelector<HTMLElement>('.toast')!;

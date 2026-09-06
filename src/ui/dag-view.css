@@ -64,9 +64,13 @@ canvas {
 
 /* -- Buttons ---------------------------------------------------------------- */
 /* Every pill in the corner chrome is the same control, so it is one rule.
- * What differs per pill is its position and its glyph, nothing else. */
+ * What differs per pill is its position and its glyph, nothing else.
+ *
+ * It is keyed to .tool-btn rather than to `button`. A bare element rule here
+ * takes every other button in the shadow root out of flow, which is how the
+ * menu items first drew stacked on one another. */
 
-button {
+.tool-btn {
   position: absolute;
   z-index: 2;
   padding: 3px 9px 4px;
@@ -84,7 +88,7 @@ button {
   touch-action: manipulation;
 }
 
-button:hover {
+.tool-btn:hover {
   opacity: 1;
   transform: translateY(-1px);
 }
@@ -99,7 +103,7 @@ button[hidden] {
 }
 
 /* A pressed toggle reads as ON at a glance, not as "maybe focused". */
-button[aria-pressed='true'] {
+.tool-btn[aria-pressed='true'] {
   border-color: var(--dag-accent, #4aa3ff);
   color: var(--dag-accent, #4aa3ff);
   opacity: 1;
@@ -278,6 +282,44 @@ button[aria-pressed='true'] {
 
 .toast[hidden] {
   display: none;
+}
+
+/* -- Right-click menu ----------------------------------------------------------- */
+
+.menu {
+  position: absolute;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  padding: 4px;
+  border: 1px solid var(--dag-line, #2a3040);
+  border-radius: 6px;
+  background: var(--dag-bg, #0d0f14);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 45%);
+}
+
+.menu[hidden] {
+  display: none;
+}
+
+.menu-item {
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--dag-fg, #c9d1d9);
+  font: inherit;
+  font-size: var(--dag-font-size, 11px);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.menu-item:hover,
+.menu-item:focus-visible {
+  background: var(--dag-line, #2a3040);
+  outline: none;
 }
 
 /* -- Empty state ---------------------------------------------------------------- */
