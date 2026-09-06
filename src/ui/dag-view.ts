@@ -277,6 +277,7 @@ export class DagViewElement extends HTMLElement {
   private ctx: CanvasRenderingContext2D | null = null;
   private tooltipEl: HTMLDivElement;
   private toastEl: HTMLDivElement;
+  private menuEl: HTMLDivElement;
   private toastTimer = 0;
   private emptyEl: HTMLDivElement;
   private noticeEl: HTMLButtonElement;
@@ -382,6 +383,14 @@ export class DagViewElement extends HTMLElement {
     this.toastEl.hidden = true;
     shadow.appendChild(this.toastEl);
 
+    // The right-click menu. A canvas has no default menu worth keeping, and
+    // an action that fires with nothing on screen reads as a dead click.
+    this.menuEl = document.createElement('div');
+    this.menuEl.className = 'menu';
+    this.menuEl.setAttribute('role', 'menu');
+    this.menuEl.hidden = true;
+    shadow.appendChild(this.menuEl);
+
     this.fitBtn = this.makeButton('fit', 'fit-btn', 'Fit the whole graph on screen');
     this.zoomInBtn = this.makeButton('+', 'zoom-in-btn', 'Zoom in');
     this.zoomOutBtn = this.makeButton('−', 'zoom-out-btn', 'Zoom out');
@@ -401,7 +410,9 @@ export class DagViewElement extends HTMLElement {
 
   private makeButton(text: string, cls: string, title: string): HTMLButtonElement {
     const b = document.createElement('button');
-    b.className = cls;
+    // tool-btn carries the floating pill treatment. It is a class rather than
+    // a bare `button` rule, or every other button in here is placed by it.
+    b.className = `tool-btn ${cls}`;
     b.textContent = text;
     b.title = title;
     b.setAttribute('aria-label', title);
@@ -771,6 +782,65 @@ export class DagViewElement extends HTMLElement {
   private onContextMenu = (e: MouseEvent): void => {
     if (e.shiftKey) return;
     e.preventDefault();
+    const rect = this.canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const w = screenToWorld({ x, y }, this.view);
+    const ni = hitTestNodes(this.layout, w.x, w.y);
+    this.openMenu(x, y, ni >= 0 ? this.layout.nodes[ni].node.id : null);
+  };
+
+  /**
+   * Builds the menu at the cursor.
+   *
+   * A menu, rather than copying on the click itself. The copy was invisible:
+   * the browser's own menu is suppressed, and a reader who sees nothing open
+   * reads a working feature as a dead click and reports THAT.
+   *
+   * The item list depends on what is under the cursor, so a right-click on a
+   * node also offers the one thing that node can give.
+   */
+  private openMenu(x: number, y: number, node: string | null): void {
+    // The tooltip sits where the menu is about to, and it describes the node
+    // the menu now names. Two panels saying the same thing is one too many.
+    this.hideTooltip();
+    this.menuEl.textContent = '';
+    const items: { label: string; run: () => void }[] = [
+      { label: 'Copy graph state (JSON)', run: () => this.copySnapshot() },
+    ];
+    if (node !== null) items.push({ label: `Copy id of "${node}"`, run: () => this.copyNodeID(node) });
+    items.push({ label: 'Fit on screen', run: () => this.fit() });
+
+    for (const item of items) {
+      const btn = document.createElement('button');
+      btn.className = 'menu-item';
+      btn.type = 'button';
+      btn.setAttribute('role', 'menuitem');
+      btn.textContent = item.label;
+      btn.addEventListener('click', () => {
+        this.closeMenu();
+        item.run();
+      });
+      this.menuEl.appendChild(btn);
+    }
+
+    // Placed, then nudged back inside: the size is not known until it is in
+    // the document, and a menu half off the element cannot be clicked.
+    this.menuEl.hidden = false;
+    this.menuEl.style.left = `${x}px`;
+    this.menuEl.style.top = `${y}px`;
+    const host = this.getBoundingClientRect();
+    const box = this.menuEl.getBoundingClientRect();
+    if (box.right > host.right) this.menuEl.style.left = `${Math.max(0, x - box.width)}px`;
+    if (box.bottom > host.bottom) this.menuEl.style.top = `${Math.max(0, y - box.height)}px`;
+    this.menuEl.querySelector<HTMLButtonElement>('.menu-item')?.focus();
+  }
+
+  private closeMenu(): void {
+    this.menuEl.hidden = true;
+  }
+
+  private copySnapshot(): void {
     const text = JSON.stringify(this.snapshot, null, '\t');
     void this.copyText(text).then(
       () => {
@@ -786,7 +856,14 @@ export class DagViewElement extends HTMLElement {
         console.log(text);
       },
     );
-  };
+  }
+
+  private copyNodeID(id: string): void {
+    void this.copyText(id).then(
+      () => this.toast(`Copied ${id}`),
+      () => this.toast('Could not reach the clipboard.'),
+    );
+  }
 
   /**
    * The clipboard, by whichever route this context allows.
@@ -894,6 +971,10 @@ export class DagViewElement extends HTMLElement {
 
   private onPointerDown = (e: PointerEvent): void => {
     this.lastInputTs = performance.now();
+    // Any press on the canvas dismisses it, including the press that opens a
+    // second one. A menu left floating over a graph the reader has moved
+    // points at a node that is no longer under it.
+    this.closeMenu();
     const p = this.localPoint(e);
     this.pointers.set(e.pointerId, p);
     if (this.pointers.size === 2) {
@@ -1023,6 +1104,7 @@ export class DagViewElement extends HTMLElement {
    */
   private onWheel = (e: WheelEvent): void => {
     this.lastInputTs = performance.now();
+    this.closeMenu();
     const px = normalizeWheel(e.deltaY, e.deltaMode);
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
@@ -1090,6 +1172,14 @@ export class DagViewElement extends HTMLElement {
         }
         break;
       case 'Escape':
+        // The menu goes first and alone: Escape out of a menu must not also
+        // throw away the selection the reader opened it on.
+        if (!this.menuEl.hidden) {
+          e.preventDefault();
+          this.closeMenu();
+          this.focus();
+          break;
+        }
         if (this.selectedIndex >= 0 || this.searchQuery !== '') {
           e.preventDefault();
           this.searchEl.value = '';
