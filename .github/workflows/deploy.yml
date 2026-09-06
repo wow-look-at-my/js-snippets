@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write # the showcase job hands the preview URL to the pull request
   id-token: write # buildhost OIDC auth
   # The publish guard scans this run's jobs and the head SHA's check runs, and fails CLOSED without both reads.
   actions: read
@@ -145,6 +146,7 @@ jobs:
       checks: read
       artifact-metadata: write
       deployments: write
+      pull-requests: write # to hand the preview URL to the pull request
     steps:
       - uses: actions/checkout@v4
         with:
@@ -198,3 +200,30 @@ jobs:
           project: js-snippets # repo-derived: the only site project OIDC authorizes
           branch: ${{ steps.gate.outputs.branch }}
           source_dir: ./showcase/dist
+
+      # A gallery nobody is handed is a gallery nobody opens, and the whole point of publishing per branch is that a reviewer looks before merging.
+      - name: Hand the preview URL to the pull request
+        if: steps.gate.outputs.publish == 'true' && github.ref_name != 'master'
+        uses: wow-look-at-my/actions@typescript#latest
+        env:
+          SITE_BRANCH: ${{ steps.gate.outputs.branch }}
+        with:
+          secrets: ${{ toJSON(secrets) }}
+          script: |
+            const oct = getOctokit(secrets.GITHUB_TOKEN);
+            const { owner, repo } = context.repo;
+            const open = await oct.rest.pulls.list({ owner, repo, head: `${owner}:${github.ref_name}`, state: 'open' });
+            if (open.data.length === 0) return core.info('no open pull request for this branch yet');
+            const marker = '<!-- js-snippets-showcase-preview -->';
+            const url = `https://sites.pazer.build/js-snippets/branch/${process.env.SITE_BRANCH}/`;
+            const body = [
+              marker,
+              `**Component gallery:** ${url}`,
+              '',
+              'The site is private, so it needs a buildhost read token: append `?token=<BUILDHOST_READ_TOKEN>`.',
+            ].join('\n');
+            const issue_number = open.data[0].number;
+            const seen = await oct.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 });
+            const mine = seen.data.find((c) => c.body?.includes(marker));
+            if (mine) await oct.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+            else await oct.rest.issues.createComment({ owner, repo, issue_number, body });
