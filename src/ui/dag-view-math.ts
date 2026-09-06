@@ -285,6 +285,59 @@ export function assignLayers(graph: DagGraph, acyclic: CycleResult, opts: LayerO
 }
 
 /**
+ * Nodes per row before a layer wraps onto another row. A rank wider than
+ * this is not readable at any zoom, so it is broken up.
+ */
+export const DEFAULT_MAX_LAYER_WIDTH = 14;
+
+/**
+ * Break a layer that is too wide to read into consecutive rows.
+ *
+ * Longest-path layering answers "how deep is this node", and on a real
+ * fleet the answer is 0 for most of them: 118 repositories with 53
+ * dependencies between them leave about 70 with no internal dependency at
+ * all, and every one of those lands on layer 0. assignCoordinates then packs
+ * that layer into ONE row, because a layer is a row. The drawing comes out
+ * around 13000 units wide and 250 tall, and `fit` answers that shape by
+ * zooming out until every box is a coloured speck. The graph is not empty
+ * and it is not broken. It is unreadable, which the reader cannot tell
+ * apart.
+ *
+ * Splitting a layer is safe by construction. Longest-path layering puts an
+ * edge's two ends on DIFFERENT layers, so no two nodes sharing a layer have
+ * an edge between them, and consecutive rows carved out of one layer keep
+ * every edge pointing forwards. Later layers shift down by the rows added
+ * above them.
+ *
+ * `max` of 0 turns this off and restores one row per layer.
+ */
+export function wrapWideLayers(layout: LayerResult, max = DEFAULT_MAX_LAYER_WIDTH): LayerResult {
+  if (max <= 0) return layout;
+  const members: number[][] = [];
+  for (let i = 0; i <= layout.maxLayer; i++) members.push([]);
+  layout.layers.forEach((l, v) => members[l].push(v));
+
+  const layers = layout.layers.slice();
+  let next = 0;
+  let maxLayer = 0;
+  for (const row of members) {
+    // An empty layer still consumes its index, so a pinned node that named a
+    // far layer keeps the gap it asked for.
+    const rows = row.length === 0 ? 1 : Math.ceil(row.length / max);
+    // Widen to the flattest split rather than filling every row to `max` and
+    // leaving a remainder of one. 15 nodes read better as 8 and 7 than as 14
+    // and 1.
+    const per = row.length === 0 ? 0 : Math.ceil(row.length / rows);
+    row.forEach((v, i) => {
+      layers[v] = next + Math.floor(i / per);
+    });
+    maxLayer = Math.max(maxLayer, next + rows - 1);
+    next += rows;
+  }
+  return { layers, maxLayer, ignoredPins: layout.ignoredPins };
+}
+
+/**
  * Kahn topological order over an adjacency list, ties broken by node index
  * so the result is the same on every run. A graph with a cycle left in it
  * would strand nodes; they are appended in index order rather than dropped,
@@ -694,6 +747,45 @@ export function assignCoordinates(
     }
   };
 
+  // A slot with an edge at either end has a reason to sit where the
+  // straightening put it. One with no edge at all has none.
+  const anchored = (s: LayerSlot): boolean => {
+    const key = slotIdentity(s);
+    return (proper.pred.get(key)?.length ?? 0) > 0 || (proper.succ.get(key)?.length ?? 0) > 0;
+  };
+
+  /**
+   * Close the slack the straightening opens up.
+   *
+   * separate() enforces a MINIMUM distance and nothing enforces a maximum,
+   * so a node pulled toward a far-off neighbour's median leaves a hole where
+   * it used to be, and an unanchored node keeps whatever position the
+   * initial packing gave it. On a graph whose nodes are mostly unconnected
+   * that reads as boxes huddled at both ends of a row with a void between
+   * them, which is not a fact about the dependencies.
+   *
+   * Only unanchored slots move, and only up against a neighbour, so no
+   * alignment the straightening earned is undone.
+   */
+  const compact = (l: number): void => {
+    const row = rows[l];
+    for (let i = 1; i < row.length; i++) {
+      if (anchored(row[i])) continue;
+      const min = centers[l][i - 1] + cSizeOf(row[i - 1]) / 2 + gap + cSizeOf(row[i]) / 2;
+      if (centers[l][i] > min) centers[l][i] = min;
+    }
+    // A row that OPENS with unanchored slots cannot close its gap by moving
+    // left -- there is nothing to its left. Those slots move right instead,
+    // up against the first slot that does have a reason to be where it is.
+    let first = 0;
+    while (first < row.length && !anchored(row[first])) first++;
+    if (first === 0 || first >= row.length) return;
+    for (let i = first - 1; i >= 0; i--) {
+      const max = centers[l][i + 1] - cSizeOf(row[i + 1]) / 2 - gap - cSizeOf(row[i]) / 2;
+      if (centers[l][i] < max) centers[l][i] = max;
+    }
+  };
+
   for (let p = 0; p < passes; p++) {
     const up = p % 2 === 0;
     const order = up
@@ -706,6 +798,13 @@ export function assignCoordinates(
       }
       separate(l);
     }
+  }
+
+  // After the last pull, never between two of them: compacting mid-run would
+  // be undone by the next pass.
+  for (let l = 0; l < rows.length; l++) {
+    compact(l);
+    separate(l);
   }
 
   // Normalize so the drawing starts at 0 on the cross axis.
@@ -793,6 +892,8 @@ export interface DagLayoutOptions extends CoordOptions, LayerOptions {
   sizeOf?: (node: DagNode, index: number) => NodeSize;
   /** Ordering sweeps (see ORDER_SWEEPS). */
   sweeps?: number;
+  /** Nodes per row before a layer wraps. See wrapWideLayers. 0 = never wrap. */
+  maxLayerWidth?: number;
 }
 
 /**
@@ -808,7 +909,7 @@ export function layoutDag(
   const orientation = opts.orientation ?? 'TB';
   const graph = buildGraph(nodes, edges);
   const acyclic = breakCycles(graph);
-  const layered = assignLayers(graph, acyclic, opts);
+  const layered = wrapWideLayers(assignLayers(graph, acyclic, opts), opts.maxLayerWidth);
   const proper = insertDummies(graph, acyclic, layered);
   const crossings = orderLayers(proper, opts.sweeps);
   const sizeOf = opts.sizeOf ?? ((n: DagNode): NodeSize => measureNode(n));

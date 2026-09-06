@@ -13,6 +13,7 @@ import {
   assignCoordinates,
   slotIdentity,
   layoutDag,
+  wrapWideLayers,
   anchorPoint,
   measureNode,
   worldToScreen,
@@ -256,6 +257,85 @@ test('assignLayers: every edge still points strictly downward after cycle breaki
   acyclic.out.forEach((succ, v) => {
     for (const w of succ) assert.ok(l.layers[w] > l.layers[v], 'no edge is flat or backwards');
   });
+});
+
+// -- wrapWideLayers ---------------------------------------------------------------------
+
+test('wrapWideLayers: a layer too wide to read is split into consecutive rows', () => {
+  const g = buildGraph(nodesFrom(Array.from({ length: 30 }, (_, i) => `n${i}`)), []);
+  const wrapped = wrapWideLayers(assignLayers(g, breakCycles(g)), 14);
+  const counts = new Map<number, number>();
+  for (const l of wrapped.layers) counts.set(l, (counts.get(l) ?? 0) + 1);
+  assert.equal(counts.size, 3, '30 nodes at a cap of 14 need three rows');
+  for (const [layer, n] of counts) assert.ok(n <= 14, `layer ${layer} holds ${n}`);
+  // Evened out rather than filled to the cap with a remainder of two.
+  assert.deepEqual([...counts.values()], [10, 10, 10]);
+  assert.equal(wrapped.maxLayer, 2);
+});
+
+test('wrapWideLayers: splitting a layer keeps every edge pointing forward', () => {
+  // The property that makes this safe: longest-path layering never puts an
+  // edge's two ends on one layer, so rows carved out of a layer cannot
+  // contain one.
+  const names = Array.from({ length: 40 }, (_, i) => `n${i}`);
+  const edges: DagEdge[] = [];
+  for (let i = 0; i < 20; i++) edges.push({ from: `n${i}`, to: `n${i + 20}` });
+  const g = buildGraph(nodesFrom(names), edges);
+  const acyclic = breakCycles(g);
+  const wrapped = wrapWideLayers(assignLayers(g, acyclic), 6);
+  acyclic.out.forEach((succ, v) => {
+    for (const w of succ) {
+      assert.ok(wrapped.layers[w] > wrapped.layers[v], `n${v} -> n${w} still points down`);
+    }
+  });
+});
+
+test('wrapWideLayers: a cap of 0 leaves the layering exactly as it was', () => {
+  const g = buildGraph(nodesFrom(Array.from({ length: 30 }, (_, i) => `n${i}`)), []);
+  const before = assignLayers(g, breakCycles(g));
+  assert.deepEqual([...wrapWideLayers(before, 0).layers], [...before.layers]);
+});
+
+test('layoutDag: a fleet of mostly-unconnected nodes does not draw as one long line', () => {
+  // The failure this exists for: 118 repositories with 53 dependencies
+  // between them left about 70 on layer 0, one row packed them into a
+  // drawing 12 times wider than it was tall, and `fit` answered that by
+  // shrinking every box to a speck.
+  const nodes = nodesFrom(Array.from({ length: 118 }, (_, i) => `r${i}`));
+  const edges: DagEdge[] = [];
+  for (let i = 0; i < 45 && edges.length < 53; i++) {
+    for (const t of [i + 3, i + 7]) {
+      if (t < 45 && edges.length < 53) edges.push({ from: `r${i}`, to: `r${t}` });
+    }
+  }
+  const wide = layoutDag(nodes, edges, { maxLayerWidth: 0 });
+  const wrapped = layoutDag(nodes, edges);
+  // The negative control: without wrapping the drawing really is that shape,
+  // so this test cannot pass by measuring nothing.
+  assert.ok(wide.width / wide.height > 8, `unwrapped aspect ${(wide.width / wide.height).toFixed(1)}`);
+  assert.ok(
+    wrapped.width / wrapped.height < 4,
+    `wrapped aspect ${(wrapped.width / wrapped.height).toFixed(1)} is still unreadable`,
+  );
+  assert.ok(wrapped.width < wide.width / 2, `${wrapped.width} is not much narrower than ${wide.width}`);
+  assert.equal(wrapped.nodes.length, 118, 'wrapping never loses a node');
+});
+
+test('assignCoordinates: a node with no edges is packed, not left floating', () => {
+  // separate() enforces a minimum distance and nothing enforced a maximum,
+  // so an unanchored node kept whatever the initial packing gave it while
+  // its neighbours were pulled away, leaving a hole.
+  const names = ['dep', 'user', ...Array.from({ length: 8 }, (_, i) => `lone${i}`)];
+  const layout = layoutDag(nodesFrom(names), [{ from: 'dep', to: 'user' }]);
+  const top = layout.nodes.filter((n) => n.layer === 0).sort((a, b) => a.x - b.x);
+  assert.ok(top.length > 1, 'the fixture puts several nodes on the top row');
+  for (let i = 1; i < top.length; i++) {
+    const gap = top[i].x - (top[i - 1].x + top[i - 1].w);
+    assert.ok(
+      gap <= DEFAULT_GAP + 1e-6,
+      `${top[i].node.id} sits ${gap.toFixed(0)} from ${top[i - 1].node.id}, over the ${DEFAULT_GAP} gap`,
+    );
+  }
 });
 
 // -- insertDummies ----------------------------------------------------------------------

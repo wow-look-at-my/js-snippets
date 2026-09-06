@@ -4,9 +4,12 @@ name: CI / Deploy
 on:
   push:
     branches: ['**']
+  # Republish a preview without a commit that exists only to trigger one.
+  workflow_dispatch:
 
 permissions:
   contents: read
+  pull-requests: write # buildhost-publish-site hands each preview URL to the pull request
   id-token: write # buildhost OIDC auth
   # The publish guard scans this run's jobs and the head SHA's check runs, and fails CLOSED without both reads.
   actions: read
@@ -62,6 +65,8 @@ jobs:
           branch: ${{ steps.sitename.outputs.branch }}
           source_dir: dist
           public: 'true' # the library must stay anonymously importable
+          # The gallery below is the preview a reviewer opens; two comments per pull request is noise.
+          comment: 'false'
 
   # Prose style (ASD-STE100's mechanical subset) over the docs and the llms.txt files this repo serves to consumers.
   ste-lint:
@@ -145,6 +150,7 @@ jobs:
       checks: read
       artifact-metadata: write
       deployments: write
+      pull-requests: write # buildhost-publish-site hands the gallery URL to the pull request
     steps:
       - uses: actions/checkout@v4
         with:
@@ -198,3 +204,4 @@ jobs:
           project: js-snippets # repo-derived: the only site project OIDC authorizes
           branch: ${{ steps.gate.outputs.branch }}
           source_dir: ./showcase/dist
+
