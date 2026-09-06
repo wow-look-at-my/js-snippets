@@ -4,9 +4,7 @@ name: CI / Deploy
 on:
   push:
     branches: ['**']
-  # A preview is republished by pushing, so a branch whose last run predates a
-  # change in the PUBLISHING side had no way to pick it up without a commit
-  # that exists only to trigger one.
+  # Republish a preview without a commit that exists only to trigger one.
   workflow_dispatch:
 
 permissions:
