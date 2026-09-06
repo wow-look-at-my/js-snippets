@@ -63,6 +63,8 @@ jobs:
           branch: ${{ steps.sitename.outputs.branch }}
           source_dir: dist
           public: 'true' # the library must stay anonymously importable
+          # The gallery below is the preview a reviewer opens; two comments per pull request is noise.
+          comment: 'false'
 
   # Prose style (ASD-STE100's mechanical subset) over the docs and the llms.txt files this repo serves to consumers.
   ste-lint:
