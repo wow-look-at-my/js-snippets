@@ -4,7 +4,7 @@
 
 A library of reusable ES modules. Source is TypeScript (`.ts`) plus WGSL/GLSL shaders (`.wgsl`/`.glsl`) under `src/`. [ts0](https://github.com/wow-look-at-my/ts0) compiles them to JavaScript, which deploys to [buildhost](https://github.com/wow-look-at-my/buildhost) sites. **Only `.ts` and `.wgsl` files are committed — `.js` output is never checked in.**
 
-Base URL: `https://sites.pazer.build/js-snippets/branch/library` — the canonical consumption URL. The site is public (anonymous reads, `Access-Control-Allow-Origin: *`), and the code-split `chunk-*.js` siblings are served next to the entry modules, so imports resolve relative to it. Consumers import modules at runtime by URL — never vendored copies, never npm. The legacy GitHub Pages site at `https://wow-look-at-my.github.io/js-snippets` was unpublished 2026-07-20 and is permanently dead (fetches fail with a CORS error and no HTTP status) — do NOT import it or reintroduce the `github.io` origin anywhere; downstream consumers' CI fails on any reference. See "Deploy".
+Base URL: `https://sites.pazer.build/js-snippets/branch/library` — the canonical consumption URL. The site is public (anonymous reads, `Access-Control-Allow-Origin: *`), and the code-split `chunk-*.js` siblings are served next to the entry modules, so imports resolve relative to it. Consumers import modules at runtime by URL — never vendored copies, never npm. The legacy GitHub Pages site at `https://wow-look-at-my.github.io/js-snippets` was unpublished 2026-07-20 and is permanently dead (fetches fail with a CORS error and no HTTP status) — do NOT import it or reintroduce the `github.io` origin anywhere. Downstream consumers' CI fails on any reference. See "Deploy".
 
 ## Directory Layout
 
@@ -172,7 +172,7 @@ docs/timeline/span-9patch.md ← why spans stay path-drawn while pips are sprite
 docs/timeline-view.png     ← the README's <timeline-view> picture. Captured from the built showcase by scripts/screenshot-showcase.mjs (playwright + the preinstalled chromium), so it is the REAL component and cannot drift; regenerate after a visual change: pnpm build:showcase && node scripts/screenshot-showcase.mjs
 scripts/screenshot-showcase.mjs ← that capture (fails on any page error rather than writing a half-upgraded chart)
 .github/workflows/deploy.yml `ste-lint` job ← the org's ASD-STE100 mechanical-subset prose gate, `wow-look-at-my/actions@ste-lint#latest`, over the docs and the llms.txt files this repo serves. Six rules FAIL (hard-wrapped paragraphs, semicolons, sentences over 25 words, should/shall/could/might/would, comma splices, contractions); everything else warns. Run it through the action, never a local re-driver. STILL TO CONVERT (that count is real failures, not an exemption): src/ui/llms.txt — 1805 across 1591 lines, three quarters of them the hard-wrap rule. Add it to the job's `files` input once it passes
-scripts/check-dag-view.ts ← browser check for `<dag-view>` on the REAL element: upgrade, actual painted pixels, the cycle/rejected-edge reporting, hover tooltips, click selection, the arrow-key graph walk, the toolbar, and that search highlights rather than filters. NONE of this is reachable under `node --test`, and it also writes the reference screenshots. Run: `pnpm build:showcase && NODE_PATH=/opt/node22/lib/node_modules node scripts/check-dag-view.ts`. It is TypeScript, and node strips the types to run it: `ts0 build` type-checks `scripts/` as well as `src/`, so it imports `DagViewElement` as a type and a call this script gets wrong fails the BUILD instead of failing in the browser. The playwright surface it drives is typed locally, because playwright is installed globally (NODE_PATH) rather than depended on here
+scripts/check-dag-view.ts ← browser check for `<dag-view>` on the REAL element: upgrade, actual painted pixels, the cycle/rejected-edge reporting, hover tooltips, click selection, the arrow-key graph walk, the toolbar, and that search highlights rather than filters. It also builds ONE graph the gallery cannot hold: 118 nodes with three edges, the shape a dashboard hands it when a manifest sweep read nothing. Two failures there look identical on screen, a dark box with a couple of stray lines. Every edgeless node became a layer of its own, and the block they packed into was four times wider than tall, so the fit landed under `LOD_LABEL_SCALE` and drew boxes with no text. NONE of this is reachable under `node --test`, and it also writes the reference screenshots. Run: `pnpm build:showcase && NODE_PATH=/opt/node22/lib/node_modules node scripts/check-dag-view.ts`. It is TypeScript, and node strips the types to run it: `ts0 build` type-checks `scripts/` as well as `src/`, so it imports `DagViewElement` as a type and a call this script gets wrong fails the BUILD instead of failing in the browser. The playwright surface it drives is typed locally, because playwright is installed globally (NODE_PATH) rather than depended on here
 scripts/check-timeline-bounds.mjs ← browser check for `minTime`/`maxTime` on the REAL element (drives pointer/wheel input against the built showcase; the math under it is node-tested, these are the element-level properties nothing under `node --test` can reach). Run: `pnpm build:showcase && NODE_PATH=/opt/node22/lib/node_modules node scripts/check-timeline-bounds.mjs`
 bench/bench-gl.html        ← how many instant pips one frame can draw and still hold 30fps, per draw method: canvas2d path (batched / one each), canvas2d sprite blit, GL instanced quads, GL vert+index 4v/6i, GL path 12v/30i (the diamond as triangles, no texture), and spans path vs 9-patch. Run: `NODE_PATH=/opt/node22/lib/node_modules node scripts/run-bench.mjs bench/bench-gl.html`. It prints the GL renderer — a GPU-less runner falls back to SwiftShader and every GL row is then a software rasterizer's, so never quote one without it. On an M1 the ordering is GL quads >800k > sprite blit 30k > canvas2d path 4.6k markers/frame; the software numbers invert that, which is why no drawing decision may be made from a SwiftShader run. That M1 run predates the per-method size caps and the per-round ramp deadline, so its GL rows are FLOORS (they pressed against a shared 1M cap, and one resolved at 120fps without ever converging) — re-run before quoting a GL ceiling. For the span rows only the sub-pixel 9-patch variants mean anything; see docs/timeline/span-9patch.md
 llms-header.txt            ← preamble for combined llms.txt
@@ -194,17 +194,17 @@ pnpm install
 pnpm build      # ts0 build (type-check + compile src/ -> dist/) + assemble dist/llms.txt
 ```
 
-The build is [ts0](https://github.com/wow-look-at-my/ts0)'s **js library target**, selected because `ts0.json`'s `entry` is the `src/` *directory*. ts0 type-checks (`tsc --noEmit`) and then compiles every `.ts` under `src/` to a parallel `.js` under `dist/`, preserving structure (`src/webgpu/sky.ts` → `dist/webgpu/sky.js`). Each file is its own esbuild entry point. Code shared between modules (e.g. `vec3`, imported by `mat4`) is deduplicated into a `dist/chunk-*.js` and imported — never copied into each output; non-shared local imports and `.wgsl`/`.glsl` shaders stay inlined. A consumer still imports a single URL — the browser fetches any shared chunk transitively. Shaders — and component stylesheets — are imported as text via the `loaders: { ".wgsl": "text", ".glsl": "text", ".css": "text" }` field in `ts0.json` (ambient decls in `wgsl.d.ts` / `glsl.d.ts` / `css.d.ts`).
+The build is [ts0](https://github.com/wow-look-at-my/ts0)'s **js library target**. `ts0.json`'s `entry` is the `src/` *directory*, and that setting selects the target. ts0 type-checks the project with `tsc --noEmit`. It then compiles every `.ts` under `src/` to a parallel `.js` under `dist/`, preserving structure (`src/webgpu/sky.ts` → `dist/webgpu/sky.js`). Each file is its own esbuild entry point. Code shared between modules (e.g. `vec3`, imported by `mat4`) is deduplicated into a `dist/chunk-*.js` and imported — never copied into each output. Non-shared local imports and `.wgsl`/`.glsl` shaders stay inlined. A consumer still imports a single URL. The browser fetches any shared chunk transitively. Shaders and component stylesheets are imported as text via the `loaders: { ".wgsl": "text", ".glsl": "text", ".css": "text" }` field in `ts0.json` (ambient decls in `wgsl.d.ts` / `glsl.d.ts` / `css.d.ts`).
 
-ts0 also emits TypeScript declarations into `dist/` (default-on for the js library target): every compiled module gets a `.d.ts` sibling next to its `.js` (chunks and `*.test.*` excluded), deployed to the site at the same URL with the extension swapped — nothing new is committed, `dist/` stays gitignored.
+ts0 also emits TypeScript declarations into `dist/` (default-on for the js library target). Every compiled module gets a `.d.ts` sibling next to its `.js` (chunks and `*.test.*` excluded). Each sibling deploys to the site at the same URL with the extension swapped. Nothing new is committed, and `dist/` stays gitignored.
 
 `pnpm build` then runs `scripts/build-llms.mjs`, which combines `llms-header.txt` + all `src/**/llms.txt` files into `dist/llms.txt`.
 
-`ui/markdown-parse.ts` is the one module with **runtime dependencies** — `mdast-util-from-markdown` + `micromark-extension-gfm` + `mdast-util-gfm` (and `@types/mdast` for types). They are bundled by the build like any other import, and esbuild code-splits them into a chunk that only the two markdown modules import, so nothing else in the library pays for them (~37 KB gzipped when you do). This is deliberate: a hand-rolled markdown parser silently flattens nested lists, drops tables, and truncates a destination containing parens into a WRONG link — correctness belongs to micromark, and what stays local is only the safety transform.
+`ui/markdown-parse.ts` is the one module with **runtime dependencies** — `mdast-util-from-markdown` + `micromark-extension-gfm` + `mdast-util-gfm` (and `@types/mdast` for types). The build bundles them like any other import. Esbuild code-splits them into a chunk that only the markdown modules import, so nothing else in the library pays for them (~37 KB gzipped for a consumer that does). This is deliberate. A hand-rolled markdown parser silently flattens nested lists, drops tables, and truncates a destination containing parens into a WRONG link. Correctness belongs to micromark, and what stays local is only the safety transform.
 
-The package manager is **pnpm**, pinned via `package.json`'s `"packageManager"` field and provisioned by corepack (ships with Node — `corepack enable`), so no global install or third-party CI action is needed. Because ts0 is a git dependency that builds itself on install (its `prepare` runs `ts0`'s own build), pnpm requires its build script to be allowlisted — hence `"pnpm": { "onlyBuiltDependencies": ["ts0", "esbuild"] }` in `package.json` (`esbuild` is allowlisted too, only to silence pnpm's ignored-build-script warning; its binary already comes via optionalDependencies). This works under the pinned pnpm 10; pnpm 11 no longer reads the `pnpm` field in `package.json`, so when bumping the `packageManager` pin to 11+, move the allowlist into `pnpm-workspace.yaml`.
+The package manager is **pnpm**, pinned via `package.json`'s `"packageManager"` field. Corepack provisions it (ships with Node — `corepack enable`). So no global install or third-party CI action is needed. ts0 is a git dependency that builds itself on install (its `prepare` runs `ts0`'s own build). Because of that, pnpm requires its build script to be allowlisted. Hence `"pnpm": { "onlyBuiltDependencies": ["ts0", "esbuild"] }` in `package.json` (`esbuild` is allowlisted too, only to silence pnpm's ignored-build-script warning. Its binary already comes via optionalDependencies). This works under the pinned pnpm 10. A newer major pnpm release no longer reads the `pnpm` field in `package.json`. So when bumping the `packageManager` pin past that release, move the allowlist into `pnpm-workspace.yaml`.
 
-ts0 is a devDependency installed from git, pinned to a **branch** (never a commit): `package.json` references `wow-look-at-my/ts0#<branch>`. **No lockfile is committed** (`package-lock.json` and `pnpm-lock.yaml` are gitignored) so nothing freezes ts0 to a SHA — `pnpm install` resolves the branch to its current HEAD every time, and ts0's `prepare` script builds the `ts0` binary on install. `tsconfig.json` is **not** used by the build — ts0 generates its own type-check config (bundler resolution). The committed `tsconfig.json` exists only so editors/IDEs match CI; keep the two in sync. `@types/node` is a devDependency so the `node:test`/`node:assert` imports in the test files type-check (see Testing).
+ts0 is a devDependency installed from git, pinned to a **branch** (never a commit): `package.json` references `wow-look-at-my/ts0#<branch>`. **No lockfile is committed** (`package-lock.json` and `pnpm-lock.yaml` are gitignored). Nothing freezes ts0 to a SHA. `pnpm install` resolves the branch to its current HEAD every time. ts0's `prepare` script then builds the `ts0` binary on install. `tsconfig.json` is **not** used by the build — ts0 generates its own type-check config (bundler resolution). The committed `tsconfig.json` exists only so editors/IDEs match CI. Keep the two in sync. `@types/node` is a devDependency so the `node:test`/`node:assert` imports in the test files type-check (see Testing).
 
 ## Testing
 
@@ -218,122 +218,40 @@ Conventions:
 
 - **Tests are colocated** next to the module they cover as `src/<category>/<name>.test.ts` (e.g. `src/math/mat4.test.ts`). The default ts0 test glob is `**/*.test.ts`.
 - **The js-library build SKIPS `*.test.*`**, so tests never pollute `dist/` (verify with `find dist -name '*.test.js'` — it must be empty).
-- Each test file uses `import { test } from 'node:test'` + `import assert from 'node:assert/strict'`, imports the **source** module directly with the `.ts` extension (e.g. `import { … } from './mat4.ts'`), and uses `import type { … }` for type-only symbols — Node's strip-types loader elides `import type` but would fail to import a type as a value at runtime.
-- Source modules import sibling modules with the `.ts` extension on **value** imports (e.g. `import { lookAt } from '../math/mat4.ts'`) and `import type` for type-only ones. Both esbuild (the build) and Node's runtime ESM resolver accept this; an extensionless **value** import resolves under esbuild but NOT under `node --test`, so keep the extension.
-- Pure/algorithmic modules are unit-tested here; several tests are ports of the proven `smoke.mjs` oracles from the `scratch` repo (`sdf` from distance-field-shadows, `gaussian-kernel` from local-contrast).
-- **DOM/fetch/GPU-bound modules are NOT unit-tested under node.** The rule is to SPLIT the module, never to fake the environment: the logic moves to a sibling `-math`/`-logic`/`-parse` module and is tested exhaustively, the bound half is left to a browser harness. Which module is on which side of that line, and what covers the gap (the `showcase/` gallery, `scripts/check-dag-view.ts`, `scripts/check-timeline-bounds.mjs`) -- docs/testing-boundaries.md.
+- Each test file uses `import { test } from 'node:test'` + `import assert from 'node:assert/strict'`, and imports the **source** module directly with the `.ts` extension (e.g. `import { … } from './mat4.ts'`). It uses `import type { … }` for type-only symbols. Node's strip-types loader elides `import type` but fails to import a type as a value at runtime.
+- Source modules import sibling modules with the `.ts` extension on **value** imports (e.g. `import { lookAt } from '../math/mat4.ts'`) and `import type` for type-only ones. Both esbuild (the build) and Node's runtime ESM resolver accept this. An extensionless **value** import resolves under esbuild but NOT under `node --test`, so keep the extension.
+- Pure/algorithmic modules are unit-tested here. Several tests are ports of the proven `smoke.mjs` oracles from the `scratch` repo (`sdf` from distance-field-shadows, `gaussian-kernel` from local-contrast).
+- **DOM/fetch/GPU-bound modules are NOT unit-tested under node.** The rule is to SPLIT the module, never to fake the environment. The logic moves to a sibling `-math`/`-logic`/`-parse` module and is tested exhaustively. The bound half is left to a browser harness. Which module is on which side of that line, and what covers the gap, is in `docs/testing-boundaries.md` (the `showcase/` gallery, `scripts/check-dag-view.ts`, `scripts/check-timeline-bounds.mjs`).
 
 ## Deploy
 
-GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` job enables pnpm via corepack, runs `pnpm test` (type-check + `node --test`), then `pnpm build` (ts0 type-checks + compiles, then `dist/llms.txt` is assembled). A failing test fails CI and gates the publish (same job, later step). The `build` job then publishes `dist/` to buildhost sites via `wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master` (OIDC, project `js-snippets`, `public: 'true'` so consumers keep importing anonymously): `master` → the stable `library` site branch (the canonical base URL), any other branch → `library-<flattened-branch>` so a change is verifiable from a real URL before merge. This replaced the GitHub Pages deploy 2026-07-20 (mirroring webhook-runner#93) after the org's Actions artifact-storage quota froze Pages at its 07-15 content — the Pages site itself was unpublished the same day in the org-wide GitHub Pages shutdown, leaving buildhost as the library's only host; the `library-` prefix keeps the library sites clear of the showcase previews, which publish under the bare flattened branch name. The `showcase` job publishes the component gallery to buildhost per branch (see "Showcase" below); it self-gates on `src/ui/`+`showcase/` paths — watched WHOLE, since every UI component has a gallery section — and succeeds as a no-op otherwise, so it never blocks the org's all-builds aggregation.
+GitHub Actions (`.github/workflows/deploy.yml`) runs on every push. The `build` job enables pnpm via corepack, runs `pnpm test` (type-check + `node --test`), then `pnpm build` (ts0 type-checks + compiles, then `dist/llms.txt` is assembled). A failing test fails CI and gates the publish (same job, later step). The `build` job then publishes `dist/` to buildhost sites via `wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master` (OIDC, project `js-snippets`, `public: 'true'` so consumers keep importing anonymously). `master` publishes to the stable `library` site branch (the canonical base URL). Any other branch publishes to `library-<flattened-branch>`. So a change is verifiable from a real URL before merge. This replaced the GitHub Pages deploy on 2026-07-20 (mirroring webhook-runner#93). The org's Actions artifact-storage quota had frozen Pages at its 07-15 content. The Pages site itself was unpublished the same day, in the org-wide GitHub Pages shutdown, leaving buildhost as the library's only host. The `library-` prefix keeps the library sites clear of the showcase previews, which publish under the bare flattened branch name. The `showcase` job publishes the component gallery to buildhost per branch (see "Showcase" below). It self-gates on `src/ui/`+`showcase/` paths, watched WHOLE since every UI component has a gallery section. It succeeds as a no-op otherwise, so it never blocks the org's all-builds aggregation.
 
-Org CI facts that govern this workflow: the org's required `all-builds` merge gate is a **commit status** posted automatically by the required-builds-manager app, which aggregates every build on the SHA itself — no job here needs to be named for it, and NO job or check may ever be named `all-builds` (the buildhost publish actions fail the whole run when anything by that name exists on the SHA; the error says to rename — if a fan-in/aggregator job is ever needed, use a neutral name like `aggregate`). The buildhost-publish-site steps require the calling job to hold `actions: read` + `checks: read` and fail closed without them — deploy.yml grants both at the workflow level and re-grants them in the `showcase` job, because a job-level `permissions:` block REPLACES the workflow-level one — that, and the rest of this paragraph, is why those grants are there; deploy.yml's own comments cannot say it, because go-toolchain's common checks include `yaml-comment-block`, which fails the build on more than ONE comment-only line in a row in a workflow file (workflow prose belongs here, not in the YAML). Org CI also runs without GitHub Actions artifacts (the exhausted org artifact quota is what froze the old Pages deploy) — never add `actions/upload-artifact` steps; buildhost is the artifact transport.
+Org CI facts govern this workflow. The org's required `all-builds` merge gate is a **commit status**. The required-builds-manager app posts it automatically, and it aggregates every build on the SHA itself. No job here needs a name for it. NO job or check may ever be named `all-builds`. The buildhost publish actions fail the whole run when anything by that name exists on the SHA. The error tells you to rename it. If a fan-in/aggregator job is ever needed, use a neutral name like `aggregate`. The buildhost-publish-site steps require the calling job to hold `actions: read` + `checks: read`. They fail closed without them. deploy.yml grants both at the workflow level. It re-grants them in the `showcase` job too, because a job-level `permissions:` block REPLACES the workflow-level one. That, and the rest of this paragraph, is why those grants are there. Deploy.yml's own comments cannot say so, because go-toolchain's common checks include `yaml-comment-block`. That check fails the build on more than ONE comment-only line in a row in a workflow file. So workflow prose belongs here, not in the YAML. Org CI also runs without GitHub Actions artifacts, because the exhausted org artifact quota is what froze the old Pages deploy. Never add `actions/upload-artifact` steps. Buildhost is the artifact transport.
 
 ## Showcase (`showcase/`) — the component gallery
 
-**WHAT IT IS FOR.** Every DOM-bound component in `src/ui/` is deliberately
-NOT node-tested (see "Testing"): the pure half is unit-tested and the
-ELEMENT is not, because nothing under `node --test` can render one. The
-gallery is where they are actually exercised — ONE self-contained HTML file,
-published per branch, so a change is verifiable from a real URL before it
-merges. It is not a marketing page and not a timeline demo that grew: it is
-the only place a rendering regression can be caught at all.
+**WHAT IT IS FOR.** Every DOM-bound component in `src/ui/` is deliberately NOT node-tested (see "Testing"). The pure half is unit-tested. The ELEMENT is not, because nothing under `node --test` can render one. The gallery is where they are actually exercised — ONE self-contained HTML file, published per branch. So a change is verifiable from a real URL before it merges. It is not a marketing page. It is not a timeline demo that grew. It is the only place a rendering regression can be caught at all.
 
-**ADDING A UI COMPONENT MEANS ADDING A SECTION HERE.** That is the contract,
-not a nicety. A section's job is to put the treatments that are EASY TO GET
-WRONG on screen at once — the states a happy-path instance hides. Existing
-sections show the pattern: blank cells that must sort last in both
-directions, a display string that sorts differently from its real value, a
-filter-hides-everything empty state that must not read as "no data", a
-component with no listener wired (bar hidden, rows out of the tab order),
-and kinds no severity rule has ever heard of.
+**ADDING A UI COMPONENT MEANS ADDING A SECTION HERE.** That is the contract, not a nicety. A section's job is to put the treatments that are EASY TO GET WRONG on screen at once — the states a happy-path instance hides. Existing sections show the pattern. Blank cells must sort last in both directions. A display string can sort differently from its real value. A filter-hides-everything empty state must not read as "no data". A component can have no listener wired (bar hidden, rows out of the tab order). Some kinds appear that no severity rule has ever heard of.
 
-**A type-only import registers nothing.** A demo that references a component
-only as a TYPE (`el as DataTableElement`) has its import ELIDED, so the
-module never evaluates, the element never upgrades, and the section sits on
-its light-DOM "loading…" line — with the build green throughout. Every demo
-module therefore carries an explicit side-effect import
-(`import '../src/ui/data-table.ts';`) next to its `import type`. This is
-exactly the class of failure the gallery exists to surface, and it is
-invisible to `pnpm build`.
+**A type-only import registers nothing.** A demo that references a component only as a TYPE (`el as DataTableElement`) has its import ELIDED. So the module never evaluates. The element never upgrades. The section sits on its light-DOM "loading…" line, with the build green throughout. Every demo module therefore carries an explicit side-effect import (`import '../src/ui/data-table.ts';`) next to its `import type`. This is exactly the class of failure the gallery exists to surface. And it is invisible to `pnpm build`.
 
 Sections, in page order:
 
-- **`<timeline-view>`** — the live one: a fake, local, infinite feed keeping
-  every visual treatment of the chart on screen (queued lead-ins,
-  declared-wait hatching with ⧗/⏳ labels, failures, timeouts as a consumer
-  style-map key, cancelled runs with kill tails of cycling sizes,
-  instant-pip bursts, a viewport-crossing long span, packing bursts,
-  markers, connectors, lazy backward history with an end-of-history
-  boundary), plus a second compact instance demoing `--timeline-*`
-  retheming and auto-fit, plus the two STATIC-BOUNDS instances: `#floor`
-  (`minTime` only — on the same live feed, so a hard left stop and a
-  clock-following right edge are visibly independent) and `#static`
-  (both bounds, its own one-shot closed window — no now line, no pill,
-  no follow, and bars still running at the end stop exactly at it).
-  Data is generated deterministically as a pure
-  function of absolute time (`fake-data.ts`), so live ticks, lazy history
-  and resyncs always agree and the demo never runs dry.
-- **`<data-table>`** (`data-table-demo.ts`) — three instances: full
-  (query + two chip groups + sorting + keyboard-reachable rows), minimal,
-  and filtered-to-nothing. Fixed-seed fixture, so a visual change is a real
-  change and never the generator reshuffling.
-- **`<activity-feed>`** (`activity-feed-demo.ts`) — a `<data-table>`
-  underneath; the fixture mixes kinds the severity rules claim with kinds
-  no rule mentions, which is the derived-not-enumerated claim made visible.
-- **`<dag-view>`** (`dag-view-demo.ts`) — five instances. A build graph
-  carrying every node state in the style map plus a state no rule
-  mentions, a node with no category, a label far too long for its box, a
-  long edge that must bend around two layers, and two edges the graph
-  cannot draw (an unknown target and a self-loop) which the notice strip
-  must name. Then a three-service CYCLE — the case a layered drawing
-  cannot render without breaking something, so what is checked is that the
-  broken edge is still drawn, still points the true way, and is announced.
-  Then the same graph in `LR`, so an axis bug shows up as a difference
-  between two pictures on one page; a `--dag-*` retheme; and an empty one.
-  The fixture is hand-written, not generated: every node is carrying a
-  specific case and a random one would lose them.
+- **`<timeline-view>`** — the live one: a fake, local, infinite feed keeping every visual treatment of the chart on screen (queued lead-ins, declared-wait hatching with ⧗/⏳ labels, failures, timeouts as a consumer style-map key, cancelled runs with kill tails of cycling sizes, instant-pip bursts, a viewport-crossing long span, packing bursts, markers, connectors, lazy backward history with an end-of-history boundary). A second compact instance demos `--timeline-*` retheming and auto-fit. The STATIC-BOUNDS instances add two more: `#floor` (`minTime` only, on the same live feed, so a hard left stop and a clock-following right edge are visibly independent), and `#static` (both bounds, its own one-shot closed window — no now line, no pill, no follow, and bars still running at the end stop exactly at it). Data is generated deterministically as a pure function of absolute time (`fake-data.ts`). So live ticks, lazy history, and resyncs always agree. The demo never runs dry.
+- **`<data-table>`** (`data-table-demo.ts`) — the instances are full (query + chip groups + sorting + keyboard-reachable rows), minimal, and filtered-to-nothing. Fixed-seed fixture. So a visual change is a real change and never the generator reshuffling.
+- **`<activity-feed>`** (`activity-feed-demo.ts`) — a `<data-table>` underneath. The fixture mixes kinds the severity rules claim with kinds no rule mentions, which is the derived-not-enumerated claim made visible.
+- **`<dag-view>`** (`dag-view-demo.ts`) — the instances cover a set of cases. A build graph carries every node state in the style map, plus a state no rule mentions. It adds a node with no category, and a label far too long for its box. It adds a long edge that must bend around several layers. It adds edges the graph cannot draw — an unknown target and a self-loop — which the notice strip must name. Then a three-service CYCLE follows. That is the case a layered drawing cannot render without breaking something. What is checked there is that the broken edge is still drawn, still points the true way, and is announced. Then the same graph appears in `LR`. So an axis bug shows up as a difference between the pictures on one page. A `--dag-*` retheme follows. Then an empty one. The fixture is hand-written, not generated. Every node carries a specific case, and a random one loses them.
 
 No network anywhere: every fixture is generated locally.
 
-- **Build**: `pnpm build:showcase` → `showcase/dist/index.html` (gitignored via
-  the root `dist/` pattern). `showcase/ts0.json` selects ts0's single-HTML
-  target (`entry: index.html`); the component and page code are bundled and
-  inlined from THIS branch's `../src/ui/`, so every branch previews its own
-  chart. The `esbuild.loader` override (not `loaders`) is what makes the
-  component's `.css` text import work under the HTML target — and it replaces
-  the loader map of build-html's `<link>` stylesheet pass, which is why
-  `page.css` is imported/adopted from `main.ts` instead of `<link>`ed.
-- **Isolation**: `showcase/ts0.json` makes it a nested ts0 project, so the
-  root build/type-check/test skip it entirely (library `dist/` is
-  byte-identical with or without `showcase/`). Do not add `*.test.ts` here.
-- **CI**: the `showcase` job in deploy.yml publishes `showcase/dist/` to
-  buildhost via the org composite action
-  `wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master`
-  (OIDC — needs job-level `id-token: write`). Branch preview URL:
-  `https://sites.pazer.build/js-snippets/branch/<branch>/` with `/` in
-  branch names flattened to `-` (e.g. `claude/foo` → `claude-foo`). The
-  buildhost project MUST stay `js-snippets` (repo-derived): OIDC
-  auto-provisioning only authorizes the repo's own project name, and the
-  sites router rejects slash-namespaced names — anything else 404s with
-  "project not found".
-- **Path gate**: the job publishes only when the branch's diff vs
-  origin/master touches `src/ui/`, `showcase/`, or deploy.yml itself
-  (master pushes always publish). The gate is in-job (a TypeScript-action
-  step), NEVER a workflow-level paths filter — the same workflow runs the
-  library build.
-- **Access — private by operator decision (2026-07-15)**: the preview is
-  token-gated (`Authorization: Bearer …` or `?token=…`) because the repo is
-  private, so buildhost's OIDC-auto-provisioned `js-snippets` project — and
-  its sites — is private too. The operator has explicitly ruled it stays
-  that way ("do not make it public, i like it the way it is"). Do NOT add
-  `public: 'true'` to the showcase job's buildhost-publish-site step in
-  deploy.yml — that is not a missing fix, it is a rejected option.
-- **Post-#39 note**: the page feature-detects newer component API
-  (`legendEntries`, the built-in `cancelled` style) so it builds against any
-  branch's `src/ui`; rendering-side features (minimap, fullscreen, skip
-  clustering, kill-tail scrims, edge fades) light up automatically once the
-  bundled component has them.
+- **Build**: `pnpm build:showcase` → `showcase/dist/index.html` (gitignored via the root `dist/` pattern). `showcase/ts0.json` selects ts0's single-HTML target (`entry: index.html`). The component and page code are bundled and inlined from THIS branch's `../src/ui/`, so every branch previews its own chart. The `esbuild.loader` override (not `loaders`) is what makes the component's `.css` text import work under the HTML target. It replaces the loader map of build-html's `<link>` stylesheet pass. That is why `page.css` is imported/adopted from `main.ts` instead of `<link>`ed.
+- **Isolation**: `showcase/ts0.json` makes it a nested ts0 project, so the root build/type-check/test skip it entirely (library `dist/` is byte-identical with or without `showcase/`). Do not add `*.test.ts` here.
+- **CI**: the `showcase` job in deploy.yml publishes `showcase/dist/` to buildhost via the org composite action `wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master` (OIDC — needs job-level `id-token: write`). Branch preview URL: `https://sites.pazer.build/js-snippets/branch/<branch>/` with `/` in branch names flattened to `-` (e.g. `claude/foo` → `claude-foo`). The buildhost project MUST stay `js-snippets` (repo-derived). OIDC auto-provisioning only authorizes the repo's own project name. The sites router also rejects slash-namespaced names. Anything else 404s with "project not found".
+- **Path gate**: the job publishes only when the branch's diff vs origin/master touches `src/ui/`, `showcase/`, or deploy.yml itself (master pushes always publish). The gate is in-job (a TypeScript-action step), NEVER a workflow-level paths filter — the same workflow runs the library build.
+- **Access — private by operator decision (2026-07-15)**: the preview is token-gated (`Authorization: Bearer …` or `?token=…`) because the repo is private. So buildhost's OIDC-auto-provisioned `js-snippets` project, and its sites, are private too. The operator has explicitly ruled it stays that way ("do not make it public, i like it the way it is"). Do NOT add `public: 'true'` to the showcase job's buildhost-publish-site step in deploy.yml — that is not a missing fix. It is a rejected option.
+- **Post-#39 note**: the page feature-detects newer component API (`legendEntries`, the built-in `cancelled` style) so it builds against any branch's `src/ui`. Rendering-side features (minimap, fullscreen, skip clustering, kill-tail scrims, edge fades) light up automatically once the bundled component has them.
 
 ## llms.txt — CRITICAL
 
@@ -354,14 +272,14 @@ When you add, remove, rename, or change the API of any module:
 1. Update the `llms.txt` in that module's folder
 2. This is not optional — it is part of completing the task
 
-If you are reading any `llms.txt` and notice ANY inaccuracy, missing module, wrong function signature, stale description, or other inconsistency — **fix it immediately**, even if you didn't cause the problem. Seeing a problem and not fixing it is the same as introducing it yourself.
+You may be reading any `llms.txt` and notice ANY inaccuracy, missing module, wrong function signature, stale description, or other inconsistency. **Fix it immediately**, even if you did not cause the problem. Seeing a problem and not fixing it is the same as introducing it yourself.
 
 ## Adding a New Module
 
 1. Create `src/<category>/<name>.ts` (and `shaders/<name>.wgsl` if needed)
 2. **Update `src/<category>/llms.txt`** with the new module's path, exports, and description
-3. If it's a new category, create a new `src/<category>/llms.txt`
-4. **Add a colocated `src/<category>/<name>.test.ts`** (`node:test`) covering the module's pure surface — import the source with the `.ts` extension, `import type` for type-only symbols (see Testing). DOM/fetch/GPU-bound modules can skip node unit tests; note the gap rather than forcing a fake.
+3. If it is a new category, create a new `src/<category>/llms.txt`
+4. **Add a colocated `src/<category>/<name>.test.ts`** (`node:test`) covering the module's pure surface — import the source with the `.ts` extension, `import type` for type-only symbols (see Testing). DOM/fetch/GPU-bound modules can skip node unit tests. Note the gap rather than forcing a fake.
 5. Run `pnpm test` (type-check + tests) and `pnpm build` (type-check + compile) to verify both
 6. Commit and push
 
@@ -370,8 +288,8 @@ If you are reading any `llms.txt` and notice ANY inaccuracy, missing module, wro
 - All math functions return new values — no mutation
 - Mat4 is column-major Float32Array(16), perspective uses WebGPU clip-Z [0,1]
 - WebGPU modules assume `rgba32float` textures unless documented otherwise
-- All `webgpu/geometry.ts` generators wind triangles CCW viewed from outside (front-facing under WebGPU's default `frontFace: 'ccw'`; oracle in `geometry.test.ts`) — use `flipWinding(mesh)` for interiors or geometry drawn under a mirror transform, and a mirrored (determinant < 0) draw pass needs the opposite `frontFace`
-- Shaders (WGSL and GLSL) live in `src/<category>/shaders/` alongside the `.ts` that imports them; both import as text (`ts0.json` loaders, ambient decls in `wgsl.d.ts`/`glsl.d.ts`)
-- Keep modules self-contained — a consumer should only need one import
+- All `webgpu/geometry.ts` generators wind triangles CCW viewed from outside (front-facing under WebGPU's default `frontFace: 'ccw'`. Oracle in `geometry.test.ts`) — use `flipWinding(mesh)` for interiors or geometry drawn under a mirror transform, and a mirrored (determinant < 0) draw pass needs the opposite `frontFace`
+- Shaders (WGSL and GLSL) live in `src/<category>/shaders/` alongside the `.ts` that imports them. Both import as text (`ts0.json` loaders, ambient decls in `wgsl.d.ts`/`glsl.d.ts`)
+- Keep modules self-contained — a consumer must only need one import
 - **No TypeScript parameter properties** (`constructor(private x: T)`) anywhere under `src/`: `pnpm test` runs the `.ts` through node's STRIP-ONLY type removal, which rejects any syntax that emits code. Declare the field and assign it.
-- `ui/timeline-wire.ts` (decoder) and `timelinewire/` (Go encoder) are the two halves of ONE format and live together here — a producer imports the package instead of restating the layout, which is how it used to drift. They are held in step by ONE fixture, `timelinewire/testdata/golden-v1.b64`: the Go test asserts the encoder still emits it, the TS test decodes it. Changing the layout is a NEW VERSION (new magic, new media type) with its own fixture, never an edit to that one.
+- `ui/timeline-wire.ts` (decoder) and `timelinewire/` (Go encoder) are the halves of ONE format, and they live together here. A producer imports the package instead of restating the layout, which is how it used to drift. They are held in step by ONE fixture, `timelinewire/testdata/golden-v1.b64`. The Go test asserts the encoder still emits it. The TS test decodes it. Changing the layout is a NEW VERSION (new magic, new media type) with its own fixture, never an edit to that one.

@@ -416,6 +416,69 @@ const empty = await page.evaluate(() => {
 check('an empty graph shows its empty state', !empty.hidden && empty.nodes === 0, JSON.stringify(empty));
 check("the empty text is the consumer's", /No dependencies recorded/.test(empty.text), empty.text);
 
+// -- Dashboard scale ---------------------------------------------------------------------
+// The shape a real consumer hands this: every repository in an org is a node,
+// and a manifest sweep that read nothing leaves almost all of them edgeless.
+// The gallery's graphs are small enough that nothing here can go wrong in
+// them, which is why this case is built rather than looked up.
+//
+// It went wrong twice, and both failures look identical on screen -- a dark
+// box with a couple of stray lines. Edgeless nodes each became a layer of
+// their own, so 118 repositories with one three-node chain reported 11
+// layers. And the block they packed into was four times wider than tall
+// against a canvas that is not, so the fit was bound by width and landed at
+// 0.35 -- under LOD_LABEL_SCALE, where the component draws boxes and no text.
+// Its own comment names that state: "shows a reader nothing but coloured
+// boxes and reads as broken".
+
+const scaled = await page.evaluate(async () => {
+	const host = document.createElement('div');
+	host.style.cssText = 'width:1200px;height:800px;position:fixed;left:-4000px;top:0';
+	const el = document.createElement('dag-view') as DagViewElement;
+	el.style.cssText = 'display:block;width:100%;height:100%';
+	host.appendChild(el);
+	document.body.appendChild(host);
+
+	const ids: string[] = [];
+	for (let i = 0; i < 118; i++) ids.push(`owner/repo-${String(i).padStart(3, '0')}`);
+	el.setData({
+		nodes: ids.map((id) => ({ id, label: id.split('/')[1], sublabel: id.split('/')[0] })),
+		// One three-node chain and one pair: the longest chain is what a layer
+		// count may be derived from, and nothing else is.
+		edges: [
+			{ from: ids[3], to: ids[7] },
+			{ from: ids[7], to: ids[11] },
+			{ from: ids[20], to: ids[21] },
+		],
+	});
+	await new Promise((r) => requestAnimationFrame(r));
+	await new Promise((r) => setTimeout(r, 300));
+	const snap = el.snapshot;
+	host.remove();
+	return {
+		layerCount: snap.info.layerCount,
+		scale: snap.viewport.scale,
+		bounds: snap.bounds,
+		offScreen: snap.nodes.filter((n) => !n.visible).length,
+	};
+});
+check(
+	'an edgeless node does not become a layer of its own',
+	scaled.layerCount === 3,
+	`layerCount ${scaled.layerCount} over a longest chain of 3`,
+);
+check(
+	'the fitted view stays above the label LOD, so the nodes read as nodes',
+	scaled.scale >= 0.4,
+	`fit scale ${scaled.scale.toFixed(3)}, under LOD_LABEL_SCALE 0.4`,
+);
+check(
+	'the drawn block is not far wider than the canvas it has to fit',
+	scaled.bounds.w / scaled.bounds.h < 2,
+	`bounds ${scaled.bounds.w}x${scaled.bounds.h}`,
+);
+check('nothing is parked off screen after the fit', scaled.offScreen === 0, `${scaled.offScreen} off screen`);
+
 // -- Screenshots -------------------------------------------------------------------------
 
 if (shots) {

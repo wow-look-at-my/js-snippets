@@ -461,7 +461,7 @@ export function insertDummies(graph: DagGraph, acyclic: CycleResult, layout: Lay
 // -- Ordering (crossing reduction) --------------------------------------------------
 
 /** Sweeps of the median heuristic run before the transpose pass gives up. */
-export const ORDER_SWEEPS = 8;
+export const ORDER_SWEEPS = 16;
 
 /**
  * Reorder the slots inside each layer to reduce edge crossings: the
@@ -624,6 +624,8 @@ export interface NodeSize {
 export interface CoordOptions {
   /** Gap between adjacent boxes within a layer. */
   gap?: number;
+  /** Gap between two adjacent edge routing slots. See DEFAULT_ROUTE_GAP. */
+  routeGap?: number;
   /** Gap between layers, measured between facing edges. */
   layerGap?: number;
   /** Cross-axis width reserved for a dummy (an edge passing through). */
@@ -635,7 +637,91 @@ export interface CoordOptions {
 export const DEFAULT_GAP = 24;
 export const DEFAULT_LAYER_GAP = 56;
 export const DEFAULT_DUMMY_WIDTH = 12;
-export const DEFAULT_COORD_PASSES = 6;
+/**
+ * Straightening passes. Each one is measured and only an improvement is
+ * kept, so a higher number can no longer make the drawing worse -- it only
+ * costs time.
+ */
+export const DEFAULT_COORD_PASSES = 12;
+
+/**
+ * Two edge routing slots side by side need enough room to read as two lines
+ * and no more. Charging them the full box gap is what turns a row carrying
+ * scores of long edges into thousands of units of empty space.
+ */
+export const DEFAULT_ROUTE_GAP = 10;
+
+/**
+ * Put each slot as close as it can get to where it WANTS to be, keeping the
+ * row's order and a minimum gap between neighbours.
+ *
+ * This is the whole difference between a drawing that reads and the strip
+ * this replaced. Pulling a slot to its neighbours' median and then shoving
+ * overlaps apart enforces a minimum and nothing else, so every pass can only
+ * add space: on a real fleet graph that stretched the drawing from 4688
+ * units wide to 13882 and added 43% to the total edge length, and more
+ * passes never recovered it.
+ *
+ * Minimizing the total distance from the desired positions cannot do that.
+ * Where the desires already fit, they are used unchanged. Where they collide,
+ * the block that forms sits at its members' median, which is the position
+ * that minimizes the sum of absolute errors. So a row is never wider than
+ * what its own nodes asked for.
+ *
+ * The constraint x[i] - x[i-1] >= gap[i] becomes a plain "not decreasing"
+ * once each position is shifted by the gaps before it, which is the standard
+ * isotonic regression that pool-adjacent-violators solves exactly.
+ *
+ * `gap[i]` is the minimum distance from slot i-1 to slot i. gap[0] is unused.
+ */
+export function fitToDesired(desired: readonly number[], gap: readonly number[]): number[] {
+  const n = desired.length;
+  if (n === 0) return [];
+
+  // Shift out the gaps, so the only remaining constraint is monotonicity.
+  const prefix = new Array<number>(n).fill(0);
+  for (let i = 1; i < n; i++) prefix[i] = prefix[i - 1] + (gap[i] ?? 0);
+  const target = desired.map((d, i) => d - prefix[i]);
+
+  // Each block keeps its members' values sorted, so its median is a lookup.
+  const blockValues: number[][] = [];
+  const blockCount: number[] = [];
+  const median = (v: readonly number[]): number => {
+    const m = v.length >> 1;
+    return v.length % 2 === 1 ? v[m] : (v[m - 1] + v[m]) / 2;
+  };
+
+  for (const t of target) {
+    blockValues.push([t]);
+    blockCount.push(1);
+    // A block that wants to sit left of the one before it cannot: merge them
+    // and let the pair share one position.
+    while (blockValues.length > 1) {
+      const b = blockValues.length - 1;
+      if (median(blockValues[b - 1]) <= median(blockValues[b])) break;
+      const merged: number[] = [];
+      let i = 0;
+      let j = 0;
+      const left = blockValues[b - 1];
+      const right = blockValues[b];
+      while (i < left.length || j < right.length) {
+        if (j >= right.length || (i < left.length && left[i] <= right[j])) merged.push(left[i++]);
+        else merged.push(right[j++]);
+      }
+      blockValues.splice(b - 1, 2, merged);
+      blockCount.splice(b - 1, 2, blockCount[b - 1] + blockCount[b]);
+    }
+  }
+
+  const out = new Array<number>(n);
+  let at = 0;
+  for (let b = 0; b < blockValues.length; b++) {
+    const v = median(blockValues[b]);
+    for (let k = 0; k < blockCount[b]; k++) out[at + k] = v + prefix[at + k];
+    at += blockCount[b];
+  }
+  return out;
+}
 
 /** A laid-out slot: its cross-axis center and its extent along the layer axis. */
 export interface SlotPlacement {
@@ -682,6 +768,7 @@ export function assignCoordinates(
   opts: CoordOptions = {},
 ): CoordResult {
   const gap = opts.gap ?? DEFAULT_GAP;
+  const routeGap = opts.routeGap ?? DEFAULT_ROUTE_GAP;
   const layerGap = opts.layerGap ?? DEFAULT_LAYER_GAP;
   const dummyW = opts.dummyWidth ?? DEFAULT_DUMMY_WIDTH;
   const passes = opts.passes ?? DEFAULT_COORD_PASSES;
@@ -689,6 +776,14 @@ export function assignCoordinates(
 
   const cSizeOf = (s: LayerSlot): number => (s.node >= 0 ? sizes[s.node].w : dummyW);
   const lSizeOf = (s: LayerSlot): number => (s.node >= 0 ? sizes[s.node].h : 0);
+
+  // Two routing slots are two lines and need only room to read apart. A box
+  // against anything needs the full gap.
+  const gapBetween = (a: LayerSlot, b: LayerSlot): number => (a.node < 0 && b.node < 0 ? routeGap : gap);
+
+  // Minimum center-to-center distance for each slot from the one before it.
+  const gapsFor = (row: readonly LayerSlot[]): number[] =>
+    row.map((s, i) => (i === 0 ? 0 : cSizeOf(row[i - 1]) / 2 + gapBetween(row[i - 1], s) + cSizeOf(s) / 2));
 
   // Layer-axis offsets: each layer is as tall as its tallest box.
   const layerStart: number[] = [];
@@ -705,12 +800,12 @@ export function assignCoordinates(
 
   // Initial packing.
   const centers: number[][] = rows.map((row) => {
+    const gaps = gapsFor(row);
     const out: number[] = [];
     let x = 0;
-    for (const s of row) {
-      const w = cSizeOf(s);
-      out.push(x + w / 2);
-      x += w + gap;
+    for (let i = 0; i < row.length; i++) {
+      x = i === 0 ? cSizeOf(row[0]) / 2 : x + gaps[i];
+      out.push(x);
     }
     return out;
   });
@@ -734,17 +829,7 @@ export function assignCoordinates(
   };
 
   const separate = (l: number): void => {
-    const row = rows[l];
-    // Left to right, then right to left: one direction alone drifts the
-    // whole layer toward the end it swept from.
-    for (let i = 1; i < row.length; i++) {
-      const minC = centers[l][i - 1] + cSizeOf(row[i - 1]) / 2 + gap + cSizeOf(row[i]) / 2;
-      if (centers[l][i] < minC) centers[l][i] = minC;
-    }
-    for (let i = row.length - 2; i >= 0; i--) {
-      const maxC = centers[l][i + 1] - cSizeOf(row[i + 1]) / 2 - gap - cSizeOf(row[i]) / 2;
-      if (centers[l][i] > maxC) centers[l][i] = maxC;
-    }
+    centers[l] = fitToDesired(centers[l], gapsFor(rows[l]));
   };
 
   // A slot with an edge at either end has a reason to sit where the
@@ -771,7 +856,7 @@ export function assignCoordinates(
     const row = rows[l];
     for (let i = 1; i < row.length; i++) {
       if (anchored(row[i])) continue;
-      const min = centers[l][i - 1] + cSizeOf(row[i - 1]) / 2 + gap + cSizeOf(row[i]) / 2;
+      const min = centers[l][i - 1] + cSizeOf(row[i - 1]) / 2 + gapBetween(row[i - 1], row[i]) + cSizeOf(row[i]) / 2;
       if (centers[l][i] > min) centers[l][i] = min;
     }
     // A row that OPENS with unanchored slots cannot close its gap by moving
@@ -781,24 +866,106 @@ export function assignCoordinates(
     while (first < row.length && !anchored(row[first])) first++;
     if (first === 0 || first >= row.length) return;
     for (let i = first - 1; i >= 0; i--) {
-      const max = centers[l][i + 1] - cSizeOf(row[i + 1]) / 2 - gap - cSizeOf(row[i]) / 2;
+      const max = centers[l][i + 1] - cSizeOf(row[i + 1]) / 2 - gapBetween(row[i], row[i + 1]) - cSizeOf(row[i]) / 2;
       if (centers[l][i] < max) centers[l][i] = max;
     }
   };
 
+  /**
+   * Total cross-axis distance the edges travel, which is the thing a reader
+   * experiences as a tangle. Only the cross axis moves here, so this is the
+   * whole difference between two candidate placements.
+   */
+  const wireLength = (): number => {
+    let sum = 0;
+    rows.forEach((row, l) => {
+      if (l + 1 >= rows.length) return;
+      const posByIdentity = new Map<string, number>();
+      rows[l + 1].forEach((t, ti) => posByIdentity.set(slotIdentity(t), ti));
+      row.forEach((s, i) => {
+        for (const key of proper.succ.get(slotIdentity(s)) ?? []) {
+          const ti = posByIdentity.get(key);
+          if (ti !== undefined) sum += Math.abs(centers[l][i] - centers[l + 1][ti]);
+        }
+      });
+    });
+    return sum;
+  };
+
+  /**
+   * Every routing slot of one long edge is one block, and a block moves as a
+   * unit.
+   *
+   * This is the idea Brandes and Koepf's coordinate assignment is built on.
+   * A long edge is chopped into a slot per layer it crosses, and each slot
+   * is free to sit wherever its own row's median wants it. Left alone they
+   * disagree, and the edge draws as a staircase through the middle of the
+   * picture. Held together, it draws as one straight line.
+   *
+   * Real nodes are never in a block: a node has its own reasons to sit where
+   * it does, and a long edge passing nearby is not one of them.
+   */
+  const blockOf = new Map<string, number>();
+  const blockMembers: string[][] = [];
+  for (const chain of proper.chains.values()) {
+    const dummies = chain.filter((id) => id.startsWith('d'));
+    if (dummies.length < 2) continue;
+    const b = blockMembers.length;
+    blockMembers.push(dummies);
+    for (const id of dummies) blockOf.set(id, b);
+  }
+
+  /** Where each slot sits, indexed the same way the rows are. */
+  const slotAt = new Map<string, { l: number; i: number }>();
+  rows.forEach((row, l) => row.forEach((s, i) => slotAt.set(slotIdentity(s), { l, i })));
+
+  // One position per block: the median of what its slots wanted, which is
+  // the value minimizing the total distance from all of them.
+  const alignBlocks = (desiredByRow: number[][]): void => {
+    for (const members of blockMembers) {
+      const wants: number[] = [];
+      for (const id of members) {
+        const at = slotAt.get(id);
+        if (at !== undefined) wants.push(desiredByRow[at.l][at.i]);
+      }
+      if (wants.length === 0) continue;
+      wants.sort((a, b) => a - b);
+      const m = wants.length >> 1;
+      const v = wants.length % 2 === 1 ? wants[m] : (wants[m - 1] + wants[m]) / 2;
+      for (const id of members) {
+        const at = slotAt.get(id);
+        if (at !== undefined) desiredByRow[at.l][at.i] = v;
+      }
+    }
+  };
+
+  // A sweep is a guess, not an improvement: the up pass and the down pass
+  // want different things, and on a real graph the second one can undo what
+  // the first bought. So every pass is MEASURED and the best is what ships.
+  // Taking whatever the last pass produced is how a layout gets worse the
+  // harder it works.
+  let best = centers.map((row) => row.slice());
+  let bestScore = wireLength();
   for (let p = 0; p < passes; p++) {
     const up = p % 2 === 0;
     const order = up
       ? Array.from({ length: rows.length }, (_, i) => i)
       : Array.from({ length: rows.length }, (_, i) => rows.length - 1 - i);
-    for (const l of order) {
-      for (let i = 0; i < rows[l].length; i++) {
-        const m = neighbourMedian(l, i, up);
-        if (m !== null) centers[l][i] = m;
-      }
-      separate(l);
+    // A slot with nothing in the swept direction still has a reason to sit
+    // somewhere: the other side. Leaving it where the packing put it is what
+    // makes a sink layer drift away from the graph that feeds it.
+    const desiredByRow = rows.map((row, l) =>
+      row.map((_, i) => neighbourMedian(l, i, up) ?? neighbourMedian(l, i, !up) ?? centers[l][i]),
+    );
+    alignBlocks(desiredByRow);
+    for (const l of order) centers[l] = fitToDesired(desiredByRow[l], gapsFor(rows[l]));
+    const score = wireLength();
+    if (score < bestScore) {
+      bestScore = score;
+      best = centers.map((row) => row.slice());
     }
   }
+  centers.splice(0, centers.length, ...best.map((row) => row.slice()));
 
   // After the last pull, never between two of them: compacting mid-run would
   // be undone by the next pass.
@@ -902,6 +1069,201 @@ export interface DagLayoutOptions extends CoordOptions, LayerOptions {
  * ordinary path.
  */
 export function layoutDag(
+  nodes: readonly DagNode[],
+  edges: readonly DagEdge[],
+  opts: DagLayoutOptions = {},
+): DagLayout {
+  const probe = buildGraph(nodes, edges);
+  const degree = new Array<number>(probe.nodes.length).fill(0);
+  for (const e of probe.edges) {
+    degree[e.from]++;
+    degree[e.to]++;
+  }
+  // A node with no edge is not part of the dependency structure, and putting
+  // it in a layer says it is. On a real fleet most repositories depend on
+  // nothing internal: 82 of 151 here. Layering them added five rows the
+  // connected graph then had to tunnel every long edge through, which is 130
+  // routing slots and their crossings bought for nothing.
+  //
+  // A pinned node keeps its layer. The caller asked for that position, and
+  // with no edge there is nothing to contradict it.
+  const parts = componentsOf(probe, degree);
+  if (parts.wired.length > 1 || parts.loose.length > 0) return layoutBlocks(probe, parts, opts);
+  return layoutConnected(nodes, edges, opts);
+}
+
+/** The wired components, largest first, and the edgeless nodes on their own. */
+interface GraphParts {
+  wired: number[][];
+  loose: number[];
+}
+
+/**
+ * Split into pieces that share no edge.
+ *
+ * Two components have nothing to say to each other, so laying them out in
+ * shared rows is what stretches a two-node chain across the whole drawing to
+ * sit beside a hub it has no connection to.
+ */
+function componentsOf(graph: DagGraph, degree: readonly number[]): GraphParts {
+  const near = graph.nodes.map((): number[] => []);
+  for (const e of graph.edges) {
+    near[e.from].push(e.to);
+    near[e.to].push(e.from);
+  }
+  const seen = new Array<boolean>(graph.nodes.length).fill(false);
+  const wired: number[][] = [];
+  const loose: number[] = [];
+  for (let v = 0; v < graph.nodes.length; v++) {
+    if (seen[v]) continue;
+    // A pinned node named its own layer, so it stays in the layered part
+    // even with no edge to hold it there.
+    if (degree[v] === 0 && graph.nodes[v].layer === undefined) {
+      seen[v] = true;
+      loose.push(v);
+      continue;
+    }
+    const stack = [v];
+    const members: number[] = [];
+    seen[v] = true;
+    while (stack.length > 0) {
+      const u = stack.pop() as number;
+      members.push(u);
+      for (const w of near[u]) {
+        if (seen[w]) continue;
+        seen[w] = true;
+        stack.push(w);
+      }
+    }
+    members.sort((a, b) => a - b);
+    wired.push(members);
+  }
+  wired.sort((a, b) => b.length - a.length || a[0] - b[0]);
+  return { wired, loose };
+}
+
+/** Shifts a finished layout, boxes and routed points alike. */
+function translateLayout(layout: DagLayout, dx: number, dy: number): DagLayout {
+  return {
+    ...layout,
+    nodes: layout.nodes.map((n) => ({ ...n, x: n.x + dx, y: n.y + dy })),
+    edges: layout.edges.map((e) => ({
+      ...e,
+      points: e.points.map((p) => ({ x: p.x + dx, y: p.y + dy })),
+    })),
+  };
+}
+
+/**
+ * Lay every piece out on its own, then set the pieces side by side.
+ *
+ * Shelf packing, widest row first, against a target width taken from the
+ * total area. A piece keeps its own internal drawing exactly, so nothing the
+ * layering earned is disturbed -- only where the piece SITS changes.
+ */
+function layoutBlocks(probe: DagGraph, parts: GraphParts, opts: DagLayoutOptions): DagLayout {
+  const orientation = opts.orientation ?? 'TB';
+  const sizeOf = opts.sizeOf ?? ((n: DagNode): NodeSize => measureNode(n));
+  const gap = opts.gap ?? DEFAULT_GAP;
+  const layerGap = opts.layerGap ?? DEFAULT_LAYER_GAP;
+
+  const inputEdges = probe.edges.map((e) => e.edge);
+  const blocks = parts.wired.map((members) => {
+    const keep = new Set(members);
+    const sub = members.map((i) => probe.nodes[i]);
+    const subEdges = probe.edges.filter((e) => keep.has(e.from) && keep.has(e.to)).map((e) => e.edge);
+    return layoutConnected(sub, subEdges, opts);
+  });
+
+  // The edgeless nodes are one block of their own, packed as a grid rather
+  // than a line: 82 boxes in a row is a drawing nobody can read.
+  const looseNodes = parts.loose.map((i) => probe.nodes[i]);
+  const looseSizes = looseNodes.map((n, i) => sizeOf(n, i));
+  const looseArea = looseSizes.reduce((s, z) => s + (z.w + gap) * (z.h + gap), 0);
+  const graphArea = blocks.reduce((s, b) => s + (b.width + gap) * (b.height + gap), 0);
+  // A landscape target, because a reader's window is wider than it is tall.
+  const target = Math.max(
+    blocks.reduce((m, b) => Math.max(m, b.width), 0),
+    Math.sqrt(Math.max(1, graphArea + looseArea) * 1.7),
+  );
+
+  const looseBlock: PlacedNode[] = [];
+  {
+    let cursor = 0;
+    let lineStart = 0;
+    let lineThick = 0;
+    looseNodes.forEach((n, i) => {
+      const size = looseSizes[i];
+      if (cursor > 0 && cursor + size.w > target) {
+        lineStart += lineThick + gap;
+        cursor = 0;
+        lineThick = 0;
+      }
+      looseBlock.push({ node: n, index: -1, layer: -1, x: cursor, y: lineStart, w: size.w, h: size.h });
+      cursor += size.w + gap;
+      lineThick = Math.max(lineThick, size.h);
+    });
+  }
+  const looseW = looseBlock.reduce((m, p) => Math.max(m, p.x + p.w), 0);
+  const looseH = looseBlock.reduce((m, p) => Math.max(m, p.y + p.h), 0);
+
+  // Shelf the wired blocks, then the edgeless block last so it reads as an
+  // appendix rather than as part of the structure.
+  const shelved: DagLayout[] = [];
+  let x = 0;
+  let y = 0;
+  let rowThick = 0;
+  let width = 0;
+  for (const b of blocks) {
+    if (x > 0 && x + b.width > target) {
+      y += rowThick + layerGap;
+      x = 0;
+      rowThick = 0;
+    }
+    shelved.push(translateLayout(b, x, y));
+    x += b.width + layerGap;
+    width = Math.max(width, x - layerGap);
+    rowThick = Math.max(rowThick, b.height);
+  }
+  const afterWired = blocks.length === 0 ? 0 : y + rowThick;
+  const looseY = blocks.length === 0 ? 0 : afterWired + layerGap;
+  for (const p of looseBlock) p.y += looseY;
+
+  const allNodes = [...shelved.flatMap((b) => b.nodes), ...looseBlock];
+  const byId = new Map<string, number>();
+  allNodes.forEach((p, i) => byId.set(p.node.id, i));
+  const byEdge = new Map<DagEdge, number>();
+  inputEdges.forEach((e, i) => byEdge.set(e, i));
+
+  // Each block numbered its own nodes from zero, so an edge's endpoints move
+  // by however many nodes the blocks before it contributed.
+  const cycleEdges: number[] = [];
+  const edges: PlacedEdge[] = [];
+  let nodeOffset = 0;
+  for (const b of shelved) {
+    for (const e of b.edges) {
+      if (e.reversed) cycleEdges.push(edges.length);
+      edges.push({ ...e, index: byEdge.get(e.edge) ?? edges.length, from: e.from + nodeOffset, to: e.to + nodeOffset });
+    }
+    nodeOffset += b.nodes.length;
+  }
+
+  const layoutOut: DagLayout = {
+    nodes: allNodes,
+    edges,
+    byId,
+    width: Math.max(width, looseW),
+    height: Math.max(afterWired, looseBlock.length === 0 ? 0 : looseY + looseH),
+    orientation,
+    crossings: shelved.reduce((s, b) => s + b.crossings, 0),
+    cycleEdges,
+    rejected: probe.rejected,
+    ignoredPins: shelved.flatMap((b) => b.ignoredPins),
+  };
+  return layoutOut;
+}
+
+function layoutConnected(
   nodes: readonly DagNode[],
   edges: readonly DagEdge[],
   opts: DagLayoutOptions = {},
@@ -1304,7 +1666,10 @@ export function neighbourhood(layout: DagLayout, index: number): Neighbourhood {
 /** Longest dependency chain in the layout, in nodes. */
 export function criticalPathLength(layout: DagLayout): number {
   let max = 0;
-  for (const n of layout.nodes) max = Math.max(max, n.layer + 1);
+  // An edgeless node is not in the layering and carries no layer, but it is
+  // still a chain of one. Reading its -1 as a length would answer zero for a
+  // graph that plainly holds nodes.
+  for (const n of layout.nodes) max = Math.max(max, n.layer < 0 ? 1 : n.layer + 1);
   return max;
 }
 
