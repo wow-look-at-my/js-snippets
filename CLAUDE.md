@@ -163,6 +163,7 @@ showcase/                  ← the COMPONENT GALLERY: one section per DOM-bound 
 ├── data-table-demo.ts     ← <data-table> section (three instances: full / minimal / filtered-to-nothing)
 ├── activity-feed-demo.ts  ← <activity-feed> section (kinds the severity rules know, and kinds they do not)
 ├── dag-view-demo.ts       ← <dag-view> section (five instances: the build graph with every node state, a cycle, LR, a retheme, and empty)
+├── perf-graph-demo.ts     ← <perf-graph> section (the full HUD, a compact five-gauge strip, fixed against autoscaled, and empty)
 ├── fake-data.ts           ← deterministic fake-run generator (pure fn of absolute time) + mulberry32, shared by every section
 ├── page.css               ← page chrome (adopted from main.ts as a text import)
 └── assets.d.ts            ← ambient *.css/*.wgsl/*.glsl decls for the nested project's own type-check

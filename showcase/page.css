@@ -219,3 +219,30 @@ activity-feed {
    through the element's styleText hatch (see data-table-demo.ts). What the
    page CAN do from out here is set the custom properties above, because
    those inherit through the boundary. */
+
+/* -- <perf-graph> ------------------------------------------------------------
+ *
+ * The column is the HUD's natural width. The strip is a flex row of five
+ * compact gauges, each one a table-cell-sized box, so the compact mode is
+ * seen at the width it is meant for.
+ */
+.perf-column {
+	max-width: 320px;
+}
+.perf-strip {
+	display: flex;
+	gap: 4px;
+	max-width: 640px;
+}
+.perf-strip perf-graph {
+	width: 120px;
+	flex: 0 0 auto;
+}
+.perf-pair {
+	display: flex;
+	gap: 8px;
+	max-width: 640px;
+}
+.perf-pair perf-graph {
+	flex: 1 1 0;
+}

@@ -484,12 +484,15 @@ property setters reflect back to the attributes):
             1-2-5 gridlines, range quantized so ticks stay put)
   budget  — guide value (e.g. 16.7) drawn as a dashed amber line, always
             kept inside the displayed range
+  compact — boolean. One row of label + current value over the trace, no
+            avg/min/max line, no tick labels, 24px default height. The
+            shape for a strip of gauges in a table row.
 
 Element properties / methods:
   push(value: number)  — append one sample; schedules (at most) one rAF redraw
   clear()              — drop all samples
   refreshTheme()       — re-read the --perf-graph-* custom properties
-  label, unit, history, height: reflected properties for the attributes
+  label, unit, history, height, compact: reflected properties for the attributes
   min, max, budget: number | null (null = attribute absent)
 
 CSS custom properties (read via getComputedStyle, cached; dark Scratch

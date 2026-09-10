@@ -50,6 +50,8 @@ export * from './perf-graph-math.ts';
 
 const DEFAULT_HISTORY = 240;
 const DEFAULT_HEIGHT = 48;
+/** Default height of a `compact` graph: one text row over the trace. */
+const DEFAULT_HEIGHT_COMPACT = 24;
 const DEFAULT_UNIT = 'ms';
 const MAX_TICKS = 3;
 const PAD_X = 3; // CSS px text inset
@@ -95,11 +97,14 @@ type Theme = typeof THEME_DEFAULTS;
  * properties): `label`, `unit` ('ms' default | 'fps' | custom suffix | ''),
  * `history` (sample count, default 240), `height` (CSS px, default 48),
  * `min` / `max` (fixed scale ends; absent → autoscale), `budget` (dashed
- * guide value, e.g. 16.7). API: push(value), clear(), refreshTheme().
+ * guide value, e.g. 16.7), `compact` (boolean: one row of label + current
+ * value over the trace, no stats line, no tick labels, 24px default height —
+ * the size for a strip of gauges in a table row). API: push(value),
+ * clear(), refreshTheme().
  */
 export class PerfGraphElement extends HTMLElement {
   static get observedAttributes(): string[] {
-    return ['label', 'unit', 'history', 'height', 'min', 'max', 'budget'];
+    return ['label', 'unit', 'history', 'height', 'min', 'max', 'budget', 'compact'];
   }
 
   private canvas: HTMLCanvasElement;
@@ -115,6 +120,7 @@ export class PerfGraphElement extends HTMLElement {
   private aMin: number | null = null;
   private aMax: number | null = null;
   private aBudget: number | null = null;
+  private aCompact = false;
 
   // Backing store: device px in canvas.width/height, CSS px mirrors here.
   private cssW = 0;
@@ -205,6 +211,10 @@ export class PerfGraphElement extends HTMLElement {
       case 'height':
         this.applyHeight();
         break;
+      case 'compact':
+        this.aCompact = value != null;
+        this.applyHeight();
+        break;
       case 'min':
       case 'max':
       case 'budget':
@@ -246,12 +256,20 @@ export class PerfGraphElement extends HTMLElement {
     this.setAttribute('history', String(v));
   }
 
-  /** Element height in CSS px (default 48). */
+  /** Element height in CSS px (default 48, or 24 when compact). */
   get height(): number {
-    return parseNum(this.getAttribute('height')) ?? DEFAULT_HEIGHT;
+    return parseNum(this.getAttribute('height')) ?? (this.aCompact ? DEFAULT_HEIGHT_COMPACT : DEFAULT_HEIGHT);
   }
   set height(v: number) {
     this.setAttribute('height', String(v));
+  }
+
+  /** Compact mode: label + current value in one row, no stats, no tick labels. */
+  get compact(): boolean {
+    return this.aCompact;
+  }
+  set compact(v: boolean) {
+    this.toggleAttribute('compact', !!v);
   }
 
   /** Fixed low end of the scale, or null for autoscale. */
@@ -336,7 +354,9 @@ export class PerfGraphElement extends HTMLElement {
   // -- Sizing / theme ------------------------------------------------------------
 
   private applyHeight(): void {
-    const h = parseNum(this.getAttribute('height'));
+    // The compact default is applied inline too: the :host rule carries the
+    // full-size default, and a compact graph without a height is shorter.
+    const h = parseNum(this.getAttribute('height')) ?? (this.aCompact ? DEFAULT_HEIGHT_COMPACT : null);
     if (h != null) this.style.height = `${Math.max(1, h)}px`;
     else if (this.heightApplied) this.style.height = ''; // never clobber a user's own inline height
     this.heightApplied = h != null;
@@ -436,11 +456,12 @@ export class PerfGraphElement extends HTMLElement {
     this.updateRange();
     const lo = this.rangeMin;
     const hi = this.rangeMax;
-    const plotTop = 1;
+    const fs = t.fontSize;
+    // Compact: the one text row owns the top, the trace gets what is left.
+    const plotTop = this.aCompact ? fs + PAD_Y * 2 : 1;
     const plotBottom = h - 1;
     const sy = (plotBottom - plotTop) / (hi - lo);
     const hairline = 1 / dpr;
-    const fs = t.fontSize;
 
     // Horizontal gridlines + tick labels (skip rows the readout text owns).
     ctx.strokeStyle = t.grid;
@@ -454,8 +475,8 @@ export class PerfGraphElement extends HTMLElement {
       ctx.lineTo(w, y);
       ctx.stroke();
       // Label the line only where the text won't collide with the top
-      // (label/current) or bottom (stats) readout rows.
-      if (y > fs * 2 + PAD_Y + 3 && y < h - fs - PAD_Y) {
+      // (label/current) or bottom (stats) readout rows. Compact has no room.
+      if (!this.aCompact && y > fs * 2 + PAD_Y + 3 && y < h - fs - PAD_Y) {
         ctx.fillStyle = t.text;
         ctx.font = this.fontText;
         ctx.textAlign = 'left';
@@ -525,9 +546,10 @@ export class PerfGraphElement extends HTMLElement {
       ctx.fillText(this.aLabel, PAD_X, PAD_Y);
     }
     ctx.fillStyle = t.value;
-    ctx.font = this.fontValue;
+    ctx.font = this.aCompact ? this.fontText : this.fontValue;
     ctx.textAlign = 'right';
     ctx.fillText(formatValue(this.stats.current, this.aUnit), w - PAD_X, PAD_Y);
+    if (this.aCompact) return;
     ctx.fillStyle = t.text;
     ctx.font = this.fontText;
     ctx.textAlign = 'left';
