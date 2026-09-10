@@ -457,8 +457,7 @@ export class PerfGraphElement extends HTMLElement {
     const lo = this.rangeMin;
     const hi = this.rangeMax;
     const fs = t.fontSize;
-    // Compact: the one text row owns the top, the trace gets what is left.
-    const plotTop = this.aCompact ? fs + PAD_Y * 2 : 1;
+    const plotTop = 1;
     const plotBottom = h - 1;
     const sy = (plotBottom - plotTop) / (hi - lo);
     const hairline = 1 / dpr;
