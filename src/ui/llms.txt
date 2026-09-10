@@ -485,7 +485,7 @@ property setters reflect back to the attributes):
   budget  — guide value (e.g. 16.7) drawn as a dashed amber line, always
             kept inside the displayed range
   compact — boolean. One row of label + current value over the trace, no
-            avg/min/max line, no tick labels, 24px default height. The
+            avg/min/max line, no tick labels, 32px default height. The
             shape for a strip of gauges in a table row.
 
 Element properties / methods:

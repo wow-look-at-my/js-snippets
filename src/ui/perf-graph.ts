@@ -51,7 +51,7 @@ export * from './perf-graph-math.ts';
 const DEFAULT_HISTORY = 240;
 const DEFAULT_HEIGHT = 48;
 /** Default height of a `compact` graph: one text row over the trace. */
-const DEFAULT_HEIGHT_COMPACT = 24;
+const DEFAULT_HEIGHT_COMPACT = 32;
 const DEFAULT_UNIT = 'ms';
 const MAX_TICKS = 3;
 const PAD_X = 3; // CSS px text inset
@@ -98,7 +98,7 @@ type Theme = typeof THEME_DEFAULTS;
  * `history` (sample count, default 240), `height` (CSS px, default 48),
  * `min` / `max` (fixed scale ends; absent → autoscale), `budget` (dashed
  * guide value, e.g. 16.7), `compact` (boolean: one row of label + current
- * value over the trace, no stats line, no tick labels, 24px default height —
+ * value over the trace, no stats line, no tick labels, 32px default height —
  * the size for a strip of gauges in a table row). API: push(value),
  * clear(), refreshTheme().
  */
@@ -256,7 +256,7 @@ export class PerfGraphElement extends HTMLElement {
     this.setAttribute('history', String(v));
   }
 
-  /** Element height in CSS px (default 48, or 24 when compact). */
+  /** Element height in CSS px (default 48, or 32 when compact). */
   get height(): number {
     return parseNum(this.getAttribute('height')) ?? (this.aCompact ? DEFAULT_HEIGHT_COMPACT : DEFAULT_HEIGHT);
   }
