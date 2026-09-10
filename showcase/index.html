@@ -24,6 +24,7 @@
 				<a href="#data-table">&lt;data-table&gt;</a>
 				<a href="#activity-feed">&lt;activity-feed&gt;</a>
 					<a href="#dag-view">&lt;dag-view&gt;</a>
+				<a href="#perf-graph">&lt;perf-graph&gt;</a>
 			</nav>
 		</header>
 		<main>
@@ -120,6 +121,33 @@
 
 				<h3>empty <span class="sub">(a graph with nothing in it says so, rather than looking broken)</span></h3>
 				<dag-view id="demo-dag-empty" empty-text="No dependencies recorded yet." no-search></dag-view>
+			</section>
+
+			<section id="perf-graph">
+				<h2>&lt;perf-graph&gt;</h2>
+				<p class="hint">
+					One scrolling metric per element, everything drawn on one canvas. The full HUD carries
+					a label, the current value, an avg/min/max row, tick labels and a dashed budget line the
+					autoscale keeps in view. The <code>compact</code> strip below it is the table-cell shape:
+					one text row over the trace, nothing else.
+				</p>
+				<div class="perf-column">
+					<perf-graph id="demo-perf-full" label="frame" unit="ms" budget="16.7"></perf-graph>
+				</div>
+
+				<h3>compact <span class="sub">(five gauges in one row &mdash; <code>compact</code>, fixed 0&ndash;100 scale)</span></h3>
+				<div id="demo-perf-strip" class="perf-strip"></div>
+
+				<h3>fixed against autoscaled <span class="sub">(the same samples: <code>min="0" max="100"</code> on the left, autoscale on the right)</span></h3>
+				<div class="perf-pair">
+					<perf-graph id="demo-perf-fixed" label="fixed" unit="%" min="0" max="100"></perf-graph>
+					<perf-graph id="demo-perf-auto" label="auto" unit="%"></perf-graph>
+				</div>
+
+				<h3>empty <span class="sub">(no samples yet: the readout says so with a dash, and nothing is drawn as zero)</span></h3>
+				<div class="perf-column">
+					<perf-graph id="demo-perf-empty" label="idle" unit="%" compact></perf-graph>
+				</div>
 			</section>
 		</main>
 		<script type="module" src="./main.ts"></script>

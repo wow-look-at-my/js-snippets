@@ -33,10 +33,13 @@ import { LANES, batchForRange, type RunPlan } from './fake-data.ts';
 import { mountActivityFeedDemo } from './activity-feed-demo.ts';
 import { mountDataTableDemo } from './data-table-demo.ts';
 import { mountDagViewDemo } from './dag-view-demo.ts';
+import { mountPerfGraphDemo } from './perf-graph-demo.ts';
 import PAGE_CSS from './page.css';
+import { installTabs } from './tabs.ts';
 
 // Adopt the page stylesheet (imported as text — see the note in index.html).
 document.head.append(Object.assign(document.createElement('style'), { textContent: PAGE_CSS }));
+installTabs();
 
 // The static sections. Both take `now` so their fixtures are stamped once,
 // from one clock, instead of drifting between sections on a slow load.
@@ -47,6 +50,7 @@ document.head.append(Object.assign(document.createElement('style'), { textConten
   mountDataTableDemo(now);
   mountActivityFeedDemo(now);
   mountDagViewDemo();
+  mountPerfGraphDemo();
 }
 
 const SEC = 1_000;
