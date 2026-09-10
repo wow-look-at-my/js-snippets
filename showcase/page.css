@@ -246,3 +246,41 @@ activity-feed {
 .perf-pair perf-graph {
 	flex: 1 1 0;
 }
+
+/* -- Tabs ----------------------------------------------------------------------
+ *
+ * One component per view: the TOC is a tab bar, and main.ts shows only the
+ * section whose id matches the hash. A page that stacks every gallery makes
+ * it impossible to tell which control a given box belongs to.
+ */
+nav.toc {
+	display: flex;
+	gap: 4px;
+	margin-top: 8px;
+	border-bottom: 1px solid rgba(200, 205, 216, 0.14);
+}
+nav.toc a {
+	color: #9aa3b2;
+	text-decoration: none;
+	font-size: 12px;
+	padding: 6px 10px;
+	border: 1px solid transparent;
+	border-bottom: none;
+	border-radius: 6px 6px 0 0;
+	margin-bottom: -1px;
+}
+nav.toc a:hover {
+	color: #e8ecf4;
+}
+nav.toc a[aria-current='page'] {
+	color: #e8ecf4;
+	background: #0d0f14;
+	border-color: rgba(200, 205, 216, 0.14);
+	border-bottom: 1px solid #0d0f14;
+}
+main > section[hidden] {
+	display: none;
+}
+main > section h2 {
+	margin-top: 4px;
+}
