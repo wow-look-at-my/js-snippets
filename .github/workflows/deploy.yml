@@ -22,7 +22,7 @@ env:
 
 jobs:
   build:
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
