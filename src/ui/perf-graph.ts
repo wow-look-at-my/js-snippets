@@ -447,6 +447,10 @@ export class PerfGraphElement extends HTMLElement {
     const w = this.cssW;
     const h = this.cssH;
     const t = this.theme;
+    // The background may be translucent. Clear the backing store first so
+    // redraws do not blend the new background over the previous frame.
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     ctx.fillStyle = t.bg;
