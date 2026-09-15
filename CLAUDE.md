@@ -32,13 +32,24 @@ src/
 │   └── code-editor.ts     ← <code-editor> custom element (re-exports tokenizer)
 ├── math/
 │   ├── llms.txt           ← docs for math modules
-│   ├── vec3.ts
+│   ├── vec2.ts, vec3.ts, vec4.ts ← fixed-size vectors, same shape each
+│   ├── vecn.ts            ← arbitrary-dimension vectors, for a data-driven
+│   │                        dimension. A length mismatch THROWS
 │   ├── mat4.ts
+│   ├── least-squares.ts   ← linear solve + normal equations, polynomial/line
+│   │                        fits, symmetric 3x3 Jacobi eigen, and the
+│   │                        ORTHOGONAL-distance fits (2D line, circle, 3D
+│   │                        line, plane) built on it
+│   ├── cylinder-fit.ts    ← least-squares infinite cylinder (Eberly): closed
+│   │                        form per axis + a Hammersley hemisphere sweep, so
+│   │                        a SHORT wide cylinder (flat cloud, principal axis
+│   │                        perpendicular to the true one) still fits
 │   ├── sdf.ts             ← signed-distance primitives + grid bake + soft shadow
 │   ├── noise.ts           ← hash → value-noise → fbm (2D + 3D)
 │   ├── sampling.ts        ← van der Corput / Hammersley + hemisphere sampling
 │   ├── gaussian-kernel.ts ← linear-sampling separable Gaussian kernel builder
-│   └── *.test.ts          ← colocated node:test tests (vec3 / mat4 / sdf /
+│   └── *.test.ts          ← colocated node:test tests (vec2 / vec3 / vec4 /
+│                            vecn / mat4 / least-squares / cylinder-fit / sdf /
 │                            noise / sampling / gaussian-kernel)
 ├── ui/
 │   ├── llms.txt           ← docs for ui modules

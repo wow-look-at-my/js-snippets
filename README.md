@@ -50,8 +50,11 @@ import * as mat4 from 'https://sites.pazer.build/js-snippets/branch/library/math
 
 | Module | Description |
 |--------|-------------|
-| `math/vec3.js` | Minimal vec3 utilities. All functions return new arrays, no mutation. |
+| `math/vec2.js`, `math/vec3.js`, `math/vec4.js` | Minimal fixed-size vector utilities, one shape each. All functions return new arrays, no mutation. |
+| `math/vecn.js` | The same operations at an arbitrary dimension, for data-driven sizes. A length mismatch throws rather than picking the shorter vector. |
 | `math/mat4.js` | Column-major `Float32Array(16)` mat4 utilities. Perspective uses WebGPU clip-Z `[0,1]`. |
+| `math/least-squares.js` | Linear solve, normal equations, polynomial and line fits, symmetric 3×3 eigen. Plus orthogonal-distance fits: 2D line, circle, 3D line, plane. |
+| `math/cylinder-fit.js` | Least-squares infinite cylinder through a 3D point cloud: axis, centre, radius, and the residual. Works on short wide cylinders, not just long thin ones. |
 
 ### UI
 
