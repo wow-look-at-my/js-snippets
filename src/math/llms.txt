@@ -88,7 +88,12 @@ Exports:
 - fitCylinderForAxis(points, direction) -> CylinderFit | null -- the closed form for a KNOWN axis, plus the energy that axis achieves. The direction need not be a unit vector. Null when every point lies on the axis.
 - distanceToCylinderSurface(fit, p) -> number -- signed distance to the fitted surface, negative inside. The caps are not considered.
 
-On the result: center is the axis point nearest the centroid. error is Eberly's energy, which is what compares one fit against another. rms is the radial residual |P(X-C)| - r, in point units. height and extent report how far the DATA reaches along the infinite axis.
+On the CylinderFit result:
+- center -- the axis point nearest the centroid.
+- axis -- the unit direction. A cylinder fixes it only up to sign.
+- radius, rms -- the fitted radius, and the radial residual |P(X-C)| - r in point units.
+- error -- Eberly's energy. This is the number that compares one fit against another.
+- height, extent -- how far the DATA reaches along the infinite axis.
 
 ### math/mat4.js
 Minimal mat4 utilities. Column-major Float32Array(16). Imports vec3 internally.
