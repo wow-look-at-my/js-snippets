@@ -6,7 +6,7 @@ import (
 )
 
 // Decode is the inverse of Encode, so a Go producer can read its own payload —
-// in a test, in a dump tool — without writing another reader of the format.
+// in a test, in a dump tool — without writing a second reader of the format.
 //
 // A payload that does not decode EXACTLY is an error, trailing bytes included:
 // leftovers mean the caller's schema names different columns than the producer
@@ -87,7 +87,7 @@ func Decode(b []byte, s Schema) (Page, error) {
 				col[i] = d[ix]
 			}
 		} else if len(d) == 1 {
-			// A column no row used: a single dictionary entry, no index run.
+			// A column no row used: one dictionary entry, no index run.
 			for i := range col {
 				col[i] = d[0]
 			}
@@ -105,8 +105,8 @@ func Decode(b []byte, s Schema) (Page, error) {
 	return p, nil
 }
 
-// reader walks the payload, latching the earliest error so every read after it
-// is a no-op and the caller checks a single time.
+// reader walks the payload, latching the first error so every read after it is
+// a no-op and the caller checks once.
 type reader struct {
 	b   []byte
 	p   int
