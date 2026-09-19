@@ -5,6 +5,96 @@ Exports: create, add, subtract, scale, dot, cross, length, normalize
 
 Type: Vec3 = [number, number, number]
 
+### math/vec2.js
+Minimal vec2 utilities. All functions return new arrays, no mutation.
+
+Exports: create, add, subtract, scale, dot, cross, perp, length, normalize
+
+Type: Vec2 = [number, number]
+
+Signatures of note:
+- cross(a, b) -> number -- the z of the 3D cross product (signed parallelogram area). Positive when b is counter-clockwise from a.
+- perp(v) -> Vec2 -- a quarter turn counter-clockwise, orthogonal to v and the same length.
+
+### math/vec4.js
+Minimal vec4 utilities. All functions return new arrays, no mutation.
+
+Exports: create, add, subtract, scale, dot, length, normalize, fromVec3, toVec3, project
+
+Type: Vec4 = [number, number, number, number]
+
+Signatures of note:
+- fromVec3(v, w=1) -> Vec4 -- w defaults to 1 (a point). Pass 0 for a direction.
+- toVec3(v) -> Vec3 -- drops w. A truncation, never a perspective divide.
+- project(v) -> Vec3 -- divides by w. w = 0 passes through unchanged, because that is a direction.
+
+### math/vecn.js
+Arbitrary-dimension vector utilities for a data-driven dimension (a feature vector, a coefficient list, a least-squares row). All functions return new arrays, no mutation. Prefer vec2/vec3/vec4 at a fixed dimension. Every binary operation REQUIRES equal lengths and throws a RangeError otherwise, so a wiring mistake never becomes a plausible number.
+
+Exports: create, clone, add, subtract, multiply, scale, negate, dot, length, lengthSq, distance, normalize, lerp, sum, mean
+
+Type: VecN = number[]
+
+Signatures of note:
+- create(n, fill=0) -> VecN -- throws on a negative or fractional n.
+- multiply(a, b) -> VecN -- componentwise (Hadamard) product.
+- normalize(v) -> VecN -- a zero vector stays zero (the length falls back to 1).
+- lerp(a, b, t) -> VecN -- a t outside [0,1] extrapolates rather than clamping.
+- mean(vectors) -> VecN -- componentwise mean of a list. Throws on an empty list.
+
+### math/least-squares.js
+Least-squares fitting. Pure, no DOM/GPU. The LINEAR solvers minimise the residual of A x = b, where each row is one equation. The GEOMETRIC fits minimise the ORTHOGONAL distance to a line, a plane or a circle. A y-on-x line fit tips over as the line turns vertical. An orthogonal fit does not. A singular system returns null, never a vector of NaN.
+
+Types:
+
+```ts
+Matrix = readonly (readonly number[])[];  // row-major, equal-length rows
+LineFit2 = { slope, intercept, rms };
+OrthoLineFit2 = { point: Vec2; direction: Vec2; rms };
+OrthoLineFit3 = { point: Vec3; direction: Vec3; rms };
+PlaneFit = { point: Vec3; normal: Vec3; rms };
+CircleFit2 = { center: Vec2; radius, rms };
+Eigen3 = { values: [number,number,number]; vectors: [Vec3,Vec3,Vec3] };
+Covariance3 = { mean: Vec3; matrix: number[][] };
+```
+
+Exports:
+- solveLinear(a, b) -> number[] | null -- square solve, Gaussian elimination with partial pivoting. Null when singular.
+- transpose(a) -> number[][], matVec(a, x) -> number[] -- the matrix helpers the fits use.
+- solveLeastSquares(a, b, ridge=0) -> number[] | null -- normal equations (A^T A + ridge I) x = A^T b. A small ridge makes a rank-deficient system solvable, at the cost of bias.
+- residuals(a, x, b) -> number[], rms(values) -> number -- rms of an empty vector is 0.
+- evalPolynomial(coeffs, x) -> number -- coefficients in ASCENDING power order.
+- fitPolynomial(xs, ys, degree) -> number[] | null -- ascending coefficients. The x values are centred and scaled internally, so x far from the origin still fits.
+- fitLine(xs, ys) -> LineFit2 | null -- ordinary y-on-x fit. Null on vertical data.
+- fitOrthoLine2(points) -> OrthoLineFit2 | null -- total least squares: minimises the perpendicular distance, so a vertical line is fine.
+- fitCircle2(points) -> CircleFit2 | null -- algebraic (Kasa) fit through one linear solve. The rms reported is the TRUE geometric residual, not the algebraic one. Null for collinear points.
+- covariance3(points) -> Covariance3 -- mean and the 3x3 covariance (divided by the count).
+- symmetricEigen3(matrix) -> Eigen3 -- Jacobi rotations on a symmetric 3x3. Eigenvalues ASCENDING with matching orthonormal eigenvectors, each signed so its largest component is positive (deterministic, never an arbitrary flip).
+- fitPlane(points) -> PlaneFit | null -- normal is the smallest-eigenvalue direction, through the centroid. Null for collinear points.
+- fitOrthoLine3(points) -> OrthoLineFit3 | null -- direction is the largest-eigenvalue direction. The rms is the orthogonal point-to-line distance.
+
+### math/cylinder-fit.js
+Least-squares infinite-cylinder fit to a 3D point cloud (Eberly's formulation), minimising mean((|P(X-C)|^2 - r^2)^2). For a FIXED axis the centre and radius have a closed form, so the fit reduces to a search over directions. The search is a deterministic Hammersley hemisphere sweep (W and -W are the same cylinder) plus a local pattern search. The sweep is what handles a SHORT wide cylinder. That cloud is flat, so its principal axis is perpendicular to the true axis, and a local-only search fails there.
+
+Types:
+
+```ts
+CylinderFit = { center: Vec3; axis: Vec3; radius, error, rms, height, extent: [number,number] };
+CylinderFitOptions = { direction?: Vec3; directionSamples?: number; refineSteps?: number; tolerance?: number };
+```
+
+Exports:
+- fitCylinder(points, options?) -> CylinderFit | null -- sweep plus refinement. Null below five points, which is how many degrees of freedom a cylinder has. Options: direction (an initial axis guess, which SKIPS the sweep), directionSamples (default 256), refineSteps (default 64), tolerance (default 1e-9).
+- fitCylinderForAxis(points, direction) -> CylinderFit | null -- the closed form for a KNOWN axis, plus the energy that axis achieves. The direction need not be a unit vector. Null when every point lies on the axis.
+- distanceToCylinderSurface(fit, p) -> number -- signed distance to the fitted surface, negative inside. The caps are not considered.
+
+On the CylinderFit result:
+- center -- the axis point nearest the centroid.
+- axis -- the unit direction. A cylinder fixes it only up to sign.
+- radius, rms -- the fitted radius, and the radial residual |P(X-C)| - r in point units.
+- error -- Eberly's energy. This is the number that compares one fit against another.
+- height, extent -- how far the DATA reaches along the infinite axis.
+
 ### math/mat4.js
 Minimal mat4 utilities. Column-major Float32Array(16). Imports vec3 internally.
 
