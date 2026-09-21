@@ -10,19 +10,26 @@ import (
 	"time"
 )
 
-// A single FIXTURE, BOTH LANGUAGES. testdata/golden-v1.b64 is the single
-// artifact holding the encoder and the decoder together: this test asserts
-// Encode emits exactly those bytes, and ../src/ui/timeline-wire.test.ts
-// decodes exactly those bytes and checks the values back out.
+// ONE FIXTURE, BOTH LANGUAGES. testdata/golden-v1.b64 is the single artifact
+// holding the encoder and the decoder together: this test asserts Encode emits
+// exactly those bytes, and ../src/ui/timeline-wire.test.ts decodes exactly
+// those bytes and checks the values back out. Neither half can drift without
+// one of them going red, and there is no second implementation of the layout
+// anywhere to keep in step.
 //
 // Regenerate deliberately, never reflexively: `go test ./... -update` rewrites
 // it, and a diff there means the WIRE CHANGED. If that was intended it is a
-// NEW VERSION (new magic, new fixture), not an edit to this.
+// NEW VERSION (new magic, new fixture), not an edit to this one.
 const goldenPath = "testdata/golden-v1.b64"
 
 var update = flag.Bool("update", false,
 	"rewrite testdata/golden-v1.b64 — only when the wire deliberately changed")
 
+// goldenSchema/goldenPage are a deliberately awkward page: two "kinds" so the
+// dictionaries hold more than one entry, a non-ASCII string, a value present
+// on only one row, and columns NO row uses — which must encode as a one-entry
+// dictionary with no index run, the compression that keeps sparse windows
+// small.
 func goldenSchema() Schema {
 	return Schema{
 		Magic:   "TLC1",
