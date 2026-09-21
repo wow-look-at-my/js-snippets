@@ -21,7 +21,7 @@ func goldenBytes(t *testing.T) []byte {
 
 // The Go reader and the Go writer must agree on the fixture the BROWSER reads.
 // Decoding the golden payload rather than something freshly encoded is what
-// makes this a check on the FORMAT and not just on two functions in this file.
+// makes this a check on the FORMAT and not on two functions in this file.
 func TestDecodeGolden(t *testing.T) {
 	got, err := Decode(goldenBytes(t), goldenSchema())
 	require.NoError(t, err)

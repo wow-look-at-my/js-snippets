@@ -97,7 +97,6 @@ jobs:
       - uses: wow-look-at-my/go-toolchain@master
         with:
           working-directory: timelinewire
-          autorelease: 'false'
 
       # master PUBLISHES, so a consumer tracks this with `go get ...@latest` instead of a pseudoversion; Go requires the subdirectory prefix on a nested module's tags.
       - name: Tag the Go module

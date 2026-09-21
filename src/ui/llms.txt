@@ -490,10 +490,35 @@ property setters reflect back to the attributes):
 
 Element properties / methods:
   push(value: number)  — append one sample; schedules (at most) one rAF redraw
-  clear()              — drop all samples
+  pushSeries(values)   — append one STACKED column. A record read by series
+                         key, or an array read by series index. A key the
+                         sample omits records 0 for that band.
+  clear()              — drop all samples, single-series and stacked alike
   refreshTheme()       — re-read the --perf-graph-* custom properties
+  series: SeriesSpec[] — the stacked bands, bottom-up. Empty (the default)
+                         leaves a plain single-series graph. Setting it keeps
+                         the history of every key that survives the change,
+                         so a band that comes and goes never resets the rest.
+  stacked: boolean     — read-only; true while series is set
   label, unit, history, height, compact: reflected properties for the attributes
   min, max, budget: number | null (null = attribute absent)
+
+STACKED AREA mode. Set series and the element draws one band per series,
+each column the sum of its parts — the total and the split that makes it up
+read off one picture. The floor is pinned at 0 and the ceiling autoscales to
+the tallest COLUMN, never the tallest single band (min/max still override).
+A band with no explicit color takes a stable one from its key via
+ui/color.js, so the same name is the same color on every machine and every
+reload. The stats line is replaced by a legend: a swatch and the newest
+value per band, left to right, ending in '+N' rather than overflowing the
+edge. The top-right readout is the newest column's TOTAL. Past one sample
+per device pixel the bands bin with binLast — the newest sample of each
+column, not a min-max envelope, which on an area would draw a blur — and
+every band bins onto the same columns, so they stay aligned.
+
+const g = document.querySelector('perf-graph'); g.series = [{ key: 'go-toolchain' }, { key: 'go-s3-server', label: 's3' }]; setInterval(() => g.pushSeries({ 'go-toolchain': 12, 'go-s3-server': 4 }), 1000);
+
+interface SeriesSpec { key: string; label?: string; color?: string }
 
 CSS custom properties (read via getComputedStyle, cached; dark Scratch
 Proto defaults — set on the element, an ancestor, or :root):
@@ -570,13 +595,35 @@ Exports:
     floor(i * bins / count), so every finite sample influences exactly one
     bin and outMin[b] <= outMax[b]. Empty bins are NaN; bins clamps to the
     out arrays; returns the number of non-empty bins.
+  binLast(ring, bins, out: Float32Array) → number
+    The newest finite sample of each bin — the reduction a stacked AREA
+    wants, where binMinMax's envelope draws a band as a ragged blur. Bin
+    membership matches binMinMax exactly, so every series of one SeriesRing
+    bins onto the same columns. Empty bins are NaN; returns the non-empty
+    count.
+  class SeriesRing
+    Several same-length SampleRings on one time axis. constructor(keys,
+    capacity), push(record | array) (advances EVERY series; an omitted key
+    or a non-finite value records 0, because a band of a stack has no place
+    for a gap), at(series, i) (NaN out of range), ring(series), clear(),
+    setCapacity(n), setKeys(keys) (a surviving key keeps its history; a new
+    one is padded with zeros to the existing column count, so the columns
+    stay aligned), getters keys / count / length / capacity.
+  stackedTop(s: SeriesRing, series, i) → number
+    Top edge of that band at sample i: the sum of series 0..series. A
+    non-finite sample counts as 0, so one bad reading shortens its own band
+    and leaves the stack above it alone.
+  stackedTotal(s: SeriesRing, i) → number
+    Top of the whole stack at sample i (0 out of range).
+  stackedMax(s: SeriesRing) → number
+    Largest column total across the stored samples (0 when there are none).
   formatValue(v, unit) → string
     Deterministic readout formatting: non-finite → '—'; 'ms' → adaptive
     decimals (|v| >= 100 → 0, >= 10 → 1, else 2) + 'ms'; 'fps' → rounded +
     'fps'; other non-empty unit → 1 decimal + suffix; '' → bare adaptive
     number.
 
-Types: PerfStats, AutoRangeOptions, DisplayRange
+Types: PerfStats, AutoRangeOptions, DisplayRange, SeriesSpec
 
 ### ui/timeline-view.js
 Canvas-rendered realtime swimlane timeline as a <timeline-view> custom
