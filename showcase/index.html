@@ -144,9 +144,29 @@
 					<perf-graph id="demo-perf-auto" label="auto" unit="%"></perf-graph>
 				</div>
 
+				<h3>stacked area <span class="sub">(<code>series</code> + <code>pushSeries</code>: the total and the split that makes it up)</span></h3>
+				<p class="hint">
+					Five projects share one cache. The top-right readout is the whole column, the legend
+					carries each band's newest value, and the ceiling follows the tallest COLUMN rather
+					than the tallest band. One band is dead the whole time, so a zero-height band must
+					still hold its place in the legend and its color. A sixth project joins after a few
+					seconds: its band starts flat and the five already drawn keep their history and their
+					colors. Two of the names are long enough that the legend runs out of room and has to
+					say how many it left out.
+				</p>
+				<div class="perf-column">
+					<perf-graph id="demo-perf-stacked" label="cache GET/s" unit="" height="110"></perf-graph>
+				</div>
+
+				<h3>stacked, compact and dense <span class="sub">(no legend at this height, and more samples than pixels)</span></h3>
+				<div class="perf-column">
+					<perf-graph id="demo-perf-stacked-compact" label="by project" unit="" history="4000" compact></perf-graph>
+				</div>
+
 				<h3>empty <span class="sub">(no samples yet: the readout says so with a dash, and nothing is drawn as zero)</span></h3>
 				<div class="perf-column">
 					<perf-graph id="demo-perf-empty" label="idle" unit="%" compact></perf-graph>
+					<perf-graph id="demo-perf-stacked-empty" label="no columns yet" unit=""></perf-graph>
 				</div>
 			</section>
 		</main>

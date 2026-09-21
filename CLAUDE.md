@@ -98,12 +98,13 @@ src/
 │   │                        dropdowns (re-exports combobox-logic)
 │   ├── combobox.css       ← its injected stylesheet (text import; --cb-*
 │   │                        custom-property theming)
-│   ├── perf-graph-math.ts ← pure graph math: SampleRing ring buffer, stats,
-│   │                        autoRange + 1-2-5 niceTicks, min-max binning,
-│   │                        value formatting
+│ ├── perf-graph-math.ts ← pure graph math: SampleRing ring buffer, stats, │ │ autoRange + 1-2-5 niceTicks, min-max binning, │ │ value formatting, and the stacked half: │ │ SeriesRing, stackedTop/Total/Max, binLast
 │   ├── perf-graph-math.test.ts ← colocated node:test tests for the math
 │   ├── perf-graph.ts      ← <perf-graph> custom element (canvas-rendered
-│   │                        stackable perf HUD; re-exports perf-graph-math)
+│   │                        stackable perf HUD; re-exports perf-graph-math).
+│   │                        `series` + `pushSeries` switch it to a STACKED
+│   │                        AREA: floor pinned at 0, ceiling on the tallest
+│   │                        COLUMN, band colors from ui/color.ts
 │   ├── timeline-view-math.ts ← pure timeline math: time scales + anchored
 │   │                        zoom, time tick ladder, sub-track packing,
 │   │                        label fit, hit tests, category hues,

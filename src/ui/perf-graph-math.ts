@@ -259,6 +259,168 @@ export function binMinMax(ring: SampleRing, bins: number, outMin: Float32Array, 
   return used;
 }
 
+/**
+ * Newest finite sample in each of `bins` buckets — the reduction a stacked
+ * AREA wants, where binMinMax's envelope would draw a band as a ragged blur.
+ * Bin membership matches binMinMax exactly (sample i lands in
+ * floor(i * bins / count)), so every series of one SeriesRing bins onto the
+ * same columns and the bands stay aligned. Empty bins are NaN. `bins` is
+ * clamped to out.length. Writes only into the caller-owned array — no
+ * allocation. Returns the number of non-empty bins.
+ */
+export function binLast(ring: SampleRing, bins: number, out: Float32Array): number {
+  const nBins = Math.min(Math.max(0, Math.floor(bins)), out.length);
+  for (let b = 0; b < nBins; b++) out[b] = NaN;
+  const count = ring.length;
+  if (nBins === 0 || count === 0) return 0;
+  let used = 0;
+  for (let i = 0; i < count; i++) {
+    const v = ring.at(i);
+    if (!Number.isFinite(v)) continue;
+    const b = Math.floor((i * nBins) / count);
+    if (out[b] !== out[b]) used++;
+    out[b] = v; // later samples in the bin overwrite: the newest one wins
+  }
+  return used;
+}
+
+// -- Multi-series (stacked) ---------------------------------------------------
+
+/** One band of a stacked graph: its data key, its legend text and its color. */
+export interface SeriesSpec {
+  /** The key push() reads out of a sample record. Also the color seed. */
+  key: string;
+  /** Legend text. Defaults to the key. */
+  label?: string;
+  /** Explicit CSS color. Absent, the band takes a stable color from its key. */
+  color?: string;
+}
+
+/**
+ * The data behind a stacked area: one SampleRing per band, on one time axis.
+ * Every push advances EVERY series, so sample i of one band lines up
+ * with sample i of the next. A key a sample omits contributes 0 to that
+ * column rather than a gap, because a band of a stack has no place to put
+ * one.
+ *
+ * Only the constructor, setCapacity() and setKeys() allocate.
+ */
+export class SeriesRing {
+  private ks: string[];
+  private rings: SampleRing[];
+  private cap: number;
+
+  constructor(keys: readonly string[], capacity: number) {
+    this.cap = clampCapacity(capacity);
+    this.ks = keys.slice();
+    this.rings = this.ks.map(() => new SampleRing(this.cap));
+  }
+
+  /** The series keys, in stacking order (index 0 sits at the bottom). */
+  get keys(): readonly string[] {
+    return this.ks;
+  }
+
+  /** Number of series. */
+  get count(): number {
+    return this.ks.length;
+  }
+
+  /** Samples currently stored per series (every series holds the same number). */
+  get length(): number {
+    return this.rings.length > 0 ? this.rings[0].length : 0;
+  }
+
+  /** Samples held per series before the oldest is overwritten. */
+  get capacity(): number {
+    return this.cap;
+  }
+
+  /** The ring behind one series (NaN-safe reads via at()). */
+  ring(series: number): SampleRing | undefined {
+    return this.rings[series];
+  }
+
+  /** Sample by series and age: at(s, 0) is the oldest. NaN out of range. */
+  at(series: number, i: number): number {
+    const r = this.rings[series];
+    return r === undefined ? NaN : r.at(i);
+  }
+
+  /**
+   * Append one column. A record is read by key; an array is read by series
+   * index. A key the sample omits, and any non-finite value, records 0.
+   */
+  push(values: Readonly<Record<string, number>> | readonly number[]): void {
+    const byIndex = Array.isArray(values);
+    for (let s = 0; s < this.rings.length; s++) {
+      const raw = byIndex ? (values as readonly number[])[s] : (values as Record<string, number>)[this.ks[s]];
+      this.rings[s].push(Number.isFinite(raw) ? raw : 0);
+    }
+  }
+
+  /** Drop every series' samples (keeps the series and their buffers). */
+  clear(): void {
+    for (const r of this.rings) r.clear();
+  }
+
+  /** Resize every series, preserving the newest samples that still fit. */
+  setCapacity(n: number): void {
+    const cap = clampCapacity(n);
+    if (cap === this.cap) return;
+    this.cap = cap;
+    for (const r of this.rings) r.setCapacity(cap);
+  }
+
+  /**
+   * Replace the series list. A key present before and after keeps its history.
+   * A new key starts with the same number of samples as the others, all 0, so
+   * the columns stay aligned and the band simply begins flat.
+   */
+  setKeys(keys: readonly string[]): void {
+    const length = this.length;
+    const previous = new Map<string, SampleRing>();
+    for (let s = 0; s < this.ks.length; s++) previous.set(this.ks[s], this.rings[s]);
+    this.ks = keys.slice();
+    this.rings = this.ks.map((key) => {
+      const kept = previous.get(key);
+      if (kept !== undefined) return kept;
+      const fresh = new SampleRing(this.cap);
+      for (let i = 0; i < length; i++) fresh.push(0);
+      return fresh;
+    });
+  }
+}
+
+/**
+ * Top edge of band `series` at sample `i`: the sum of series 0..series.
+ * Non-finite samples count as 0, so one bad reading shortens its own band
+ * instead of erasing the stack above it.
+ */
+export function stackedTop(s: SeriesRing, series: number, i: number): number {
+  let sum = 0;
+  for (let j = 0; j <= series && j < s.count; j++) {
+    const v = s.at(j, i);
+    if (Number.isFinite(v)) sum += v;
+  }
+  return sum;
+}
+
+/** Top of the whole stack at sample `i` (0 for an empty or out-of-range column). */
+export function stackedTotal(s: SeriesRing, i: number): number {
+  return stackedTop(s, s.count - 1, i);
+}
+
+/** The largest stacked total across the stored samples (0 when there are none). */
+export function stackedMax(s: SeriesRing): number {
+  let mx = 0;
+  for (let i = 0; i < s.length; i++) {
+    const total = stackedTotal(s, i);
+    if (total > mx) mx = total;
+  }
+  return mx;
+}
+
 // -- Value formatting --------------------------------------------------------------
 
 /**

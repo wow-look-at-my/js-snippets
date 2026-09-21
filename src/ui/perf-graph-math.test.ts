@@ -14,6 +14,11 @@ import {
   niceStep,
   niceTicks,
   binMinMax,
+  binLast,
+  SeriesRing,
+  stackedTop,
+  stackedTotal,
+  stackedMax,
   formatValue,
   type PerfStats,
 } from './perf-graph-math.ts';
@@ -337,6 +342,153 @@ test('binMinMax: empty ring fills NaN and reports 0; bins clamp to the out array
   assert.equal(binMinMax(r, 10, mn4, mx4), 4); // clamped to the arrays' length
   assert.deepEqual([...mn4], [1, 3, 5, 7]);
   assert.deepEqual([...mx4], [2, 4, 6, 8]);
+});
+
+// -- binLast ----------------------------------------------------------------
+
+test('binLast: keeps the newest sample of each bin, NaN for empty bins', () => {
+  const r = new SampleRing(8);
+  for (const v of [1, 2, 3, 4, 5, 6, 7, 8]) r.push(v);
+  const out = new Float32Array(4);
+  assert.equal(binLast(r, 4, out), 4);
+  // Bins of two: the second (newer) sample of each pair wins.
+  assert.deepEqual(Array.from(out), [2, 4, 6, 8]);
+
+  const wide = new Float32Array(6);
+  const three = new SampleRing(3);
+  three.push(10);
+  three.push(20);
+  three.push(30);
+  assert.equal(binLast(three, 6, wide), 3);
+  // Three samples over six bins: bins 0, 2 and 4 take one each, the rest empty.
+  assert.deepEqual(Array.from(wide.map((v) => (Number.isNaN(v) ? -1 : v))), [10, -1, 20, -1, 30, -1]);
+});
+
+test('binLast: a non-finite sample never claims a bin', () => {
+  const r = new SampleRing(4);
+  r.push(5);
+  r.push(NaN);
+  r.push(7);
+  r.push(Infinity);
+  const out = new Float32Array(2);
+  assert.equal(binLast(r, 2, out), 2);
+  assert.deepEqual(Array.from(out), [5, 7]);
+});
+
+test('binLast: empty ring and zero bins write nothing and report none', () => {
+  const out = new Float32Array(3);
+  out.fill(42);
+  assert.equal(binLast(new SampleRing(4), 3, out), 0);
+  assert.ok(Array.from(out).every(Number.isNaN), 'every bin of an empty ring is NaN');
+  assert.equal(binLast(new SampleRing(4), 0, out), 0);
+});
+
+test('binLast: bins onto the same columns binMinMax uses', () => {
+  const r = new SampleRing(10);
+  for (let i = 0; i < 10; i++) r.push(i);
+  const last = new Float32Array(4);
+  const mn = new Float32Array(4);
+  const mx = new Float32Array(4);
+  binLast(r, 4, last);
+  binMinMax(r, 4, mn, mx);
+  for (let b = 0; b < 4; b++) {
+    assert.equal(last[b], mx[b], `bin ${b}: rising data makes the newest sample the max`);
+  }
+});
+
+// -- SeriesRing ------------------------------------------------------------------
+
+test('SeriesRing: a record push fills every series, an absent key records 0', () => {
+  const s = new SeriesRing(['hit', 'miss'], 4);
+  s.push({ hit: 3, miss: 1 });
+  s.push({ hit: 2 });
+  assert.equal(s.length, 2);
+  assert.equal(s.count, 2);
+  assert.deepEqual([s.at(0, 0), s.at(0, 1)], [3, 2]);
+  assert.deepEqual([s.at(1, 0), s.at(1, 1)], [1, 0]);
+});
+
+test('SeriesRing: an array push reads by series index, non-finite records 0', () => {
+  const s = new SeriesRing(['a', 'b'], 4);
+  s.push([1, NaN]);
+  assert.deepEqual([s.at(0, 0), s.at(1, 0)], [1, 0]);
+});
+
+test('SeriesRing: out-of-range reads are NaN, not 0', () => {
+  const s = new SeriesRing(['a'], 4);
+  s.push({ a: 1 });
+  assert.ok(Number.isNaN(s.at(0, 5)), 'past the samples');
+  assert.ok(Number.isNaN(s.at(3, 0)), 'past the series');
+  assert.equal(s.ring(3), undefined);
+});
+
+test('SeriesRing: every series shares one capacity and drops together', () => {
+  const s = new SeriesRing(['a', 'b'], 2);
+  s.push({ a: 1, b: 10 });
+  s.push({ a: 2, b: 20 });
+  s.push({ a: 3, b: 30 });
+  assert.equal(s.length, 2);
+  assert.deepEqual([s.at(0, 0), s.at(1, 0)], [2, 20]);
+  s.setCapacity(4);
+  assert.equal(s.capacity, 4);
+  assert.equal(s.length, 2, 'a grow keeps what was there');
+});
+
+test('SeriesRing: setKeys keeps a surviving series and starts a new one flat', () => {
+  const s = new SeriesRing(['a', 'b'], 8);
+  s.push({ a: 1, b: 5 });
+  s.push({ a: 2, b: 6 });
+  s.setKeys(['b', 'c']);
+  assert.deepEqual(s.keys, ['b', 'c']);
+  assert.equal(s.length, 2, 'the new series is padded to the existing column count');
+  assert.deepEqual([s.at(0, 0), s.at(0, 1)], [5, 6], 'b keeps its history');
+  assert.deepEqual([s.at(1, 0), s.at(1, 1)], [0, 0], 'c begins flat');
+  s.push({ b: 7, c: 9 });
+  assert.deepEqual([s.at(0, 2), s.at(1, 2)], [7, 9]);
+});
+
+test('SeriesRing: clear empties every series and keeps the keys', () => {
+  const s = new SeriesRing(['a', 'b'], 4);
+  s.push({ a: 1, b: 2 });
+  s.clear();
+  assert.equal(s.length, 0);
+  assert.deepEqual(s.keys, ['a', 'b']);
+});
+
+// -- Stacking --------------------------------------------------------------------
+
+test('stackedTop: a band top is the sum up to and including its own series', () => {
+  const s = new SeriesRing(['a', 'b', 'c'], 4);
+  s.push({ a: 1, b: 2, c: 3 });
+  assert.equal(stackedTop(s, 0, 0), 1);
+  assert.equal(stackedTop(s, 1, 0), 3);
+  assert.equal(stackedTop(s, 2, 0), 6);
+  assert.equal(stackedTotal(s, 0), 6);
+});
+
+test('stackedTop: a non-finite sample shortens its own band and nothing else', () => {
+  const s = new SeriesRing(['a', 'b'], 4);
+  // push() already normalizes, so write the bad value straight into the ring.
+  s.ring(0)?.push(NaN);
+  s.ring(1)?.push(4);
+  assert.equal(stackedTop(s, 0, 0), 0);
+  assert.equal(stackedTotal(s, 0), 4);
+});
+
+test('stackedMax: the largest column total, and 0 with no samples', () => {
+  const s = new SeriesRing(['a', 'b'], 8);
+  assert.equal(stackedMax(s), 0);
+  s.push({ a: 1, b: 1 });
+  s.push({ a: 5, b: 4 });
+  s.push({ a: 2, b: 2 });
+  assert.equal(stackedMax(s), 9);
+});
+
+test('stackedTotal: a series-less ring totals 0', () => {
+  const s = new SeriesRing([], 4);
+  assert.equal(s.count, 0);
+  assert.equal(stackedTotal(s, 0), 0);
+  assert.equal(stackedMax(s), 0);
 });
 
 // -- formatValue ----------------------------------------------------------------
