@@ -2,31 +2,19 @@
 // columnar wire format for feeding <timeline-view> a large event feed.
 //
 // Both halves live in this repo so they version together, and testdata/ holds
-// ONE golden payload they share — wire_test.go asserts Encode emits exactly
-// those bytes, timeline-wire.test.ts decodes them. A producer imports this
-// package instead of restating the layout, so there is nothing to keep in
-// step by hand.
+// a single golden payload they share — wire_test.go asserts Encode emits
+// exactly those bytes, timeline-wire.test.ts decodes them. A producer imports
+// this package instead of restating the layout, so there is nothing to keep
+// in step by hand.
 //
 // It knows a LAYOUT and not a vocabulary: the caller names its own columns in
-// a Schema and the names never reach the wire, so two producers with different
-// fields still speak one format.
+// a Schema and the names never reach the wire, so producers with different
+// fields still speak a single format.
 //
 // THE LAYOUT (v1, magic "TLC1"), in order:
 //
-//	magic          4 bytes
-//	maxId          uvarint   — newest row id; the consumer's next cursor
-//	retentionStart varint    — epoch ms; the feed's window floor
-//	now            varint    — epoch ms; the producer's clock
-//	n              uvarint   — row count
-//	<DeltaU columns>  running deltas, unsigned
-//	<DeltaZ columns>  running deltas, zigzag-signed
-//	<Plain columns>   one uvarint per row
-//	<Bits columns>    ceil(n/8) bytes each
-//	<Strings columns> dictionary, then one index per row — EXCEPT a dictionary
-//	                  of one, which carries no index run at all
-//
 // Changing any of that is a NEW VERSION — new magic, new fixture — never an
-// edit to this one.
+// edit to this.
 package timelinewire
 
 import (
@@ -43,16 +31,16 @@ type Schema struct {
 	DeltaU []string
 	// DeltaZ: signed values, zigzag delta-encoded (epoch-ms timestamps).
 	DeltaZ []string
-	// Plain: unsigned values, one uvarint per row (durations, codes).
+	// Plain: unsigned values, a single uvarint per row (durations, codes).
 	Plain []string
-	// Bits: booleans, one bit per row.
+	// Bits: booleans, a single bit per row.
 	Bits []string
-	// Strings: dictionary-encoded, one index per row.
+	// Strings: dictionary-encoded, a single index per row.
 	Strings []string
 }
 
-// Page is one encodable page: the preamble plus a column per schema entry.
-// Every named column must be present and hold exactly N values.
+// Page is a single encodable page: the preamble plus a column per schema
+// entry. Every named column must be present and hold exactly N values.
 type Page struct {
 	// N is the row count; every column must have this length.
 	N int
@@ -80,7 +68,6 @@ func Encode(p Page, s Schema) ([]byte, error) {
 		return nil, err
 	}
 
-	// Sized for the measured ~24 B/row so the common case never regrows.
 	buf := make([]byte, 0, 512+p.N*24)
 	buf = append(buf, s.Magic...)
 	buf = binary.AppendUvarint(buf, p.MaxID)
@@ -88,8 +75,8 @@ func Encode(p Page, s Schema) ([]byte, error) {
 	buf = binary.AppendVarint(buf, p.NowMs)
 	buf = binary.AppendUvarint(buf, uint64(p.N))
 
-	// Ids are consecutive and timestamps monotonic in practice, so both delta
-	// to one byte. The SIGNED delta on timestamps keeps the format correct
+	// Ids are consecutive and timestamps monotonic in practice, so both delta to
+	// a single byte. The SIGNED delta on timestamps keeps the format correct
 	// even when they are not — events recorded at completion can finish out of
 	// start order.
 	for _, name := range s.DeltaU {
@@ -121,11 +108,8 @@ func Encode(p Page, s Schema) ([]byte, error) {
 		buf = append(buf, bits...)
 	}
 
-	// Dictionary, then one index per row. Index 0 is the reserved empty
-	// string, so an absent value needs no presence bit — and a column NO row
-	// used is written as a dictionary of one with NO index run at all, which
-	// the decoder infers from the dictionary size. That is most of why a
-	// sparse window stays small.
+	// Dictionary, then a single index per row. That is most of why a sparse
+	// window stays small.
 	idxs := make([]uint64, p.N)
 	for _, name := range s.Strings {
 		d := newDict()
@@ -179,7 +163,6 @@ func colErr(group, name string, got, want int, present bool) error {
 	return fmt.Errorf("timelinewire: %s column %q has %d values, want %d", group, name, got, want)
 }
 
-// dict interns one column's distinct strings, entry 0 always "".
 type dict struct {
 	byStr map[string]int
 	strs  []string

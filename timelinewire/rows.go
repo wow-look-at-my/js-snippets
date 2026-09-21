@@ -11,29 +11,28 @@ import (
 )
 
 // Rows: encode and decode a slice of TAGGED STRUCTS, so a producer declares
-// its columns once on the type it already has and writes no mapping code.
+// its columns a single time on the type it already has and writes no mapping code.
 //
 // Page/Schema stay exported for a producer whose rows are not structs (columns
 // straight out of a database, say). Every producer that DOES have a row type
 // should use these instead: the map-building, the name switch, and their
 // inverse for reading a payload back are identical in every consumer, and
-// hand-writing them is how a column silently goes missing from one of the two
+// hand-writing them is how a column silently goes missing from any of both
 // directions.
 //
-//	type Event struct {
-//	    ID    uint64    `wire:"id,deltau"`
-//	    Start time.Time `wire:"start,deltaz"`
-//	    DurMs int64     `wire:"dur,plain"`
-//	    Lane  string    `wire:"lane,string"`
-//	    Final bool      `wire:"final,bits"`
-//	}
+//	type Event struct { ID uint64
+//	    `wire:"id,deltau"` Start time.Time
+//	    `wire:"start,deltaz"` DurMs int64
+//	    `wire:"dur,plain"` Lane string
+//	    `wire:"lane,string"` Final bool
+//	    `wire:"final,bits"` }
 //
 //	b, err := timelinewire.EncodeRows(events, hdr, "TLC1")
 //
 // WIRE ORDER is struct field order within each kind, so the layout is a
 // property of the declaration and cannot drift from it. Reordering fields of
-// one kind reorders the wire — that is a format change, so it needs a new
-// magic like any other.
+// a single kind reorders the wire — that is a format change, so it needs a
+// new magic like any other.
 //
 // Untagged fields are ignored, which is what lets a row type carry things the
 // wire has no use for.
@@ -47,17 +46,16 @@ type Header struct {
 	NowMs            int64
 }
 
-// Column kinds, as written in the second half of a `wire:"name,kind"` tag.
+// Column kinds, as written in the next half of a `wire:"name,kind"` tag.
 const (
 	KindDeltaU = "deltau" // ascending unsigned, delta-encoded (ids)
 	KindDeltaZ = "deltaz" // signed, zigzag delta-encoded (epoch ms / time.Time)
-	KindPlain  = "plain"  // unsigned, one uvarint per row
-	KindBits   = "bits"   // one bit per row
+	KindPlain  = "plain"  // unsigned, a single uvarint
+	KindBits   = "bits"   // a single bit
 	KindString = "string" // dictionary-encoded
 )
 
-// EncodeRows renders a slice of tagged structs. rows must be a slice (or
-// array) of a struct type or of pointers to one.
+// EncodeRows renders a slice of tagged structs.
 func EncodeRows(rows any, h Header, magic string) ([]byte, error) {
 	rv := reflect.ValueOf(rows)
 	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
@@ -68,10 +66,10 @@ func EncodeRows(rows any, h Header, magic string) ([]byte, error) {
 		return nil, err
 	}
 
-	// Column storage is allocated ONCE and addressed through local slices in
-	// the row loop. Indexing page.U[c.name] per row would be a string-keyed
-	// map lookup per column per row -- ~2M of them on a full page, which is
-	// most of what this path could cost over a hand-written mapping.
+	// Column storage is allocated a single time and addressed through local
+	// slices in the row loop. Indexing page.U[c.name] per row would be a
+	// string-keyed map lookup per column per row -- ~2M of them on a full
+	// page, which is most of what this path could cost over a hand-written mapping.
 	n := rv.Len()
 	us := make([][]uint64, len(p.deltaU))
 	zs := make([][]int64, len(p.deltaZ))
@@ -107,7 +105,7 @@ func EncodeRows(rows any, h Header, magic string) ([]byte, error) {
 		page.S[c.name] = ss[i]
 	}
 
-	// One pass per ROW rather than per column: the row is what is in cache.
+	// A single pass per ROW rather than per column: the row is what is in cache.
 	for i := 0; i < n; i++ {
 		row := deref(rv.Index(i))
 		for j, c := range p.deltaU {
@@ -174,7 +172,7 @@ func DecodeRows(b []byte, out any, magic string) (Header, error) {
 // SchemaOf derives the Schema a row type declares. A producer needs it to
 // state its column names somewhere a test can compare them against the
 // consumer's — the library never sees the names as anything but strings, so
-// nothing else can catch the two disagreeing.
+// nothing else can catch both disagreeing.
 func SchemaOf(rowType any, magic string) (Schema, error) {
 	t := reflect.TypeOf(rowType)
 	if t == nil {
@@ -188,7 +186,7 @@ func SchemaOf(rowType any, magic string) (Schema, error) {
 }
 
 // deref addresses through a pointer element so a []*Row works like a []Row.
-// An encode reads through a nil pointer's zero value; a decode allocates.
+// An encode reads through a nil pointer's unset value; a decode allocates.
 func deref(v reflect.Value) reflect.Value {
 	if v.Kind() != reflect.Ptr {
 		return v
@@ -215,10 +213,10 @@ type column struct {
 
 func (c column) readMs(v reflect.Value) int64 {
 	if c.isTime {
-		// Through the ADDRESS: a time.Time is three words, so boxing the value
-		// into an interface heap-allocates once per row. A *time.Time is one
-		// word and boxes for free. Slice elements are addressable; a value
-		// that somehow is not falls back to the copy.
+		// Through the ADDRESS: a time.Time is words, so boxing the value into
+		// an interface heap-allocates a single time per row. A *time.Time is a
+		// single word and boxes for free. Slice elements are addressable; a
+		// value that somehow is not falls back to the copy.
 		if v.CanAddr() {
 			return v.Addr().Interface().(*time.Time).UnixMilli()
 		}
@@ -272,9 +270,9 @@ func (p *plan) schema(magic string) Schema {
 	}
 }
 
-// Plans are derived once per type: reflecting over the struct on every row of
-// a 100k-row page is the one place this could cost more than the hand-written
-// mapping it replaces.
+// Plans are derived a single time per type: reflecting over the struct on
+// every row of a 100k-row page is the thing place this could cost more than
+// the hand-written mapping it replaces.
 var plans sync.Map // reflect.Type -> *plan (or error)
 
 type planErr struct{ err error }
@@ -319,11 +317,9 @@ func buildPlan(t reflect.Type) (*plan, error) {
 		if !found || name == "" || kind == "" {
 			return nil, fmt.Errorf(`timelinewire: %s.%s has tag %q, want "name,kind"`, t.Name(), f.Name, tag)
 		}
-		// Add reports whether the name was new, so the duplicate check and the
-		// insert are one hash rather than two.
 		if !seen.Add(name) {
-			// Two fields under one name would encode twice and decode into
-			// whichever won, silently dropping the other.
+			// Fields under a single name would encode again and decode
+			// into whichever won, silently dropping the other.
 			return nil, fmt.Errorf("timelinewire: %s declares column %q twice", t.Name(), name)
 		}
 
