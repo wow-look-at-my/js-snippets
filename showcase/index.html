@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>js-snippets component gallery</title>
+		<!-- Page CSS is adopted by main.ts (imported as text through the same
+		     esbuild loader override the components' own .css imports need; a
+		     <link> here would be bundled by build-html's stylesheet pass,
+		     whose loader map the ts0.json esbuild override replaces). -->
+	</head>
+	<body>
+		<header>
+			<h1>js-snippets <span class="sub">component gallery</span></h1>
+			<p class="hint">
+				Every DOM-bound component in <code>src/ui/</code>, on fake local data &mdash; no network.
+				These components are not unit-tested under node (they need a real DOM), so this page is
+				where they are actually exercised: each section puts the treatments that are easy to get
+				wrong on screen at once. Published per branch, so a change is verifiable from a real URL
+				before it merges.
+			</p>
+			<nav class="toc">
+				<a href="#timeline-view">&lt;timeline-view&gt;</a>
+				<a href="#data-table">&lt;data-table&gt;</a>
+				<a href="#activity-feed">&lt;activity-feed&gt;</a>
+					<a href="#dag-view">&lt;dag-view&gt;</a>
+				<a href="#perf-graph">&lt;perf-graph&gt;</a>
+			</nav>
+		</header>
+		<main>
+			<section id="timeline-view">
+				<h2>&lt;timeline-view&gt;</h2>
+				<p class="hint">
+					drag to pan &middot; ctrl/&#8984;+wheel or pinch to zoom &middot; shift+wheel or horizontal wheel to pan &middot;
+					vertical wheel scrolls the page &middot; hover anything for a tooltip &middot;
+					pan left for lazy-loaded history &middot; the feed is infinite and generated locally.
+				</p>
+				<timeline-view id="main" history-end-text="demo history ends here"></timeline-view>
+				<h3>same feed, compact + retheme <span class="sub">(auto-fit demotes lanes; <code>--timeline-*</code> custom properties)</span></h3>
+				<timeline-view id="mini" class="light" no-live-pill history-end-text="demo history ends here"></timeline-view>
+
+				<h3>back-limited, still live <span class="sub">(<code>minTime</code> alone &mdash; pan left and it stops dead at the floor; nothing is ever requested before it, yet the right edge still follows the clock)</span></h3>
+				<timeline-view id="floor"></timeline-view>
+
+				<h3>static content <span class="sub">(<code>minTime</code> + <code>maxTime</code> &mdash; a finished window: no now line, no jump-to-live pill, no follow, and the bars that were still running at the end stop exactly at it)</span></h3>
+				<timeline-view id="static"></timeline-view>
+			</section>
+
+			<section id="data-table">
+				<h2>&lt;data-table&gt;</h2>
+				<p class="hint">
+					Type in the box to narrow &middot; click a chip to hide that bucket &middot; click a header to
+					sort (asc &rarr; desc &rarr; back to the producer's order) &middot; tab into the rows and press
+					Enter to open a row's detail (the failure rows' details are async, so the
+					placeholder-then-paint path is visible too). Note the blank durations: they sort LAST in both directions, because absence is not
+					a value. Duration sorts by its real millisecond number while showing &ldquo;1.2s&rdquo; &mdash;
+					sorting the display string would put &ldquo;10s&rdquo; before &ldquo;9s&rdquo;.
+				</p>
+				<data-table id="demo-table" searchable storage-key="showcase.table" empty-text="No runs.">
+					<p class="loading">loading table&hellip;</p>
+				</data-table>
+				<p id="demo-table-click" class="click-readout">(click or Enter a row &mdash; the event lands here)</p>
+
+				<h3>minimal <span class="sub">(no query, no chips, no row listener &mdash; the bar hides itself and rows stay out of the tab order)</span></h3>
+				<data-table id="demo-table-plain">
+					<p class="loading">loading table&hellip;</p>
+				</data-table>
+
+				<h3>filtered to nothing <span class="sub">(NOT the same as having no data &mdash; it says how many it is hiding)</span></h3>
+				<data-table id="demo-table-empty" searchable empty-text="No runs.">
+					<p class="loading">loading table&hellip;</p>
+				</data-table>
+			</section>
+
+			<section id="activity-feed">
+				<h2>&lt;activity-feed&gt;</h2>
+				<p class="hint">
+					A &lt;data-table&gt; underneath &mdash; the chips, counts and empty states are that
+					component's. Severity comes from the ACTION half of each dotted kind and family from the
+					NAMESPACE half, so <code>weather.observed</code> and <code>kettle.boiled</code> &mdash; kinds
+					no rule has ever heard of &mdash; still get a severity and a stable hue the first time they
+					appear. Field values are searchable: paste a repo slug into the box.
+				</p>
+				<activity-feed id="demo-feed" storage-key="showcase.feed" family-chips empty-text="Nothing yet.">
+					<p class="loading">loading activity&hellip;</p>
+				</activity-feed>
+
+				<h3>empty <span class="sub">(a feed with nothing in it says so, rather than looking broken)</span></h3>
+				<activity-feed id="demo-feed-empty" empty-text="Nothing yet.">
+					<p class="loading">loading activity&hellip;</p>
+				</activity-feed>
+			</section>
+
+			<section id="dag-view">
+				<h2>&lt;dag-view&gt;</h2>
+				<p class="hint">
+					Drag to pan &middot; ctrl/&#8984;+wheel or pinch to zoom &middot; a plain wheel pans, so the
+					page never gets its scroll stolen &middot; the toolbar and the <code>+</code>/<code>-</code>/<code>0</code>
+					keys do the same thing &middot; hover a node to fade everything outside its dependency
+					neighbourhood &middot; click to pin that, double-click to zoom to it &middot; arrow keys walk the
+					graph along its edges once something is selected &middot; type in the box to highlight matches
+					(it highlights rather than filters, because the edges are the reason a match matters).
+					Note the long <code>checkout &rarr; publish</code> edge bending around two layers rather than
+					cutting through them, the over-long label truncating inside its box, and the notice strip
+					top-right naming the two edges the graph could not draw.
+				</p>
+				<dag-view id="demo-dag" empty-text="No graph data">
+					<p class="loading">loading graph&hellip;</p>
+				</dag-view>
+				<p id="demo-dag-info" class="click-readout">(layout facts land here)</p>
+				<p id="demo-dag-click" class="click-readout">(click a node &mdash; the event lands here)</p>
+
+				<h3>a circular dependency <span class="sub">(three services that each wait on the next &mdash; a layered drawing has to break the cycle to draw at all, so the broken edge is drawn dashed in the emphasis colour with its arrow still pointing the TRUE way, and the notice says so)</span></h3>
+				<dag-view id="demo-dag-cycle" no-search></dag-view>
+
+				<h3>left to right <span class="sub">(the same data, <code>orientation="LR"</code> &mdash; two pictures of one graph on one page, so an axis bug has nowhere to hide)</span></h3>
+				<dag-view id="demo-dag-lr" orientation="LR" no-search></dag-view>
+
+				<h3>retheme <span class="sub">(the same data under <code>--dag-*</code> custom properties)</span></h3>
+				<dag-view id="demo-dag-theme" class="light" no-search no-toolbar></dag-view>
+
+				<h3>empty <span class="sub">(a graph with nothing in it says so, rather than looking broken)</span></h3>
+				<dag-view id="demo-dag-empty" empty-text="No dependencies recorded yet." no-search></dag-view>
+			</section>
+
+			<section id="perf-graph">
+				<h2>&lt;perf-graph&gt;</h2>
+				<p class="hint">
+					One scrolling metric per element, everything drawn on one canvas. The full HUD carries
+					a label, the current value, an avg/min/max row, tick labels and a dashed budget line the
+					autoscale keeps in view. The <code>compact</code> strip below it is the table-cell shape:
+					one text row over the trace, nothing else.
+				</p>
+				<div class="perf-column">
+					<perf-graph id="demo-perf-full" label="frame" unit="ms" budget="16.7"></perf-graph>
+				</div>
+
+				<h3>compact <span class="sub">(five gauges in one row &mdash; <code>compact</code>, fixed 0&ndash;100 scale)</span></h3>
+				<div id="demo-perf-strip" class="perf-strip"></div>
+
+				<h3>fixed against autoscaled <span class="sub">(the same samples: <code>min="0" max="100"</code> on the left, autoscale on the right)</span></h3>
+				<div class="perf-pair">
+					<perf-graph id="demo-perf-fixed" label="fixed" unit="%" min="0" max="100"></perf-graph>
+					<perf-graph id="demo-perf-auto" label="auto" unit="%"></perf-graph>
+				</div>
+
+				<h3>stacked area <span class="sub">(<code>series</code> + <code>pushSeries</code>: the total and the split that makes it up)</span></h3>
+				<p class="hint">
+					Five projects share one cache. The top-right readout is the whole column, the legend
+					carries each band's newest value, and the ceiling follows the tallest COLUMN rather
+					than the tallest band. One band is dead the whole time, so a zero-height band must
+					still hold its place in the legend and its color. A sixth project joins after a few
+					seconds: its band starts flat and the five already drawn keep their history and their
+					colors. Two of the names are long enough that the legend runs out of room and has to
+					say how many it left out.
+				</p>
+				<div class="perf-column">
+					<perf-graph id="demo-perf-stacked" label="cache GET/s" unit="" height="110"></perf-graph>
+				</div>
+
+				<h3>stacked, compact and dense <span class="sub">(no legend at this height, and more samples than pixels)</span></h3>
+				<div class="perf-column">
+					<perf-graph id="demo-perf-stacked-compact" label="by project" unit="" history="4000" compact></perf-graph>
+				</div>
+
+				<h3>empty <span class="sub">(no samples yet: the readout says so with a dash, and nothing is drawn as zero)</span></h3>
+				<div class="perf-column">
+					<perf-graph id="demo-perf-empty" label="idle" unit="%" compact></perf-graph>
+					<perf-graph id="demo-perf-stacked-empty" label="no columns yet" unit=""></perf-graph>
+				</div>
+			</section>
+		</main>
+		<script type="module" src="./main.ts"></script>
+	</body>
+</html>
