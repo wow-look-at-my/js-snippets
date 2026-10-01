@@ -1,0 +1,82 @@
+/*
+ * ui/combobox.ts's injected stylesheet (text import; injectStyles() appends
+ * it to <head> once). Every colour reads a --cb-* custom property with an
+ * inline fallback, so it works unthemed and retints when you set those on
+ * :root, a host, or any ancestor. The popup is appended to <body>, so these
+ * rules are global (not scoped to a host).
+ */
+
+.cb-select-hidden { display: none !important; }
+
+.cb-trigger:focus-visible {
+  outline: 2px solid var(--cb-accent, #5b9dd9);
+  outline-offset: 1px;
+}
+
+.cb-trigger-native {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 2rem;
+  padding: 0.4rem 1.9rem 0.4rem 0.6rem;
+  background: var(--cb-bg, #12141f);
+  color: var(--cb-fg, #e2e8f0);
+  border: 1px solid var(--cb-border, #2d3148);
+  border-radius: var(--cb-radius, 6px);
+  font: inherit;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.cb-trigger-native .cb-trigger-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cb-trigger-native::after {
+  content: "";
+  position: absolute;
+  right: 0.7rem;
+  top: 50%;
+  width: 0;
+  height: 0;
+  border-left: 0.3rem solid transparent;
+  border-right: 0.3rem solid transparent;
+  border-top: 0.35rem solid currentColor;
+  transform: translateY(-25%);
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+.cb-popup {
+  position: fixed;
+  margin: 0;
+  padding: 0.25rem 0;
+  background: var(--cb-popup-bg, #12141f);
+  color: var(--cb-popup-fg, #e2e8f0);
+  border: 1px solid var(--cb-popup-border, rgba(255, 255, 255, 0.16));
+  border-radius: var(--cb-radius, 6px);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.cb-option {
+  padding: 0.45rem 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.25;
+}
+
+.cb-option.cb-active { background: var(--cb-active, rgba(255, 255, 255, 0.14)); }
+.cb-option.cb-selected { font-weight: 600; }
+.cb-option.cb-selected::before { content: "\203A  "; opacity: 0.8; }
+.cb-option.cb-disabled { opacity: 0.4; cursor: default; }
+.cb-option.cb-disabled.cb-active { background: transparent; }

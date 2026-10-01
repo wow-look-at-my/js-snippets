@@ -1,0 +1,286 @@
+/* Showcase page chrome — the component brings its own styles (shadow DOM). */
+* {
+	box-sizing: border-box;
+}
+html,
+body {
+	margin: 0;
+	height: 100%;
+}
+body {
+	display: flex;
+	flex-direction: column;
+	background: #0a0c10;
+	color: #e8ecf4;
+	font-family: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+	padding: 12px 16px 16px;
+	gap: 8px;
+}
+header h1 {
+	margin: 0;
+	font-size: 16px;
+	font-weight: 600;
+}
+header .sub,
+main .sub {
+	color: #6b7280;
+	font-weight: 400;
+	font-size: 12px;
+}
+header .hint {
+	margin: 4px 0 0;
+	color: #6b7280;
+	font-size: 11px;
+}
+main {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-height: 0;
+}
+main h2 {
+	margin: 8px 0 0;
+	font-size: 12px;
+	font-weight: 600;
+	color: #9aa3b2;
+}
+main code {
+	font-size: 11px;
+	color: #9aa3b2;
+}
+/* Every chart in the section shares the frame; only sizing differs per
+   instance. :where() keeps this at type specificity so a plain #id rule
+   below still wins. */
+:where(#timeline-view) timeline-view {
+	border: 1px solid rgba(200, 205, 216, 0.12);
+	border-radius: 6px;
+}
+#main {
+	flex: 1;
+	min-height: 320px;
+}
+/* The compact strip: a hard height cap so auto-fit has to demote lanes,
+   plus a light retheme via the --timeline-* custom properties. */
+#mini {
+	height: 150px;
+	flex: none;
+	border-color: rgba(20, 25, 35, 0.2);
+}
+/* The bounded pair: fixed height, no growth — they are here to show where
+   the view STOPS, not to fill the page. */
+#floor,
+#static {
+	height: 240px;
+	flex: none;
+}
+#mini.light {
+	--timeline-bg: #f4f6fa;
+	--timeline-fg: #1a2030;
+	--timeline-muted: #5a6372;
+	--timeline-grid: rgba(20, 25, 35, 0.08);
+	--timeline-hairline: rgba(20, 25, 35, 0.12);
+	--timeline-row-tint: rgba(20, 25, 35, 0.025);
+	--timeline-now: #009e55;
+	--timeline-emphasis: #d4383e;
+	--timeline-cat-lightness: 0.55;
+	--timeline-cat-chroma: 0.12;
+}
+
+/* -- <dag-view> ------------------------------------------------------------
+ *
+ * The main graph gets real room: a dependency graph read at 200px tall is
+ * a diagram of a diagram. The secondary instances are shorter on purpose —
+ * each is here to show ONE property, not to be worked in.
+ */
+#demo-dag {
+	height: 460px;
+	border: 1px solid rgba(200, 205, 216, 0.14);
+	border-radius: 6px;
+}
+#demo-dag-cycle,
+#demo-dag-lr,
+#demo-dag-theme,
+#demo-dag-empty {
+	/* Tall enough that a four-layer graph fits ABOVE the label LOD floor.
+	   A shorter box is not a smaller picture, it is an unlabelled one. */
+	height: 340px;
+	border: 1px solid rgba(200, 205, 216, 0.14);
+	border-radius: 6px;
+}
+#demo-dag-theme.light {
+	--dag-bg: #f4f6fa;
+	--dag-fg: #1a2030;
+	--dag-muted: #5a6372;
+	--dag-grid: rgba(20, 25, 35, 0.09);
+	--dag-hairline: rgba(20, 25, 35, 0.18);
+	--dag-edge: rgba(20, 25, 35, 0.38);
+	--dag-accent: #0b6bcb;
+	--dag-emphasis: #d4383e;
+	--dag-cat-lightness: 0.58;
+	--dag-cat-chroma: 0.13;
+	--dag-node-radius: 2;
+	border-color: rgba(20, 25, 35, 0.2);
+}
+
+/* -- Gallery chrome ---------------------------------------------------------
+ *
+ * The page grew from one timeline demo into a gallery, so `main` is no
+ * longer a single flexed chart: sections stack and the page scrolls. Only
+ * the timeline section keeps the "fill the viewport" behaviour it needs to
+ * be usable — every other component sizes to its content.
+ */
+main {
+	overflow-y: auto;
+}
+main section {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding-bottom: 20px;
+	border-bottom: 1px solid rgba(200, 205, 216, 0.1);
+}
+main section:last-child {
+	border-bottom: 0;
+}
+/* Only the chart stretches; the tables and feeds are content-sized. */
+#timeline-view {
+	flex: 1;
+	min-height: 520px;
+}
+main section h2 {
+	margin: 16px 0 0;
+	font-size: 14px;
+	color: #e8ecf4;
+	scroll-margin-top: 12px;
+}
+main section h3 {
+	margin: 12px 0 0;
+	font-size: 12px;
+	font-weight: 600;
+	color: #9aa3b2;
+}
+main section .hint {
+	margin: 0;
+	color: #6b7280;
+	font-size: 11px;
+	max-width: 90ch;
+	line-height: 1.5;
+}
+.toc {
+	display: flex;
+	gap: 12px;
+	margin-top: 6px;
+	font-size: 11px;
+}
+.toc a {
+	color: #7aa2f7;
+	text-decoration: none;
+}
+.toc a:hover {
+	text-decoration: underline;
+}
+/* Light-DOM placeholder: visible until the element upgrades, so a broken
+   component reads as "loading", not as a blank gap. */
+.loading {
+	margin: 0;
+	color: #6b7280;
+	font-size: 11px;
+	font-style: italic;
+}
+.click-readout {
+	margin: 0;
+	color: #9aa3b2;
+	font-size: 11px;
+	font-family: inherit;
+}
+
+/* The demo tables and feeds inherit the page palette through the shadow
+   boundary: the components read --table-*/--activity-*, each falling back
+   to these generics, so theming them is setting five variables once. */
+data-table,
+activity-feed {
+	--fg: #e8ecf4;
+	--muted: #6b7280;
+	--border: rgba(200, 205, 216, 0.14);
+	--panel: #11141b;
+	--accent: #7aa2f7;
+	--failure: #f85149;
+	--running: #d29922;
+	--success: #3fb950;
+	--skipped: #a371f7;
+	--pending: #6b7280;
+	display: block;
+	font-size: 12px;
+}
+
+/* NOTE: the demo's status cells are rendered INSIDE the component's shadow
+   root, so no rule in this file can reach them — that styling is passed in
+   through the element's styleText hatch (see data-table-demo.ts). What the
+   page CAN do from out here is set the custom properties above, because
+   those inherit through the boundary. */
+
+/* -- <perf-graph> ------------------------------------------------------------
+ *
+ * The column is the HUD's natural width. The strip is a flex row of five
+ * compact gauges, each one a table-cell-sized box, so the compact mode is
+ * seen at the width it is meant for.
+ */
+.perf-column {
+	max-width: 320px;
+}
+.perf-strip {
+	display: flex;
+	gap: 4px;
+	max-width: 640px;
+}
+.perf-strip perf-graph {
+	width: 120px;
+	flex: 0 0 auto;
+}
+.perf-pair {
+	display: flex;
+	gap: 8px;
+	max-width: 640px;
+}
+.perf-pair perf-graph {
+	flex: 1 1 0;
+}
+
+/* -- Tabs ----------------------------------------------------------------------
+ *
+ * One component per view: the TOC is a tab bar, and main.ts shows only the
+ * section whose id matches the hash. A page that stacks every gallery makes
+ * it impossible to tell which control a given box belongs to.
+ */
+nav.toc {
+	display: flex;
+	gap: 4px;
+	margin-top: 8px;
+	border-bottom: 1px solid rgba(200, 205, 216, 0.14);
+}
+nav.toc a {
+	color: #9aa3b2;
+	text-decoration: none;
+	font-size: 12px;
+	padding: 6px 10px;
+	border: 1px solid transparent;
+	border-bottom: none;
+	border-radius: 6px 6px 0 0;
+	margin-bottom: -1px;
+}
+nav.toc a:hover {
+	color: #e8ecf4;
+}
+nav.toc a[aria-current='page'] {
+	color: #e8ecf4;
+	background: #0d0f14;
+	border-color: rgba(200, 205, 216, 0.14);
+	border-bottom: 1px solid #0d0f14;
+}
+main > section[hidden] {
+	display: none;
+}
+main > section h2 {
+	margin-top: 4px;
+}

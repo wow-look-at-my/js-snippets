@@ -7,7 +7,7 @@
  * relative to the site root. If the file is missing or empty, falls back to
  * HEAD-polling the current page and comparing ETag / Last-Modified headers.
  *
- * Usage: <script type="module" src="https://wow-look-at-my.github.io/js-snippets/auto-refresh/auto-refresh.js"></script>
+ * Usage: <script type="module" src="https://sites.pazer.build/js-snippets/branch/library/auto-refresh/auto-refresh.js"></script>
  */
 
 // -- Configuration -----------------------------------------------------------
