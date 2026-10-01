@@ -2,14 +2,17 @@
 //
 // These are pure typed-array generators (no GPU), so they unit-test cleanly.
 // For every generator we assert structural invariants: positions/normals share
-// the same vertex count, every index is in range, normals are ~unit length, and
-// positions stay within the expected bounds for the generator's parameters.
+// the same vertex count, every index is in range, normals are ~unit length,
+// positions stay within the expected bounds for the generator's parameters,
+// and every non-degenerate triangle is wound counter-clockwise viewed from
+// outside (front-facing under WebGPU's default frontFace: 'ccw').
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
   createCube, createSphere, createCylinder, createPlane, createBox, createTorus,
+  flipWinding,
 } from './geometry.ts';
 import type { Mesh } from './geometry.ts';
 
@@ -134,4 +137,85 @@ test('createTorus: structural invariants and bounds', () => {
   assert.ok(b.max[0] <= outer + 1e-5 && b.max[2] <= outer + 1e-5, 'within outer radius');
   assert.ok(Math.abs(b.max[1] - tube) < 1e-5, `max y ~ tube: ${b.max[1]}`);
   assert.ok(Math.abs(b.min[1] + tube) < 1e-5, `min y ~ -tube: ${b.min[1]}`);
+});
+
+// Winding oracle: for each non-degenerate triangle, the geometric normal
+// cross(p1 - p0, p2 - p0) must agree with the average of the three stored
+// vertex normals (dot > 0) — i.e. the triangle is counter-clockwise viewed
+// from outside, front-facing under WebGPU's default frontFace: 'ccw'.
+// Zero-area triangles (e.g. sphere pole rows, a cone's apex row) are skipped.
+function windingDots(m: Mesh): { tri: number; dot: number }[] {
+  const dots: { tri: number; dot: number }[] = [];
+  const P = m.positions, N = m.normals, I = m.indices;
+  for (let t = 0; t < I.length; t += 3) {
+    const i0 = I[t] * 3, i1 = I[t + 1] * 3, i2 = I[t + 2] * 3;
+    const e1x = P[i1] - P[i0], e1y = P[i1 + 1] - P[i0 + 1], e1z = P[i1 + 2] - P[i0 + 2];
+    const e2x = P[i2] - P[i0], e2y = P[i2 + 1] - P[i0 + 1], e2z = P[i2 + 2] - P[i0 + 2];
+    const cx = e1y * e2z - e1z * e2y;
+    const cy = e1z * e2x - e1x * e2z;
+    const cz = e1x * e2y - e1y * e2x;
+    if (Math.hypot(cx, cy, cz) < 1e-9) continue; // zero-area triangle
+    const nx = (N[i0] + N[i1] + N[i2]) / 3;
+    const ny = (N[i0 + 1] + N[i1 + 1] + N[i2 + 1]) / 3;
+    const nz = (N[i0 + 2] + N[i1 + 2] + N[i2 + 2]) / 3;
+    dots.push({ tri: t / 3, dot: cx * nx + cy * ny + cz * nz });
+  }
+  return dots;
+}
+
+// One representative instance per generator; the cylinder also as a frustum
+// (unequal radii) and a cone (radiusTop 0, whose apex-row triangles are all
+// degenerate and must be skipped, not failed).
+function windingCases(): [string, Mesh][] {
+  return [
+    ['createCube', createCube(2)],
+    ['createBox', createBox(2, 4, 6)],
+    ['createSphere', createSphere(1.5, 16)],
+    ['createCylinder equal radii', createCylinder(0.5, 0.5, 2, 20)],
+    ['createCylinder unequal radii', createCylinder(0.2, 0.7, 1.5, 16)],
+    ['createCylinder cone (radiusTop 0)', createCylinder(0, 0.5, 1, 16)],
+    ['createPlane', createPlane(20, 10)],
+    ['createTorus', createTorus(1, 0.4, 12, 16)],
+  ];
+}
+
+test('winding: every generator emits CCW-from-outside triangles', () => {
+  for (const [label, m] of windingCases()) {
+    const dots = windingDots(m);
+    assert.ok(dots.length > 0, `${label}: has non-degenerate triangles`);
+    for (const { tri, dot } of dots) {
+      assert.ok(dot > 0, `${label}: triangle ${tri} winds CW (dot ${dot})`);
+    }
+  }
+});
+
+test('flipWinding: output winds CW everywhere (fails the CCW oracle)', () => {
+  for (const [label, m] of windingCases()) {
+    const dots = windingDots(flipWinding(m));
+    assert.ok(dots.length > 0, `${label}: flipped mesh has non-degenerate triangles`);
+    for (const { tri, dot } of dots) {
+      assert.ok(dot < 0, `${label}: flipped triangle ${tri} still CCW (dot ${dot})`);
+    }
+  }
+});
+
+test('flipWinding: (a,b,c) -> (a,c,b), no mutation, arrays pass through, double flip round-trips', () => {
+  const m = createCube(1);
+  const before = Array.from(m.indices);
+  const flipped = flipWinding(m);
+  // Positions/normals are the SAME arrays; indices are a NEW array.
+  assert.equal(flipped.positions, m.positions, 'positions array passed through');
+  assert.equal(flipped.normals, m.normals, 'normals array passed through');
+  assert.notEqual(flipped.indices, m.indices, 'indices are a new array');
+  // Input untouched.
+  assert.deepEqual(Array.from(m.indices), before, 'input indices unmutated');
+  // Each triangle (a, b, c) became (a, c, b).
+  for (let t = 0; t < m.indices.length; t += 3) {
+    assert.equal(flipped.indices[t], m.indices[t], `tri ${t / 3} keeps vertex 0`);
+    assert.equal(flipped.indices[t + 1], m.indices[t + 2], `tri ${t / 3} vertex 1 <- 2`);
+    assert.equal(flipped.indices[t + 2], m.indices[t + 1], `tri ${t / 3} vertex 2 <- 1`);
+  }
+  // Flipping twice restores the original index order exactly.
+  const twice = flipWinding(flipped);
+  assert.deepEqual(Array.from(twice.indices), before, 'double flip round-trips');
 });

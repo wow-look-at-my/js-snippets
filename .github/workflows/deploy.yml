@@ -1,11 +1,21 @@
 name: CI / Deploy
 
-on: push
+# Every branch, no tags: the go job pushes a timelinewire/vX.Y.Z tag, which would otherwise start this workflow again.
+on:
+  push:
+    branches: ['**']
+  # Republish a preview without a commit that exists only to trigger one.
+  workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
+  pull-requests: write # buildhost-publish-site hands each preview URL to the pull request
+  id-token: write # buildhost OIDC auth
+  # The publish guard scans this run's jobs and the head SHA's check runs, and fails CLOSED without both reads.
+  actions: read
+  checks: read
+  artifact-metadata: write # recording the upload is part of publishing; without it a publish FAILS
+  deployments: write # same chain: registering the GitHub Deployment is part of publishing too
 
 env:
   COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
@@ -20,42 +30,177 @@ jobs:
         with:
           node-version: 22
 
-      # pnpm, pinned via package.json "packageManager" and provisioned by
-      # corepack (ships with Node) — no third-party setup action needed.
+      # pnpm is pinned by package.json "packageManager" and provisioned by corepack, so no third-party action.
       - name: Enable pnpm
         run: corepack enable
 
-      # No lockfile is committed (so ts0 is never pinned to a commit) — `pnpm
-      # install` resolves the ts0 branch dependency to its current HEAD on every
-      # run. ts0's git-dep build script is allowlisted via package.json
-      # "pnpm.onlyBuiltDependencies".
+      # No lockfile is committed, so this resolves the ts0 branch dependency to its current HEAD every run.
       - run: pnpm install
 
       - name: Test
-        # ts0 test type-checks the project (sources + *.test.ts) and runs them
-        # under Node's built-in test runner. A failing test fails CI, and since
-        # `deploy` depends on `build`, it also gates the deploy.
+        # Type-checks sources AND tests, then runs them; the publish is later in this same job, so a failure gates it.
         run: pnpm test
 
       - name: Build
-        # ts0 build type-checks (tsc --noEmit) and compiles src/ -> dist/;
-        # the build script then assembles dist/llms.txt.
+        # Type-checks, compiles src/ -> dist/, then assembles dist/llms.txt.
         run: pnpm build
 
-      - name: Upload Pages artifact
-        if: github.ref == 'refs/heads/master'
-        uses: actions/upload-pages-artifact@v3
+      # master publishes the canonical 'library' site, every other branch 'library-<flattened>' — the prefix is what keeps these clear of the showcase previews below.
+      - name: Library site name
+        id: sitename
+        uses: wow-look-at-my/actions@typescript#latest
         with:
-          path: dist
+          script: |
+            // buildhost serves sites under one path segment — flatten anything outside [A-Za-z0-9._-] out of the branch name
+            const flat = (github.ref_name || 'branch').replace(/[^A-Za-z0-9._-]/g, '-');
+            const site = github.ref_name === 'master' ? 'library' : `library-${flat}`;
+            core.setOutput('branch', site);
+            core.info(`library site branch: ${site}`);
 
-  deploy:
-    needs: build
-    if: github.ref == 'refs/heads/master'
+      - name: Publish library to buildhost sites
+        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master
+        with:
+          server: https://pazer.build
+          project: js-snippets # repo-derived: the only site project OIDC authorizes
+          branch: ${{ steps.sitename.outputs.branch }}
+          source_dir: dist
+          public: 'true' # the library must stay anonymously importable
+          # The gallery below is the preview a reviewer opens; two comments per pull request is noise.
+          comment: 'false'
+
+  # Prose style (ASD-STE100's mechanical subset) over the docs and the llms.txt files this repo serves to consumers.
+  ste-lint:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: read
     steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - uses: actions/checkout@v4
+      # NOT YET COVERED, and that count is real failures rather than an exemption: src/ui/llms.txt, 1805 across 1591 lines. Add it to `files` once converted; add it here temporarily to see what is left.
+      - uses: wow-look-at-my/actions@ste-lint#latest
+        with:
+          files: docs/**/*.md llms-header.txt src/math/llms.txt src/webgl2/llms.txt src/auto-refresh/llms.txt src/editor/llms.txt src/apng/llms.txt src/webgpu/llms.txt
+
+  # timelinewire/ is a nested Go LIBRARY module (no main package), so autorelease is off: there is no binary to publish.
+  go:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      actions: read
+      checks: read
+      artifact-metadata: write
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the tag step reads existing tags to pick the next one
+      - uses: wow-look-at-my/go-toolchain@master
+        with:
+          working-directory: timelinewire
+
+      # master PUBLISHES, so a consumer tracks this with `go get ...@latest` instead of a pseudoversion; Go requires the subdirectory prefix on a nested module's tags.
+      - name: Tag the Go module
+        if: github.ref_name == 'master'
+        uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            const prefix = "timelinewire/v";
+            const tags = (await exec.getExecOutput("git", ["tag", "--list", `${prefix}*`], { silent: true }))
+              .stdout.split("\n").map((t) => t.trim()).filter(Boolean);
+
+            // Highest existing release, by semver rather than by string order:
+            // v0.10.0 sorts before v0.9.0 alphabetically.
+            const parse = (t: string) => t.slice(prefix.length).split(".").map(Number);
+            let [major, minor, patch] = [0, 1, -1];
+            for (const t of tags) {
+              const v = parse(t);
+              if (v.length !== 3 || v.some(Number.isNaN)) continue;
+              if (v[0] > major || (v[0] === major && v[1] > minor) ||
+                  (v[0] === major && v[1] === minor && v[2] > patch)) {
+                [major, minor, patch] = v;
+              }
+            }
+            const next = `${prefix}${major}.${minor}.${patch + 1}`;
+
+            // Only cut a release when the module actually changed. A push that
+            // touches nothing under timelinewire/ would otherwise mint a tag
+            // identical to the last one.
+            const changed = (await exec.getExecOutput(
+              "git", ["diff", "--name-only", `${context.payload.before}..${context.sha}`], { silent: true }))
+              .stdout.split("\n").filter((f) => f.startsWith("timelinewire/"));
+            if (changed.length === 0 && tags.length > 0) {
+              core.info("no timelinewire/ changes in this push -- keeping the current release");
+              return;
+            }
+
+            await $`git tag ${next} ${context.sha}`;
+            await $`git push origin ${next}`;
+            core.info(`published ${next} at ${context.sha}`);
+            core.summary.addRaw(`Published \`${next}\`. Consumers: \`go get github.com/wow-look-at-my/js-snippets/timelinewire@latest\``).write();
+
+  # The component gallery, per branch: src/ui/'s components are not node-tested, so this preview is the only place a rendering regression shows before merge.
+  showcase:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # buildhost OIDC auth
+      contents: read
+      # A job-level block REPLACES the workflow-level one, so every grant the publish needs is re-granted here.
+      actions: read
+      checks: read
+      artifact-metadata: write
+      deployments: write
+      pull-requests: write # buildhost-publish-site hands the gallery URL to the pull request
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the gate diffs against the merge-base with origin/master
+
+      - name: Gate on ui/showcase paths
+        id: gate
+        uses: wow-look-at-my/actions@typescript#latest
+        with:
+          script: |
+            // src/ui/ is watched WHOLE, not per-component — every UI component has a gallery section, so any of them changing means republish
+            const watched = /^(src\/ui\/|showcase\/|\.github\/workflows\/deploy\.yml$)/;
+            // buildhost serves sites under one path segment — flatten anything outside [A-Za-z0-9._-] out of the branch name
+            const branch = (github.ref_name || 'preview').replace(/[^A-Za-z0-9._-]/g, '-');
+            core.setOutput('branch', branch);
+            if (github.ref_name === 'master') {
+              core.setOutput('publish', 'true');
+              core.info('push to master — always publish');
+              return;
+            }
+            const mb = (await exec.getExecOutput('git', ['merge-base', 'origin/master', 'HEAD'])).stdout.trim();
+            const diff = (await exec.getExecOutput('git', ['diff', '--name-only', `${mb}..HEAD`])).stdout;
+            const files = diff.split('\n').filter(Boolean);
+            const hit = files.filter((f) => watched.test(f));
+            core.setOutput('publish', String(hit.length > 0));
+            core.info(hit.length > 0
+              ? `ui/showcase paths touched:\n  ${hit.join('\n  ')}`
+              : `no ui/showcase paths among ${files.length} changed file(s) — skipping publish`);
+
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.publish == 'true'
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        if: steps.gate.outputs.publish == 'true'
+        run: corepack enable
+
+      - run: pnpm install
+        if: steps.gate.outputs.publish == 'true'
+
+      # ts0's single-HTML target: bundles THIS branch's own src/ui (CSS inlined) into showcase/dist/index.html.
+      - run: pnpm build:showcase
+        if: steps.gate.outputs.publish == 'true'
+
+      - name: Publish preview to buildhost
+        if: steps.gate.outputs.publish == 'true'
+        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master
+        with:
+          server: https://pazer.build
+          project: js-snippets # repo-derived: the only site project OIDC authorizes
+          branch: ${{ steps.gate.outputs.branch }}
+          source_dir: ./showcase/dist
+
