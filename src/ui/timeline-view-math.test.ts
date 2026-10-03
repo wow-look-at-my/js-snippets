@@ -86,6 +86,8 @@ import {
   MIN_BAR_PX,
   packVisibleTracks,
   TrackAllocator,
+  resolveParents,
+  packFamily,
   clusterInstants,
   clusterZoomView,
   clusterMarkerTime,
@@ -2278,6 +2280,185 @@ test('packVisibleTracks: assignment is stable while the window slides over an un
     assert.deepEqual(r.tracks, first.tracks, `slide +${dt} keeps identical assignments`);
     assert.equal(r.trackCount, first.trackCount);
   }
+});
+
+// -- Multi-row items (sub-span families are one pack item `rows` tall) --------------------
+
+test('pack: a multi-row item takes a run of consecutive free tracks and blocks all of them', () => {
+  const { tracks, trackCount } = packOf([
+    { id: 'a', start: 0, end: 100, rows: 3 },
+    { id: 'b', start: 10, end: 50 },
+    { id: 'c', start: 150, end: 200 },
+  ]);
+  assert.deepEqual(tracks, [0, 3, 0]);
+  assert.equal(trackCount, 4);
+});
+
+test('pack: a multi-row item skips past a busy track inside its candidate run', () => {
+  const { tracks, trackCount } = packOf([
+    { id: 'x', start: 0, end: 100 },
+    { id: 'y', start: 0, end: 100 },
+    { id: 'z', start: 0, end: 100 },
+    { id: 'blk', start: 5, end: 50, rows: 2 },
+  ]);
+  assert.deepEqual(tracks.slice(0, 3), [0, 1, 2]);
+  assert.equal(tracks[3], 3);
+  assert.equal(trackCount, 5);
+  const gap = packOf([
+    { id: 'x', start: 0, end: 100 },
+    { id: 'y', start: 0, end: 4 },
+    { id: 'z', start: 0, end: 4 },
+    { id: 'w', start: 0, end: 100 },
+    { id: 'blk', start: 5, end: 50, rows: 2 },
+  ]);
+  assert.deepEqual(gap.tracks, [1, 2, 3, 0, 2], 'the block reuses the freed middle rows');
+  assert.equal(gap.trackCount, 4);
+});
+
+test('packVisibleTracks: a multi-row item counts every row it holds', () => {
+  const items: PackItem[] = [{ id: 'fam', start: 0, end: 100, rows: 4 }];
+  assert.equal(packVisibleTracks(items, { start: 10, end: 20 }).trackCount, 4);
+  assert.equal(packVisibleTracks(items, { start: 500, end: 600 }).trackCount, 1);
+});
+
+test('TrackAllocator: multi-row items pack, stick and count like single rows', () => {
+  const fam: PackItem = { id: 'fam', start: 0, end: 100, rows: 3 };
+  const a: PackItem = { id: 'a', start: 10, end: 60 };
+  const b: PackItem = { id: 'b', start: 200, end: 260 };
+  const alloc = new TrackAllocator();
+  const first = alloc.assign([fam, a, b], { start: 0, end: 300 });
+  assert.deepEqual(first.tracks, [0, 3, 0], 'the block holds rows 0..2; a sits under it; b reuses row 0 after it');
+  assert.equal(first.trackCount, 4);
+  // A newcomer that overlaps the block must clear its whole run — even the rows the block holds.
+  const c: PackItem = { id: 'c', start: 20, end: 30 };
+  const second = alloc.assign([fam, a, b, c], { start: 0, end: 300 });
+  assert.deepEqual(second.tracks, [0, 3, 0, 4], 'rows under the block are blocked, not free');
+  // The block scrolls out: the lane shrinks and a keeps its row.
+  const later = alloc.assign([fam, a, b, c], { start: 150, end: 300 });
+  assert.deepEqual(later.tracks, [-1, -1, 0, -1]);
+  assert.equal(later.trackCount, 1);
+});
+
+// -- resolveParents / packFamily (sub-spans) -------------------------------------------------
+
+test('resolveParents: same-lane parents nest; missing, cross-lane and self parents leave a root', () => {
+  const parent = resolveParents([
+    { id: 'run', laneId: 'ci' },
+    { id: 'build', laneId: 'ci', parentId: 'run' },
+    { id: 'orphan', laneId: 'ci', parentId: 'nope' },
+    { id: 'elsewhere', laneId: 'deploy', parentId: 'run' },
+    { id: 'me', laneId: 'ci', parentId: 'me' },
+    { id: 'unit', laneId: 'ci', parentId: 'build' },
+  ]);
+  assert.deepEqual(parent, [-1, 0, -1, -1, -1, 1]);
+});
+
+test('resolveParents: a cycle is cut so the result is a forest', () => {
+  const parent = resolveParents([
+    { id: 'a', parentId: 'c' },
+    { id: 'b', parentId: 'a' },
+    { id: 'c', parentId: 'b' },
+    { id: 'd', parentId: 'c' },
+  ]);
+  assert.equal(parent[0], -1, 'the lowest-index member of the cycle becomes the root');
+  assert.deepEqual(parent.slice(1), [0, 1, 2]);
+  // No ancestor walk loops forever.
+  for (let i = 0; i < parent.length; i++) {
+    let j = i;
+    let steps = 0;
+    while (parent[j] >= 0) {
+      j = parent[j];
+      steps++;
+      assert.ok(steps <= parent.length, 'acyclic');
+    }
+  }
+});
+
+test('packFamily: the root sits on row 0, children first-fit under it, the block is 1 + child rows tall', () => {
+  const fam = packFamily({
+    id: 'run',
+    start: 0,
+    end: 100,
+    children: [
+      { id: 'build', start: 5, end: 40 },
+      { id: 'test-a', start: 40, end: 80 },
+      { id: 'test-b', start: 42, end: 70 }, // overlaps test-a → second child row
+      { id: 'promote', start: 85, end: 95 },
+    ],
+  });
+  assert.equal(fam.rows, 3);
+  assert.equal(fam.start, 0);
+  assert.equal(fam.end, 100);
+  assert.equal(fam.tops.get('run'), 0);
+  assert.equal(fam.tops.get('build'), 1);
+  assert.equal(fam.tops.get('test-a'), 1);
+  assert.equal(fam.tops.get('test-b'), 2);
+  assert.equal(fam.tops.get('promote'), 1);
+});
+
+test('packFamily: a child with no siblings overlapping packs on the row right under its parent', () => {
+  const fam = packFamily({ id: 'p', start: 0, end: 10, children: [{ id: 'c', start: 2, end: 8 }] });
+  assert.equal(fam.rows, 2);
+  assert.deepEqual([...fam.tops], [['p', 0], ['c', 1]]);
+});
+
+test('packFamily: nested families stack — a grandchild sits under its parent, offset by where that parent packed', () => {
+  const fam = packFamily({
+    id: 'run',
+    start: 0,
+    end: 100,
+    children: [
+      { id: 'build', start: 0, end: 50 },
+      {
+        id: 'test',
+        start: 10,
+        end: 90,
+        children: [
+          { id: 'unit', start: 12, end: 40 },
+          { id: 'e2e', start: 15, end: 85 },
+        ],
+      },
+    ],
+  });
+  assert.equal(fam.tops.get('build'), 1);
+  assert.equal(fam.tops.get('test'), 2);
+  assert.equal(fam.tops.get('unit'), 3);
+  assert.equal(fam.tops.get('e2e'), 4);
+  assert.equal(fam.rows, 5);
+});
+
+test('packFamily: the extent is the union, and any ongoing member makes the block ongoing', () => {
+  const over = packFamily({ id: 'p', start: 10, end: 20, children: [{ id: 'c', start: 5, end: 30 }] });
+  assert.equal(over.start, 5);
+  assert.equal(over.end, 30);
+  const live = packFamily({ id: 'p', start: 10, end: 20, children: [{ id: 'c', start: 12, end: null }] });
+  assert.equal(live.end, null);
+  const liveRoot = packFamily({ id: 'p', start: 10, end: null, children: [{ id: 'c', start: 12, end: 15 }] });
+  assert.equal(liveRoot.end, null);
+});
+
+test('packFamily: instant children (end == start) still get a row each when coincident', () => {
+  const fam = packFamily({
+    id: 'p',
+    start: 0,
+    end: 10,
+    children: [
+      { id: 'i1', start: 5, end: 5 },
+      { id: 'i2', start: 5, end: 5 },
+    ],
+  });
+  assert.equal(fam.rows, 3);
+  assert.notEqual(fam.tops.get('i1'), fam.tops.get('i2'));
+});
+
+test('packFamily + packTracks: a family block keeps unrelated bars out of its rows', () => {
+  const fam = packFamily({ id: 'run', start: 0, end: 100, children: [{ id: 'c', start: 10, end: 90 }] });
+  const lane = packTracks([
+    { id: 'run', start: fam.start, end: fam.end, rows: fam.rows },
+    { id: 'other', start: 50, end: 60 },
+  ]);
+  assert.deepEqual(lane.tracks, [0, 2], 'the unrelated bar lands under the whole block, never inside it');
+  assert.equal(lane.trackCount, 3);
 });
 
 // -- TrackAllocator (sticky rows) --------------------------------------------------------

@@ -72,6 +72,8 @@ export interface TimelineInterval {
   state?: string;
   /** Phases within the bar, each styled via its `kind`. */
   segments?: TimelineSegment[];
+  /** The interval this is a SUB-SPAN of. */
+  parentId?: string | null;
   /** Opaque consumer payload — echoed back in events and tooltip callbacks. */
   data?: unknown;
 }
@@ -876,20 +878,11 @@ export interface PackItem {
   start: number;
   /** null/undefined = ongoing (blocks its track forever). */
   end?: number | null;
+  rows?: number;
 }
 
-/**
- * Greedy first-fit interval packing for one lane: returns `tracks[i]` = the
- * sub-track (row within the lane) for items[i], plus the track count.
- *
- * Deterministic and stable under re-sorting: items are ordered by (start,
- * id) internally, so the same SET of intervals packs identically no matter
- * the input order, and results are index-aligned with the input. An
- * interval reuses the lowest track whose last occupant ended at or before
- * its start; ongoing intervals (end == null) block their track forever.
- * Every interval occupies at least PACK_MIN_MS, so coincident instants (and
- * an instant at a bar's start) get their own track instead of vanishing.
- */
+/** Greedy first-fit interval packing for one lane: returns `tracks[i]` = the
+ * sub-track (row within the lane) for items[i], plus the track count. */
 export function packTracks(items: readonly PackItem[]): { tracks: number[]; trackCount: number } {
   const order = items.map((_, i) => i);
   order.sort((a, b) => {
@@ -901,10 +894,10 @@ export function packTracks(items: readonly PackItem[]): { tracks: number[]; trac
   const trackEnds: number[] = [];
   for (const i of order) {
     const it = items[i];
-    const end = Math.max(it.end == null ? Infinity : it.end, it.start + PACK_MIN_MS);
-    let t = 0;
-    while (t < trackEnds.length && trackEnds[t] > it.start) t++;
-    trackEnds[t] = end;
+    const rows = packRows(it);
+    const t = lowestFit(trackEnds, it.start, rows);
+    const end = packEnd(it);
+    for (let k = 0; k < rows; k++) trackEnds[t + k] = end;
     tracks[i] = t;
   }
   return { tracks, trackCount: Math.max(1, trackEnds.length) };
@@ -913,6 +906,26 @@ export function packTracks(items: readonly PackItem[]): { tracks: number[]; trac
 /** Effective packing footprint end: ongoing blocks forever, instants occupy PACK_MIN_MS. */
 function packEnd(it: PackItem): number {
   return Math.max(it.end == null ? Infinity : it.end, it.start + PACK_MIN_MS);
+}
+
+function packRows(it: PackItem): number {
+  const r = it.rows;
+  return r !== undefined && r > 1 ? Math.floor(r) : 1;
+}
+
+/**
+ * The lowest track t such that tracks t .. t+rows-1 are all free at
+ * `start` (a track past the end of `trackEnds` is free). A busy track
+ * inside a candidate run moves the candidate past that track.
+ */
+function lowestFit(trackEnds: readonly number[], start: number, rows: number): number {
+  let t = 0;
+  for (;;) {
+    let k = 0;
+    while (k < rows && !(t + k < trackEnds.length && trackEnds[t + k] > start)) k++;
+    if (k === rows) return t;
+    t += k + 1;
+  }
 }
 
 /**
@@ -945,9 +958,10 @@ export function packVisibleTracks(items: readonly PackItem[], view: TimeView): {
   const trackEnds: number[] = [];
   for (const i of order) {
     const it = items[i];
-    let t = 0;
-    while (t < trackEnds.length && trackEnds[t] > it.start) t++;
-    trackEnds[t] = packEnd(it);
+    const rows = packRows(it);
+    const t = lowestFit(trackEnds, it.start, rows);
+    const end = packEnd(it);
+    for (let k = 0; k < rows; k++) trackEnds[t + k] = end;
     tracks[i] = t;
   }
   return { tracks, trackCount: Math.max(1, trackEnds.length) };
@@ -1032,26 +1046,30 @@ export class TrackAllocator {
     // high-water mark grows.
     const placed = this.placedScratch;
     let placedUsed = 0;
-    const canPlace = (t: number, s: number, e: number): boolean => {
-      if (t >= placedUsed) return true;
-      const list = placed[t];
-      for (let k = 0; k < list.length; k += 2) {
-        if (s < list[k + 1] && list[k] < e) return false;
+    // A multi-row item (a sub-span family) must fit on EVERY row of its run.
+    const canPlace = (t: number, s: number, e: number, rows: number): boolean => {
+      for (let r = 0; r < rows; r++) {
+        if (t + r >= placedUsed) return true;
+        const list = placed[t + r];
+        for (let k = 0; k < list.length; k += 2) {
+          if (s < list[k + 1] && list[k] < e) return false;
+        }
       }
       return true;
     };
     const place = (i: number, t: number): void => {
       tracks[i] = t;
-      while (placedUsed <= t) {
+      const rows = packRows(items[i]);
+      while (placedUsed < t + rows) {
         const slot = placed[placedUsed] ?? (placed[placedUsed] = []);
         slot.length = 0;
         placedUsed++;
       }
-      placed[t].push(items[i].start, packEnd(items[i]));
+      for (let r = 0; r < rows; r++) placed[t + r].push(items[i].start, packEnd(items[i]));
     };
-    const lowestFree = (s: number, e: number): number => {
+    const lowestFree = (s: number, e: number, rows: number): number => {
       let t = 0;
-      while (!canPlace(t, s, e)) t++;
+      while (!canPlace(t, s, e, rows)) t++;
       return t;
     };
     // Pass 1 — keepers: continuously-visible items hold their rows.
@@ -1063,23 +1081,22 @@ export class TrackAllocator {
       const i = vis[vi];
       const it = items[i];
       const kept = this.live.has(it.id) ? this.memory.get(it.id) : undefined;
-      if (kept !== undefined && canPlace(kept, it.start, packEnd(it))) place(i, kept);
+      if (kept !== undefined && canPlace(kept, it.start, packEnd(it), packRows(it))) place(i, kept);
       else if (this.memory.has(it.id)) returning.push(i);
       else fresh.push(i);
     }
-    // Pass 2 — returning items reclaim their old row when still free.
     for (let ri = 0; ri < returning.length; ri++) {
       const i = returning[ri];
       const it = items[i];
       const end = packEnd(it);
+      const rows = packRows(it);
       const remembered = this.memory.get(it.id) as number;
-      place(i, canPlace(remembered, it.start, end) ? remembered : lowestFree(it.start, end));
+      place(i, canPlace(remembered, it.start, end, rows) ? remembered : lowestFree(it.start, end, rows));
     }
-    // Pass 3 — new items fill from the bottom (density recovery).
     for (let fi = 0; fi < fresh.length; fi++) {
       const i = fresh[fi];
       const it = items[i];
-      place(i, lowestFree(it.start, packEnd(it)));
+      place(i, lowestFree(it.start, packEnd(it), packRows(it)));
     }
     // Remember every visible assignment (refreshing LRU recency), then
     // prune the oldest beyond the cap. `live` double-buffers via swap.
@@ -1092,7 +1109,8 @@ export class TrackAllocator {
       liveNext.add(id);
       this.memory.delete(id);
       this.memory.set(id, tracks[i]);
-      if (tracks[i] > maxTrack) maxTrack = tracks[i];
+      const last = tracks[i] + packRows(items[i]) - 1;
+      if (last > maxTrack) maxTrack = last;
     }
     this.liveNext = this.live;
     this.live = liveNext;
@@ -1103,6 +1121,90 @@ export class TrackAllocator {
     }
     return { tracks, trackCount: Math.max(1, maxTrack + 1) };
   }
+}
+
+// -- Sub-spans (families) ------------------------------------------------------------
+
+/** The slice of an interval that parent resolution reads. */
+export interface ParentItem {
+  id: string;
+  parentId?: string | null;
+  laneId?: string;
+}
+
+/* An item nests only under a parent that exists in `items`, is not itself,
+ * and sits in the same lane. A parent cycle is cut at the lowest-index
+ * member, so the result is always a forest. Deterministic: ties resolve
+ * by input position. */
+export function resolveParents(items: readonly ParentItem[]): number[] {
+  const idx = new Map<string, number>();
+  for (let i = 0; i < items.length; i++) {
+    if (!idx.has(items[i].id)) idx.set(items[i].id, i);
+  }
+  const parent = new Array<number>(items.length).fill(-1);
+  for (let i = 0; i < items.length; i++) {
+    const pid = items[i].parentId;
+    if (pid == null) continue;
+    const p = idx.get(pid);
+    if (p === undefined || p === i) continue;
+    const a = items[i].laneId;
+    const b = items[p].laneId;
+    if (a !== undefined && b !== undefined && a !== b) continue;
+    parent[i] = p;
+  }
+  for (let i = 0; i < items.length; i++) {
+    let j = parent[i];
+    let steps = 0;
+    while (j >= 0 && j !== i && steps <= items.length) {
+      j = parent[j];
+      steps++;
+    }
+    if (j === i) parent[i] = -1;
+  }
+  return parent;
+}
+
+/** A pack item with its sub-spans, for packFamily. */
+export interface PackNode extends PackItem {
+  children?: readonly PackNode[] | null;
+}
+
+/** packFamily's result: the block's rows and extent, plus each member's row offset from the top. */
+export interface FamilyLayout {
+  rows: number;
+  start: number;
+  /** null while the root or any descendant is ongoing. */
+  end: number | null;
+  tops: Map<string, number>;
+}
+
+/* The extent is the union of every member, so a child that overruns its
+ * parent still has the block cover it. The block is what the lane packer
+ * sees: one PackItem with `rows` set. */
+export function packFamily(node: PackNode): FamilyLayout {
+  const tops = new Map<string, number>();
+  tops.set(node.id, 0);
+  let start = node.start;
+  let end: number | null = node.end == null ? null : node.end;
+  let ongoing = end === null;
+  const children = node.children;
+  if (!children || children.length === 0) return { rows: 1, start, end, tops };
+  const subs: FamilyLayout[] = new Array(children.length);
+  const items: PackItem[] = new Array(children.length);
+  for (let k = 0; k < children.length; k++) {
+    const sub = packFamily(children[k]);
+    subs[k] = sub;
+    items[k] = { id: children[k].id, start: sub.start, end: sub.end, rows: sub.rows };
+    if (sub.start < start) start = sub.start;
+    if (sub.end === null) ongoing = true;
+    else if (end !== null && sub.end > end) end = sub.end;
+  }
+  const packed = packTracks(items);
+  for (let k = 0; k < children.length; k++) {
+    const off = 1 + packed.tracks[k];
+    for (const [id, t] of subs[k].tops) tops.set(id, off + t);
+  }
+  return { rows: 1 + packed.trackCount, start, end: ongoing ? null : end, tops };
 }
 
 // -- Lane layout --------------------------------------------------------------------
