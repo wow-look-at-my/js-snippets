@@ -71,7 +71,7 @@ FitMode = 'contain'|'cover'|'stretch', FitRect { x, y, w, h };
 ```
 
 - fitRect(srcW, srcH, dstW, dstH, mode='contain') -> FitRect — where to draw a source inside a differently-shaped canvas. 'contain' fits it whole and centres it, 'cover' fills and overflows, 'stretch' ignores aspect ratio. Throws on a non-positive source size.
-- clampSize(width, height, max) -> { width, height } — scale down so neither side exceeds `max`, keeping the ratio, never scaling up, never returning 0.
+- clampSize(width, height, max) -> { width, height } — scale down so neither side exceeds `max`, keeping the ratio, not scaling up, not returning 0.
 - rasterizeToRgba(source, width, height, mode='contain') -> Uint8ClampedArray — draw any CanvasImageSource into a fresh transparent canvas of that size. Throws where OffscreenCanvas does not exist rather than returning blanks.
 
 ### apng/png.js

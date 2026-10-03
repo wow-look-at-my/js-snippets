@@ -38,7 +38,7 @@ Losing marks is honest and unavoidable: a display cannot show more marks than it
 
 ## The two failures this has already produced
 
-1. **The fixed-pitch comb.** A hard cap on cluster width (24px) chopped any dense run into equal groups, each drawn as one glyph. Measured on multiple events in a 1300px window: markers, pitch min 25.0px, max 25.0px, members each. A lane of multiple events and a lane of 48 drew IDENTICALLY — the pitch was the cap, never the data.
+1. **The fixed-pitch comb.** A hard cap on cluster width (24px) chopped any dense run into equal groups, each drawn as one glyph. Measured on multiple events in a 1300px window: markers, pitch min 25.0px, max 25.0px, members each. A lane of multiple events and a lane of 48 drew IDENTICALLY — the pitch was the cap, not the data.
 2. **The density strip.** Its replacement merged marks closer than a tick into one wider tick, so a dense run rendered as a solid bar. It traded a comb that showed nothing for a bar that stated something false: one continuous execution.
 
 Both come from the same reflex — summarizing a crowd instead of thinning it. Thin it.

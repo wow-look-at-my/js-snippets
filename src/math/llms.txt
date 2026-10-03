@@ -25,7 +25,7 @@ Type: Vec4 = [number, number, number, number]
 
 Signatures of note:
 - fromVec3(v, w=1) -> Vec4 -- w defaults to 1 (a point). Pass 0 for a direction.
-- toVec3(v) -> Vec3 -- drops w. A truncation, never a perspective divide.
+- toVec3(v) -> Vec3 -- drops w. A truncation, not a perspective divide.
 - project(v) -> Vec3 -- divides by w. w = 0 passes through unchanged, because that is a direction.
 
 ### math/vecn.js
@@ -43,7 +43,7 @@ Signatures of note:
 - mean(vectors) -> VecN -- componentwise mean of a list. Throws on an empty list.
 
 ### math/least-squares.js
-Least-squares fitting. Pure, no DOM/GPU. The LINEAR solvers minimise the residual of A x = b, where each row is one equation. The GEOMETRIC fits minimise the ORTHOGONAL distance to a line, a plane or a circle. A y-on-x line fit tips over as the line turns vertical. An orthogonal fit does not. A singular system returns null, never a vector of NaN.
+Least-squares fitting. Pure, no DOM/GPU. The LINEAR solvers minimise the residual of A x = b, where each row is one equation. The GEOMETRIC fits minimise the ORTHOGONAL distance to a line, a plane or a circle. A y-on-x line fit tips over as the line turns vertical. An orthogonal fit does not. A singular system returns null, not a vector of NaN.
 
 Types:
 
@@ -69,7 +69,7 @@ Exports:
 - fitOrthoLine2(points) -> OrthoLineFit2 | null -- total least squares: minimises the perpendicular distance. As a result, a vertical line is fine.
 - fitCircle2(points) -> CircleFit2 | null -- algebraic (Kasa) fit through one linear solve. The rms reported is the TRUE geometric residual, not the algebraic one. Null for collinear points.
 - covariance3(points) -> Covariance3 -- mean and the 3x3 covariance (divided by the count).
-- symmetricEigen3(matrix) -> Eigen3 -- Jacobi rotations on a symmetric 3x3. Eigenvalues ASCENDING with matching orthonormal eigenvectors, each signed so its largest component is positive (deterministic, never an arbitrary flip).
+- symmetricEigen3(matrix) -> Eigen3 -- Jacobi rotations on a symmetric 3x3. Eigenvalues ASCENDING with matching orthonormal eigenvectors, each signed so its largest component is positive (deterministic, not an arbitrary flip).
 - fitPlane(points) -> PlaneFit | null -- normal is the smallest-eigenvalue direction, through the centroid. Null for collinear points.
 - fitOrthoLine3(points) -> OrthoLineFit3 | null -- direction is the largest-eigenvalue direction. The rms is the orthogonal point-to-line distance.
 
@@ -131,7 +131,7 @@ Exports:
 - transformPoint(m, p) -> Vec3 -- column-major affine point transform (w=1).
 - makeGrid(scene, volMin, volMax, dims) -> SdfGrid -- one-time CPU bake of a scene callback `scene(x,y,z) => distance` into a dense voxel-centre grid.
 - trilinear(grid, q) -> number -- trilinear fetch at a clamped [0,1] coordinate.
-- sampleGrid(grid, p) -> number -- sample at a world point. Inside = trilinear, outside = max(edgeValue, distanceToBox) (continuous, never falsely shadowed).
+- sampleGrid(grid, p) -> number -- sample at a world point. Inside = trilinear, outside = max(edgeValue, distanceToBox) (continuous, not falsely shadowed).
 - intersectAABB(ro, rd, bmin, bmax) -> [tNear, tFar] (ray misses when tFar < max(tNear,0)).
 - softShadow(sampleFn, ro, rd, opts?) -> { vis, steps } -- IQ soft visibility in [0,1]. Opts: { tmin, tmax, k, maxSteps, minStep, maxStep, eps, aabb }.
 
