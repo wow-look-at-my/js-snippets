@@ -73,6 +73,8 @@ const mini = document.getElementById('mini') as TimelineViewElement;
 const floorEl = document.getElementById('floor') as TimelineViewElement;
 // Frozen: both bounds, its own one-shot window, no live feed at all.
 const staticEl = document.getElementById('static') as TimelineViewElement;
+// Frozen too, fit to ONE release run so every nested stage keeps its label.
+const subEl = document.getElementById('subspans') as TimelineViewElement;
 const els: TimelineViewElement[] = [main, mini, floorEl];
 
 // -- Styles: consumer style-map keys on top of the built-ins ---------------------
@@ -117,6 +119,8 @@ function tooltipFor(hit: TimelineHit): string | Node | null {
     const end = iv.end == null ? null : toMs(iv.end);
     add(iv.label || iv.id);
     add(`lane: ${hit.lane.label}`);
+    // A sub-span names the run it belongs to (the hit's `parent`).
+    if (hit.parent) add(`part of ${hit.parent.label ?? hit.parent.id}`);
     if (end === start) {
       add(`instant · ${new Date(start).toLocaleTimeString()}`);
     } else {
@@ -178,6 +182,25 @@ for (const el of els) feed(el, boot - PREROLL_MS, boot, true);
   staticEl.minTime = from;
   staticEl.maxTime = to;
   staticEl.setViewport(from, to);
+
+  // The sub-span instance: the same frozen batch, the view fit to the latest release run that finished inside the window.
+  subEl.styles = styles;
+  subEl.tooltipFor = tooltipFor;
+  const release = b.intervals.filter((iv) => iv.laneId === 'release');
+  subEl.setData({ lanes: LANES.filter((l) => l.id === 'release'), intervals: release, coverage: { start: from, end: to } });
+  subEl.minTime = from;
+  subEl.maxTime = to;
+  let latest: string | null = null;
+  let latestEnd = -Infinity;
+  for (const iv of release) {
+    if (iv.parentId || iv.end == null) continue;
+    const end = toMs(iv.end);
+    if (end > latestEnd) {
+      latestEnd = end;
+      latest = iv.id;
+    }
+  }
+  if (latest === null || !subEl.fitToInterval(latest, { pad: 0.08 })) subEl.setViewport(from, to);
 }
 
 // Live tick: re-snapshot every run overlapping the recent window. Plans are

@@ -74,6 +74,12 @@ main code {
 	height: 240px;
 	flex: none;
 }
+/* The sub-span instance: one release run at full track height, so every
+   nested row keeps its label. */
+#subspans {
+	height: 200px;
+	flex: none;
+}
 #mini.light {
 	--timeline-bg: #f4f6fa;
 	--timeline-fg: #1a2030;

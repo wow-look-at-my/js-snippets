@@ -19,6 +19,10 @@
 //   fanout   — periodic 5-9-wide bursts exercising lane packing, with a
 //              'timeout' consumer style and the odd failure
 //   retry    — timeout → retry chains linked by connectors
+//   release  — SUB-SPANS: one release run per cycle whose stages nest under
+//              it (build, test with unit/e2e nested one level deeper, canary,
+//              an approval instant, promote); a failed e2e fails test and the
+//              release, one canary in seven is cancelled
 
 import type {
   TimelineConnector,
@@ -78,6 +82,8 @@ export interface RunPlan {
   phases?: Phase[];
   category?: string;
   instant?: boolean;
+  /** The run this one is a stage of (same lane) — nests under it on the chart. */
+  parentId?: string;
   /** Long human-readable failure detail for the tooltip. */
   tooltipError?: string;
 }
@@ -395,7 +401,101 @@ const retry: LaneSpec = {
   },
 };
 
-const LANE_SPECS: LaneSpec[] = [builds, gateway, canary, nightly, skips, fanout, retry];
+// One release run per cycle, its stages nested under it. The stage times are
+// fixed offsets so every treatment lands in view: stages overlap (test runs
+// while canary warms), test carries its own nested pair, and the approval is
+// an instant child.
+const release: LaneSpec = {
+  lane: { id: 'release', label: 'release · pipeline' },
+  period: 240 * SEC,
+  maxSpan: 200 * SEC,
+  seed: 0x5e1ea5e,
+  cycle: (base, k, rnd) => {
+    const id = `release:${k}`;
+    const start = base + between(rnd, 0, 10 * SEC);
+    const e2eFailed = k % 5 === 2;
+    const canaryCancelled = k % 7 === 3;
+    const build = { s: start + 4 * SEC, e: start + between(rnd, 30 * SEC, 42 * SEC) };
+    const test = { s: build.e + 2 * SEC, e: build.e + between(rnd, 60 * SEC, 75 * SEC) };
+    const unit = { s: test.s + 2 * SEC, e: test.s + between(rnd, 20 * SEC, 30 * SEC) };
+    const e2e = { s: test.s + 3 * SEC, e: e2eFailed ? test.s + between(rnd, 25 * SEC, 40 * SEC) : test.e - 2 * SEC };
+    if (e2eFailed) test.e = e2e.e + 1 * SEC;
+    const canary = { s: test.e - 12 * SEC, e: test.e + between(rnd, 14 * SEC, 24 * SEC) };
+    if (canaryCancelled) canary.e = canary.s + between(rnd, 6 * SEC, 10 * SEC);
+    const approve = e2eFailed ? null : canary.e + 3 * SEC;
+    const promote = approve === null ? null : { s: approve + 1 * SEC, e: approve + between(rnd, 16 * SEC, 26 * SEC) };
+    const end = e2eFailed ? test.e : promote === null ? canary.e : promote.e;
+    const version = `2.${(k % 40) + 1}.${k % 7}`;
+    const plans: RunPlan[] = [
+      {
+        id,
+        laneId: 'release',
+        start,
+        end,
+        finalState: e2eFailed ? 'failed' : '',
+        label: `release v${version}`,
+        liveLabels: [
+          [build.e, `release v${version} · building`],
+          [test.e, `release v${version} · testing`],
+          [canary.e, `release v${version} · canary`],
+          [Infinity, `release v${version} · promoting`],
+        ],
+        tooltipError: e2eFailed ? `release aborted: stage "test" failed (e2e: 3 of 212 specs red — checkout flow timed out at the payment step)` : undefined,
+      },
+      { id: `${id}:build`, laneId: 'release', parentId: id, start: build.s, end: build.e, finalState: '', label: 'build' },
+      {
+        id: `${id}:test`,
+        laneId: 'release',
+        parentId: id,
+        start: test.s,
+        end: test.e,
+        finalState: e2eFailed ? 'failed' : '',
+        label: 'test',
+        tooltipError: e2eFailed ? 'stage failed: e2e' : undefined,
+      },
+      { id: `${id}:test:unit`, laneId: 'release', parentId: `${id}:test`, start: unit.s, end: unit.e, finalState: '', label: 'unit' },
+      {
+        id: `${id}:test:e2e`,
+        laneId: 'release',
+        parentId: `${id}:test`,
+        start: e2e.s,
+        end: e2e.e,
+        finalState: e2eFailed ? 'failed' : '',
+        label: 'e2e',
+        tooltipError: e2eFailed ? 'Error: 3 of 212 specs failed — checkout/pay.spec.ts: timed out waiting for #pay-confirm (30s)' : undefined,
+      },
+    ];
+    if (!e2eFailed) {
+      plans.push({
+        id: `${id}:canary`,
+        laneId: 'release',
+        parentId: id,
+        start: canary.s,
+        end: canary.e,
+        finalState: canaryCancelled ? 'cancelled' : '',
+        label: canaryCancelled ? 'canary · aborted' : 'canary',
+        phases: canaryCancelled ? [{ start: canary.e - 2 * SEC, end: canary.e, kind: 'outline' }] : undefined,
+        tooltipError: canaryCancelled ? 'cancelled: error budget burn alert fired during the 5% rollout; traffic rolled back' : undefined,
+      });
+    }
+    if (approve !== null && promote !== null) {
+      plans.push({
+        id: `${id}:approve`,
+        laneId: 'release',
+        parentId: id,
+        start: approve,
+        end: approve,
+        finalState: '',
+        label: 'approved',
+        instant: true,
+      });
+      plans.push({ id: `${id}:promote`, laneId: 'release', parentId: id, start: promote.s, end: promote.e, finalState: '', label: 'promote' });
+    }
+    return { plans };
+  },
+};
+
+const LANE_SPECS: LaneSpec[] = [builds, gateway, canary, nightly, skips, fanout, retry, release];
 
 /** The lane roster, in display order. */
 export const LANES: TimelineLane[] = LANE_SPECS.map((s) => s.lane);
@@ -429,6 +529,7 @@ export function snapshotRun(run: RunPlan, now: number): TimelineInterval | null 
     category: run.category,
     state: done ? run.finalState : '',
     segments,
+    parentId: run.parentId,
     data: run,
   };
 }
