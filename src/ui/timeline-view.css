@@ -439,6 +439,39 @@ canvas.minimap[hidden] {
   border-left: 1px solid rgba(151, 173, 205, 1);
 }
 
+/* Family box: the faint group box with the parent bar on its top row and a
+   sub-span bar inset under it. */
+.lg-family {
+  width: 44px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid rgba(151, 173, 205, 0.5);
+  background: rgba(122, 148, 183, 0.12);
+}
+
+.lg-family::before,
+.lg-family::after {
+  content: '';
+  position: absolute;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(122, 148, 183, 0.9);
+}
+
+.lg-family::before {
+  left: 2px;
+  right: 2px;
+  top: 2px;
+}
+
+.lg-family::after {
+  left: 9px;
+  width: 18px;
+  bottom: 2px;
+  height: 3px;
+  background: rgba(122, 148, 183, 0.7);
+}
+
 /* Instant pips: filled diamond = event, hollow diamond = cancelled. A
    cluster is the SAME diamond drawn as a fixed 3-stack — always three
    copies, never scaled by the member count. */

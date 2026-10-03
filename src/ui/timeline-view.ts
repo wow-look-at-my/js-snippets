@@ -214,6 +214,9 @@ import {
   type LaneLayout,
   type HitRect,
   type PackItem,
+  type PackNode,
+  resolveParents,
+  packFamily,
 } from './timeline-view-math.ts';
 import type { LaneScrollable } from './timeline-view-math.ts';
 
@@ -298,7 +301,7 @@ export type LoadRangeFn = (start: number, end: number) => Promise<{ exhausted?: 
  * reading it.
  */
 export type TimelineHit =
-  | { type: 'interval'; interval: TimelineInterval; lane: TimelineLane; segment?: SegmentHit | null }
+  | { type: 'interval'; interval: TimelineInterval; lane: TimelineLane; segment?: SegmentHit | null; parent?: TimelineInterval | null }
   | { type: 'cluster'; intervals: TimelineInterval[]; lane: TimelineLane }
   | { type: 'connector'; connector: TimelineConnector; missingEndpoint?: 'from' | 'to' }
   | { type: 'marker'; marker: TimelineMarker }
@@ -333,6 +336,17 @@ interface NInterval {
   track: number;
   /** True while a cluster marker represents this instant (it is not drawn/hit itself). */
   clustered: boolean;
+  /** The same-lane interval this one nests under (resolveParents), null for a root. */
+  parent: NInterval | null;
+  /** Sub-spans nested under this one, in (start, id) order; null when none. */
+  children: NInterval[] | null;
+  /* */
+  rows: number;
+  /** The family block's extent: own start/end for a leaf, the union for a parent. */
+  famStart: number;
+  famEnd: number | null;
+  /** Root only: each descendant's row offset from the root's row (packFamily tops). */
+  famTops: Map<string, number> | null;
 }
 
 /**
@@ -446,6 +460,11 @@ const MM_STEP_MAX_FRAC = 0.25;
 // shared by tile generation (patternFor) and phase anchoring
 // (anchorPattern), where translating by whole tiles must be identity.
 const PATTERN_TILE_PX = 7;
+/** Family box: how far it reaches past the rows it holds (CSS px) — inside the 2px track gap. */
+const FAMILY_BOX_PAD = 1;
+/** Sub-span bars sit this far inside their row, above the label-fit height. */
+const CHILD_INSET_PX = 2;
+const EMPTY_ROOTS: NInterval[] = [];
 // Fraction of the span the window START may drift before track assignment
 // re-runs (the visible-layout memo's quantum). Small enough that an item
 // entering the window rides a stale row only for a blink; large enough
@@ -492,6 +511,7 @@ const LEGEND_ROWS: readonly { swatch: string; text: string }[] = [
   { swatch: 'lg-bar lg-hatch', text: 'hatched phase — a declared wait (lock, group slot, sleep) or queued time' },
   { swatch: 'lg-bar lg-dim', text: 'dim — queued / de-emphasized' },
   { swatch: 'lg-bar lg-killed', text: 'cancelled span — hollow, dashed; the darkened tail marks the kill point' },
+  { swatch: 'lg-family', text: 'boxed group — the spans inside are sub-spans of the one on its top row' },
 ];
 
 // -- The custom element ----------------------------------------------------------------
@@ -700,6 +720,8 @@ export class TimelineViewElement extends HTMLElement {
   private downHit: TimelineHit | null = null;
   private hover: TimelineHit | null = null;
   private hoverIntervalId: string | null = null;
+  /** The hovered interval's id plus every ancestor's: the family boxes drawn lit. */
+  private hoverFamily: Set<string> = new Set();
   private hoverClusterId: string | null = null; // first-member id of the hovered cluster
   private glidePx = 0; // pending discrete-wheel zoom, in wheel px
   private glideX = 0; // zoom anchor (canvas x) for the glide
@@ -754,6 +776,8 @@ export class TimelineViewElement extends HTMLElement {
   // (at busy zooms most visible instants are clustered: iterating the full
   // lane burned thousands of skip-checks per frame).
   private laneUnclustered: NInterval[][] = [];
+  // Per lane: the intervals with no same-lane parent, in (start, id) order.
+  private laneRoots: NInterval[][] = [];
   // Sticky row state, one allocator per lane ID (not index — lane
   // insertions must never hand one lane's row memory to another). The
   // state deliberately survives setData: a full resync must not reshuffle
@@ -1417,7 +1441,8 @@ export class TimelineViewElement extends HTMLElement {
   fitToInterval(id: string, opts?: { pad?: number }): boolean {
     const n = this.byId.get(id);
     if (!n) return false;
-    const v = fitSpanView(n.start, n.end ?? this.liveEdge(), opts?.pad);
+    // A parent fits its whole family block, sub-spans included.
+    const v = fitSpanView(n.famStart, n.famEnd ?? this.liveEdge(), opts?.pad);
     this.setViewport(v.start, v.end);
     return true;
   }
@@ -1575,6 +1600,12 @@ export class TimelineViewElement extends HTMLElement {
         : null,
       track: 0,
       clustered: false,
+      parent: null,
+      children: null,
+      rows: 1,
+      famStart: start,
+      famEnd: end,
+      famTops: null,
     };
     const prev = this.byId.get(iv.id);
     if (prev) {
@@ -1668,6 +1699,7 @@ export class TimelineViewElement extends HTMLElement {
         }
       }
       if (!sorted) per.sort((a, b) => a.start - b.start || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      this.resolveFamilies(li);
     }
     // Exact recompute of the cull/extent metadata the ingest path grew
     // incrementally (this pass also SHRINKS after replaces): per-lane max
@@ -1683,6 +1715,7 @@ export class TimelineViewElement extends HTMLElement {
       this.laneOngoingStart.length = laneN;
       this.laneMaxEnd.length = laneN;
       this.laneOngoing.length = laneN;
+      this.laneRoots.length = laneN;
       for (const li of visit) {
         const per = this.perLane[li];
         let maxDur = 0;
@@ -1698,6 +1731,15 @@ export class TimelineViewElement extends HTMLElement {
             const dur = n.end - n.start;
             if (dur > maxDur) maxDur = dur;
             if (n.end > maxEnd) maxEnd = n.end;
+          }
+          // A root draws its whole family block, so the cull must see the
+          // block's extent, not the root's own.
+          if (n.children !== null) {
+            if (n.famEnd === null) {
+              if (n.start < ongoing) ongoing = n.start;
+            } else if (n.famEnd - n.start > maxDur) {
+              maxDur = n.famEnd - n.start;
+            }
           }
         }
         this.laneMaxDur[li] = maxDur;
@@ -1906,6 +1948,46 @@ export class TimelineViewElement extends HTMLElement {
     this.layout = layoutLanes(this.displayCounts, m, this.displayHeights);
   }
 
+  /**
+   * Resolve one lane's sub-span forest from each interval's parentId
+   * (resolveParents: same lane only, cycles cut) and pack every family
+   * into its block (packFamily). Writes parent/children/rows/famStart/
+   * famEnd on each node and the root's famTops, and rebuilds laneRoots.
+   */
+  private resolveFamilies(laneIdx: number): void {
+    const per = this.perLane[laneIdx];
+    const parentOf = resolveParents(per.map((n) => ({ id: n.id, parentId: n.src.parentId })));
+    for (let i = 0; i < per.length; i++) {
+      const n = per[i];
+      n.parent = null;
+      n.children = null;
+      n.rows = 1;
+      n.famStart = n.start;
+      n.famEnd = n.end;
+      n.famTops = null;
+    }
+    const roots: NInterval[] = [];
+    for (let i = 0; i < per.length; i++) {
+      const p = parentOf[i];
+      if (p < 0) {
+        roots.push(per[i]);
+        continue;
+      }
+      const parent = per[p];
+      per[i].parent = parent;
+      (parent.children ??= []).push(per[i]);
+    }
+    for (const n of per) {
+      if (n.children === null) continue;
+      const fam = packFamily(familyNode(n));
+      n.rows = fam.rows;
+      n.famStart = fam.start;
+      n.famEnd = fam.end;
+      if (n.parent === null) n.famTops = fam.tops;
+    }
+    this.laneRoots[laneIdx] = roots;
+  }
+
   /** The lane's sticky row allocator (created on first use; pruned with its lane in rebuild). */
   private allocatorFor(laneId: string): TrackAllocator {
     let alloc = this.allocators.get(laneId);
@@ -1927,7 +2009,7 @@ export class TimelineViewElement extends HTMLElement {
    * passes that run between re-clusterings.
    */
   private clusterLane(laneIdx: number, rv: TimeView, plotW: number, sameData: boolean): void {
-    const per = this.perLane[laneIdx];
+    const per = this.laneRoots[laneIdx] ?? EMPTY_ROOTS;
     const lane = this.lanes[laneIdx];
     // The pitch is a fraction of THIS lane's pip width — pips overlap, and
     // a compact lane's dots pack tighter still. Read at cluster time, so a
@@ -1989,11 +2071,13 @@ export class TimelineViewElement extends HTMLElement {
     const targets: { track: number }[] = [];
     const unclustered: NInterval[] = [];
     for (let j = 0; j < per.length; j++) {
-      per[j].clustered = memberOf[j] >= 0;
+      const n = per[j];
+      n.clustered = memberOf[j] >= 0;
       if (memberOf[j] >= 0) continue;
-      items.push(per[j]);
-      targets.push(per[j]);
-      unclustered.push(per[j]);
+      // A family packs as ONE block over its whole extent, `rows` tall.
+      items.push(n.children === null ? n : { id: n.id, start: n.famStart, end: n.famEnd, rows: n.rows });
+      targets.push(n);
+      unclustered.push(n);
     }
     for (let k = 0; k < ncs.length; k++) {
       const nc = ncs[k];
@@ -2157,7 +2241,17 @@ export class TimelineViewElement extends HTMLElement {
     const targets = this.lanePackTargets[laneIdx];
     const { tracks, trackCount } = this.allocatorFor(lane.id).assign(items, rv);
     for (let k = 0; k < tracks.length; k++) {
-      if (tracks[k] >= 0) targets[k].track = tracks[k];
+      if (tracks[k] < 0) continue;
+      const target = targets[k];
+      target.track = tracks[k];
+      // A root's descendants row at their packFamily offsets under it.
+      const tops = (target as NInterval).famTops;
+      if (tops) {
+        for (const [id, off] of tops) {
+          const d = this.byId.get(id);
+          if (d && d.laneIdx === laneIdx) d.track = tracks[k] + off;
+        }
+      }
     }
     const ncs = this.laneClusters[laneIdx];
     for (let k = 0; k < ncs.length; k++) {
@@ -3139,11 +3233,22 @@ export class TimelineViewElement extends HTMLElement {
         if (n.start > this.renderView().end) continue;
         const r = expandHitRect(this.rectFor(n, now), HIT_MIN_W);
         if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
-          // Which phase segment the pointer's TIME falls in (data-space —
-          // the expanded hit halo around instants resolves to none).
+          // Which phase segment the pointer's TIME falls.
           const t = xToTime(x - this.gutterW, this.renderView(), this.plotWidth());
           const segment = n.segs ? segmentAtTime(n.segs, n.start, n.end ?? now, t) : null;
-          return { type: 'interval', interval: n.src, lane: this.lanes[n.laneIdx], segment };
+          return { type: 'interval', interval: n.src, lane: this.lanes[n.laneIdx], segment, parent: n.parent?.src ?? null };
+        }
+      }
+      // The empty part of a family box belongs to its parent: the box is
+      // one object. Innermost family first (a nested box lies inside its
+      // parent's), so walk the (start, id) order backwards.
+      for (let i = per.length - 1; i >= 0; i--) {
+        const n = per[i];
+        if (n.children === null || n.clustered) continue;
+        if (n.start > this.renderView().end) continue;
+        const b = this.familyRectInto(n, now, this.familyScratch);
+        if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
+          return { type: 'interval', interval: n.src, lane: this.lanes[n.laneIdx], segment: null, parent: n.parent?.src ?? null };
         }
       }
     }
@@ -3492,6 +3597,9 @@ export class TimelineViewElement extends HTMLElement {
     this.hover = hit;
     this.canvas.style.cursor = hit ? 'pointer' : '';
     if (nextId !== prevId) {
+      // The hovered interval and every ancestor: their family boxes light up.
+      this.hoverFamily.clear();
+      for (let n = nextId === null ? undefined : this.byId.get(nextId); n; n = n.parent ?? undefined) this.hoverFamily.add(n.id);
       this.dispatchEvent(
         new CustomEvent('intervalhover', {
           detail: hit?.type === 'interval' ? { interval: hit.interval, lane: hit.lane } : { interval: null, lane: null },
@@ -3594,8 +3702,8 @@ export class TimelineViewElement extends HTMLElement {
       row('lane', hit.lane.label);
       row('category', n.catKey);
       if (n.state) row('state', n.state);
-      // The phase under the pointer, named by its style-map kind — the
-      // legend's vocabulary, so no legend round-trip to decode a stripe.
+      if (n.parent !== null) row('part of', n.parent.label || n.parent.id);
+      // The phase under the pointer, named by its style-map kind — the legend's vocabulary, so no legend round-trip.
       if (hit.segment) row('segment', `${hit.segment.kind} · ${formatDuration(hit.segment.end - hit.segment.start)}`);
       const now = this.nowMs();
       const end = n.end ?? now;
@@ -3607,6 +3715,27 @@ export class TimelineViewElement extends HTMLElement {
         for (const s of n.segs) {
           row(s.kind, `${formatDuration((s.end ?? end) - s.start)}`);
         }
+      }
+      if (n.children !== null) {
+        // The family at a glance: count, how many still run, then each non-default state's count.
+        const kids = n.children;
+        let running = 0;
+        const byState = new Map<string, number>();
+        for (const c of kids) {
+          if (c.end === null) running++;
+          if (c.state) byState.set(c.state, (byState.get(c.state) ?? 0) + 1);
+        }
+        const parts = [`${kids.length}`];
+        if (running > 0) parts.push(`${running} running`);
+        for (const [state, count] of byState) parts.push(`${count} ${state}`);
+        row('sub-spans', parts.join(' · '));
+        const shown = Math.min(kids.length, 6);
+        for (let i = 0; i < shown; i++) {
+          const c = kids[i];
+          const dur = formatDuration((c.end ?? now) - c.start) + (c.end === null ? ' …' : '');
+          row('·', `${c.label || c.id} · ${c.state ? `${c.state} · ` : ''}${dur}`);
+        }
+        if (kids.length > shown) row('·', `+${kids.length - shown} more`);
       }
     } else if (hit.type === 'cluster') {
       // The component-built ×N summary: count, member time extent, up to
@@ -4451,9 +4580,9 @@ export class TimelineViewElement extends HTMLElement {
       for (let i = lo; i < per.length; i++) {
         const n = per[i];
         if (n.start > rv.end) break; // sorted by start
-        if ((n.end ?? now) < rv.start && n.end !== null) continue;
+        if (n.famEnd !== null && n.famEnd < rv.start) continue;
         if (n.clustered) continue; // belt — membership changed since the last cluster pass
-        this.drawInterval(ctx, n, now);
+        this.drawNode(ctx, n, now);
       }
       // The lane's cluster stack markers, over its bars.
       const ncs = this.laneClusters[laneIdx];
@@ -4463,13 +4592,69 @@ export class TimelineViewElement extends HTMLElement {
     void t;
   }
 
+  /** A root with its family: the box under everything, the root's bar, then each sub-span the same way. */
+  private drawNode(ctx: CanvasRenderingContext2D, n: NInterval, now: number): void {
+    const children = n.children;
+    if (children !== null) this.drawFamilyBox(ctx, n, now);
+    this.drawInterval(ctx, n, now);
+    if (children !== null) {
+      for (let i = 0; i < children.length; i++) this.drawNode(ctx, children[i], now);
+    }
+  }
+
+  /** The family block's screen rect: the rows [n.track, n.track +
+   * n.rows) over the block's time extent, grown by FAMILY_BOX_PAD.
+   * Drawing and hit-testing both read it, so both can never disagree. */
+  private familyRectInto(n: NInterval, now: number, out: HitRect): HitRect {
+    const w = this.plotWidth();
+    const m = this.metrics();
+    const rv = this.renderView();
+    const th = this.laneTrackHeight(n.laneIdx);
+    // Far off-screen ends are clamped.
+    const lo = this.gutterW - 64;
+    const hi = this.gutterW + w + 64;
+    const xs = clamp(this.gutterW + timeToX(n.famStart, rv, w), lo, hi);
+    const xe = clamp(this.gutterW + timeToX(n.famEnd ?? now, rv, w), lo, hi);
+    out.x = xs - FAMILY_BOX_PAD;
+    out.y = AXIS_H + this.layout.tops[n.laneIdx] - this.laneScroll + trackTop(n.track, m, th) - FAMILY_BOX_PAD;
+    out.w = Math.max(xe - xs, MIN_BAR_PX) + 2 * FAMILY_BOX_PAD;
+    out.h = n.rows * th + (n.rows - 1) * m.trackGap + 2 * FAMILY_BOX_PAD;
+    return out;
+  }
+
+  private familyScratch: HitRect = { x: 0, y: 0, w: 0, h: 0 };
+
+  /**
+   * The group box behind a family: a faint fill in the root's category
+   * hue and a thin border, lit while the pointer is on any member. The
+   * block's rows are reserved by packing, so everything inside the box
+   * is a member — the box never tints a stranger.
+   */
+  private drawFamilyBox(ctx: CanvasRenderingContext2D, n: NInterval, now: number): void {
+    const b = this.familyRectInto(n, now, this.familyScratch);
+    if (b.x + b.w < this.gutterW || b.x > this.gutterW + this.plotWidth()) return;
+    const style = this.resolved(n.catKey, '', this.overrideColor(n));
+    const lit = this.hoverFamily.has(n.id);
+    const path = new Path2D();
+    path.roundRect(b.x, b.y, b.w, b.h, Math.min(4, b.h / 3));
+    ctx.fillStyle = withAlpha(style.fill, lit ? 0.14 : 0.09);
+    ctx.fill(path);
+    ctx.strokeStyle = withAlpha(style.fill, lit ? 0.85 : 0.4);
+    ctx.lineWidth = 1;
+    ctx.stroke(path);
+  }
+
   private drawInterval(ctx: CanvasRenderingContext2D, n: NInterval, now: number): void {
     const t = this.theme;
     const dpr = this.dpr;
     const rv = this.renderView();
     const plotW = this.plotWidth();
     const r = this.rectForInto(n, now, this.rectScratch);
-    const bh = r.h; // per-lane track height: compact lanes render slivers
+    // A sub-span sits a little inside its row.
+    const inset = n.parent !== null && r.h >= t.fontSize + 3 + 2 * CHILD_INSET_PX ? CHILD_INSET_PX : 0;
+    const bh = r.h - 2 * inset; // per-lane track height: compact lanes render slivers
+    r.y += inset;
+    r.h = bh;
     const style = this.resolved(n.catKey, n.state, this.overrideColor(n));
     const hovered = this.hoverIntervalId === n.id;
 
@@ -5044,6 +5229,11 @@ function snap(v: number, dpr: number): number {
 }
 
 /** Explicit labelTiers win (sanitized); else derive from the label; null = single tier. */
+/** The packFamily input for a node and its sub-spans. */
+function familyNode(n: NInterval): PackNode {
+  return { id: n.id, start: n.start, end: n.end, children: n.children === null ? null : n.children.map(familyNode) };
+}
+
 function intervalLabelTiers(explicit: string[] | undefined, label: string): string[] | null {
   if (explicit !== undefined) {
     const tiers = explicit.filter((s) => typeof s === 'string' && s !== '');
