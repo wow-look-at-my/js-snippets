@@ -439,37 +439,33 @@ canvas.minimap[hidden] {
   border-left: 1px solid rgba(151, 173, 205, 1);
 }
 
-/* Family box: the faint group box with the parent bar on its top row and a
-   sub-span bar inset under it. */
+/* Sub-spans: the parent bar with a darker shade of it attached flush underneath. */
 .lg-family {
   width: 44px;
   height: 14px;
-  border-radius: 3px;
-  border: 1px solid rgba(151, 173, 205, 0.5);
-  background: rgba(122, 148, 183, 0.12);
 }
 
 .lg-family::before,
 .lg-family::after {
   content: '';
   position: absolute;
-  height: 4px;
-  border-radius: 2px;
-  background: rgba(122, 148, 183, 0.9);
+  height: 7px;
 }
 
 .lg-family::before {
-  left: 2px;
-  right: 2px;
-  top: 2px;
+  left: 0;
+  right: 0;
+  top: 0;
+  border-radius: 3px 3px 0 0;
+  background: rgba(122, 148, 183, 1);
 }
 
 .lg-family::after {
-  left: 9px;
-  width: 18px;
-  bottom: 2px;
-  height: 3px;
-  background: rgba(122, 148, 183, 0.7);
+  left: 8px;
+  width: 22px;
+  top: 7px;
+  border-radius: 0 0 3px 3px;
+  background: rgba(82, 102, 130, 1);
 }
 
 /* Instant pips: filled diamond = event, hollow diamond = cancelled. A

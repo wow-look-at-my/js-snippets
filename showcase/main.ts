@@ -155,7 +155,7 @@ for (const el of els) feed(el, boot - PREROLL_MS, boot, true);
   staticEl.maxTime = to;
   staticEl.setViewport(from, to);
 
-  // The sub-span instance: the same frozen batch, the view fit to the latest release run that finished inside the window.
+  // The sub-span instance: the same frozen batch, fit to the latest SUCCESSFUL release run, so the plain shades show.
   subEl.styles = styles;
   subEl.tooltipFor = tooltipFor;
   const release = b.intervals.filter((iv) => iv.laneId === 'release');
@@ -165,7 +165,7 @@ for (const el of els) feed(el, boot - PREROLL_MS, boot, true);
   let latest: string | null = null;
   let latestEnd = -Infinity;
   for (const iv of release) {
-    if (iv.parentId || iv.end == null) continue;
+    if (iv.parentId || iv.end == null || iv.state) continue;
     const end = toMs(iv.end);
     if (end > latestEnd) {
       latestEnd = end;

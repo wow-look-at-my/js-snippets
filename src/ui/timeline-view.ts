@@ -195,8 +195,11 @@ interface NInterval {
   parent: NInterval | null;
   /** Sub-spans nested under this one, in (start, id) order; null when none. */
   children: NInterval[] | null;
-  /* */
   rows: number;
+  /*Sets the sub-span's shade. */
+  depth: number;
+  /** The family's root: its category is the hue every member is shaded from. */
+  root: NInterval;
   /** The family block's extent: own start/end for a leaf, the union for a parent. */
   famStart: number;
   famEnd: number | null;
@@ -273,10 +276,8 @@ const MM_DRIFT_REBUILD_PX = 1.75;
 const MM_STEP_MAX_FRAC = 0.25;
 // Side length (CSS px) of the repeating hatch/stipple pattern tile — shared by tile generation (patternFor) and phase anchoring.
 const PATTERN_TILE_PX = 7;
-/** Family box: how far it reaches past the rows it holds (CSS px) — inside the 2px track gap. */
-const FAMILY_BOX_PAD = 1;
-/** Sub-span bars sit this far inside their row, above the label-fit height. */
-const CHILD_INSET_PX = 2;
+/** Oklch lightness a sub-span loses per nesting level, against its root's color. */
+const SUB_SPAN_SHADE_STEP = 0.11;
 const EMPTY_ROOTS: NInterval[] = [];
 // Fraction of the span the window START may drift before track assignment re-runs (the visible-layout memo's quantum).
 const ASSIGN_QUANTUM_FRAC = 0.02;
@@ -310,7 +311,7 @@ const LEGEND_ROWS: readonly { swatch: string; text: string }[] = [
   { swatch: 'lg-bar lg-hatch', text: 'hatched phase — a declared wait (lock, group slot, sleep) or queued time' },
   { swatch: 'lg-bar lg-dim', text: 'dim — queued / de-emphasized' },
   { swatch: 'lg-bar lg-killed', text: 'cancelled span — hollow, dashed; the darkened tail marks the kill point' },
-  { swatch: 'lg-family', text: 'boxed group — the spans inside are sub-spans of the one on its top row' },
+  { swatch: 'lg-family', text: 'sub-span — attached under the span it belongs to, in a darker shade of its color' },
 ];
 
 // -- The custom element ----------------------------------------------------------------
@@ -443,8 +444,6 @@ export class TimelineViewElement extends HTMLElement {
   private downHit: TimelineHit | null = null;
   private hover: TimelineHit | null = null;
   private hoverIntervalId: string | null = null;
-  /** The hovered interval's id plus every ancestor's: the family boxes drawn lit. */
-  private hoverFamily: Set<string> = new Set();
   private hoverClusterId: string | null = null; // first-member id of the hovered cluster
   private glidePx = 0; // pending discrete-wheel zoom, in wheel px
   private glideX = 0; // zoom anchor (canvas x) for the glide
@@ -1184,10 +1183,13 @@ export class TimelineViewElement extends HTMLElement {
       parent: null,
       children: null,
       rows: 1,
+      depth: 0,
+      root: undefined as unknown as NInterval,
       famStart: start,
       famEnd: end,
       famTops: null,
     };
+    n.root = n;
     const prev = this.byId.get(iv.id);
     if (prev) {
       // A replace can MOVE an interval between lanes: both ends changed.
@@ -1483,6 +1485,8 @@ export class TimelineViewElement extends HTMLElement {
       n.parent = null;
       n.children = null;
       n.rows = 1;
+      n.depth = 0;
+      n.root = n;
       n.famStart = n.start;
       n.famEnd = n.end;
       n.famTops = null;
@@ -1505,6 +1509,17 @@ export class TimelineViewElement extends HTMLElement {
       n.famStart = fam.start;
       n.famEnd = fam.end;
       if (n.parent === null) n.famTops = fam.tops;
+    }
+    // Depth and root by walking up: the forest is acyclic (resolveParents).
+    for (const n of per) {
+      let r = n;
+      let d = 0;
+      while (r.parent !== null) {
+        r = r.parent;
+        d++;
+      }
+      n.root = r;
+      n.depth = d;
     }
     this.laneRoots[laneIdx] = roots;
   }
@@ -2393,8 +2408,8 @@ export class TimelineViewElement extends HTMLElement {
     return this.styleMap[state] ?? this.styleMap[''] ?? {};
   }
 
-  private resolved(catKey: string, state: string, override: string | null): ResolvedStyle {
-    const cacheKey = `${catKey}\u0000${state}\u0000${override ?? ''}`;
+  private resolved(catKey: string, state: string, override: string | null, depth = 0): ResolvedStyle {
+    const cacheKey = `${catKey}\u0000${state}\u0000${override ?? ''}\u0000${depth}`;
     const hit = this.colorCache.get(cacheKey);
     if (hit) return hit;
     const st = this.styleFor(state);
@@ -2407,7 +2422,8 @@ export class TimelineViewElement extends HTMLElement {
     } else {
       const hue = categoryHue(catKey);
       const j = categoryJitter(catKey);
-      const l = clamp(t.catLightness * (st.lightnessScale ?? 1) + j.dl, 0.2, 0.92);
+      // A sub-span is the same hue as its root, one shade darker per level.
+      const l = clamp(t.catLightness * (st.lightnessScale ?? 1) + j.dl - depth * SUB_SPAN_SHADE_STEP, 0.2, 0.92);
       const c = clamp(t.catChroma * (st.saturationScale ?? 1) + j.dc, 0, 0.3);
       const mode = this.oklch ? 'oklch' : 'hsl';
       const alpha = clamp(st.alphaScale ?? 1, 0, 1);
@@ -2598,18 +2614,6 @@ export class TimelineViewElement extends HTMLElement {
           const t = xToTime(x - this.gutterW, this.renderView(), this.plotWidth());
           const segment = n.segs ? segmentAtTime(n.segs, n.start, n.end ?? now, t) : null;
           return { type: 'interval', interval: n.src, lane: this.lanes[n.laneIdx], segment, parent: n.parent?.src ?? null };
-        }
-      }
-      // The empty part of a family box belongs to its parent: the box is
-      // one object. Innermost family first (a nested box lies inside its
-      // parent's), so walk the (start, id) order backwards.
-      for (let i = per.length - 1; i >= 0; i--) {
-        const n = per[i];
-        if (n.children === null || n.clustered) continue;
-        if (n.start > this.renderView().end) continue;
-        const b = this.familyRectInto(n, now, this.familyScratch);
-        if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
-          return { type: 'interval', interval: n.src, lane: this.lanes[n.laneIdx], segment: null, parent: n.parent?.src ?? null };
         }
       }
     }
@@ -2933,8 +2937,6 @@ export class TimelineViewElement extends HTMLElement {
     this.canvas.style.cursor = hit ? 'pointer' : '';
     if (nextId !== prevId) {
       // The hovered interval and every ancestor: their family boxes light up.
-      this.hoverFamily.clear();
-      for (let n = nextId === null ? undefined : this.byId.get(nextId); n; n = n.parent ?? undefined) this.hoverFamily.add(n.id);
       this.dispatchEvent(
         new CustomEvent('intervalhover', {
           detail: hit?.type === 'interval' ? { interval: hit.interval, lane: hit.lane } : { interval: null, lane: null },
@@ -3028,7 +3030,7 @@ export class TimelineViewElement extends HTMLElement {
       title.className = 'tt-title';
       const swatch = document.createElement('span');
       swatch.className = 'tt-swatch';
-      swatch.style.background = this.resolved(n.catKey, n.state, this.overrideColor(n)).fill;
+      swatch.style.background = this.styleOf(n).fill;
       title.append(swatch, document.createTextNode(n.label || n.id));
       frag.append(title);
       row('lane', hit.lane.label);
@@ -3142,6 +3144,11 @@ export class TimelineViewElement extends HTMLElement {
   private overrideColor(n: NInterval): string | null {
     if (!this.colorForFn) return null;
     return this.colorForFn(n.src, this.lanes[n.laneIdx]) ?? null;
+  }
+
+  /** An interval's resolved style: a sub-span takes its root's category, shaded by depth. */
+  private styleOf(n: NInterval): ResolvedStyle {
+    return this.resolved(n.root.catKey, n.state, this.overrideColor(n), n.depth);
   }
 
   // -- Drawing -------------------------------------------------------------------
@@ -3852,56 +3859,13 @@ export class TimelineViewElement extends HTMLElement {
     void t;
   }
 
-  /** A root with its family: the box under everything, the root's bar, then each sub-span the same way. */
+  /** A root, then each sub-span under it, depth first: a child paints over the gap above it. */
   private drawNode(ctx: CanvasRenderingContext2D, n: NInterval, now: number): void {
-    const children = n.children;
-    if (children !== null) this.drawFamilyBox(ctx, n, now);
     this.drawInterval(ctx, n, now);
+    const children = n.children;
     if (children !== null) {
       for (let i = 0; i < children.length; i++) this.drawNode(ctx, children[i], now);
     }
-  }
-
-  /** The family block's screen rect: the rows [n.track, n.track +
-   * n.rows) over the block's time extent, grown by FAMILY_BOX_PAD.
-   * Drawing and hit-testing both read it, so both can never disagree. */
-  private familyRectInto(n: NInterval, now: number, out: HitRect): HitRect {
-    const w = this.plotWidth();
-    const m = this.metrics();
-    const rv = this.renderView();
-    const th = this.laneTrackHeight(n.laneIdx);
-    // Far off-screen ends are clamped.
-    const lo = this.gutterW - 64;
-    const hi = this.gutterW + w + 64;
-    const xs = clamp(this.gutterW + timeToX(n.famStart, rv, w), lo, hi);
-    const xe = clamp(this.gutterW + timeToX(n.famEnd ?? now, rv, w), lo, hi);
-    out.x = xs - FAMILY_BOX_PAD;
-    out.y = AXIS_H + this.layout.tops[n.laneIdx] - this.laneScroll + trackTop(n.track, m, th) - FAMILY_BOX_PAD;
-    out.w = Math.max(xe - xs, MIN_BAR_PX) + 2 * FAMILY_BOX_PAD;
-    out.h = n.rows * th + (n.rows - 1) * m.trackGap + 2 * FAMILY_BOX_PAD;
-    return out;
-  }
-
-  private familyScratch: HitRect = { x: 0, y: 0, w: 0, h: 0 };
-
-  /**
-   * The group box behind a family: a faint fill in the root's category
-   * hue and a thin border, lit while the pointer is on any member. The
-   * block's rows are reserved by packing, so everything inside the box
-   * is a member — the box never tints a stranger.
-   */
-  private drawFamilyBox(ctx: CanvasRenderingContext2D, n: NInterval, now: number): void {
-    const b = this.familyRectInto(n, now, this.familyScratch);
-    if (b.x + b.w < this.gutterW || b.x > this.gutterW + this.plotWidth()) return;
-    const style = this.resolved(n.catKey, '', this.overrideColor(n));
-    const lit = this.hoverFamily.has(n.id);
-    const path = new Path2D();
-    path.roundRect(b.x, b.y, b.w, b.h, Math.min(4, b.h / 3));
-    ctx.fillStyle = withAlpha(style.fill, lit ? 0.14 : 0.09);
-    ctx.fill(path);
-    ctx.strokeStyle = withAlpha(style.fill, lit ? 0.85 : 0.4);
-    ctx.lineWidth = 1;
-    ctx.stroke(path);
   }
 
   private drawInterval(ctx: CanvasRenderingContext2D, n: NInterval, now: number): void {
@@ -3910,12 +3874,8 @@ export class TimelineViewElement extends HTMLElement {
     const rv = this.renderView();
     const plotW = this.plotWidth();
     const r = this.rectForInto(n, now, this.rectScratch);
-    // A sub-span sits a little inside its row.
-    const inset = n.parent !== null && r.h >= t.fontSize + 3 + 2 * CHILD_INSET_PX ? CHILD_INSET_PX : 0;
-    const bh = r.h - 2 * inset; // per-lane track height: compact lanes render slivers
-    r.y += inset;
-    r.h = bh;
-    const style = this.resolved(n.catKey, n.state, this.overrideColor(n));
+    let bh = r.h; // per-lane track height: compact lanes render slivers
+    const style = this.styleOf(n);
     const hovered = this.hoverIntervalId === n.id;
 
     // Bar vs pip from the DURATION mapped through the current scale — translation-invariant.
@@ -3923,6 +3883,14 @@ export class TimelineViewElement extends HTMLElement {
     if (isInstantWidth(trueW)) {
       this.drawInstant(ctx, style, r.x + r.w / 2, r.y + bh / 2, bh, hovered);
       return;
+    }
+
+    // A sub-span is ATTACHED: it reaches up through the track gap to the row above, square-cornered on that edge.
+    const attached = n.parent !== null;
+    if (attached) {
+      const gap = this.metrics().trackGap;
+      r.y -= gap;
+      bh += gap;
     }
 
     // Which ends the viewport clips (the span truly continues off-screen past them) — those ends get the edge-continuation shadow.
@@ -3934,8 +3902,11 @@ export class TimelineViewElement extends HTMLElement {
     const x1 = x0 + bw;
     const y = r.y;
     const radius = Math.min(3, bh / 3, bw / 2);
+    // Square the edges where a family joins: the top of a sub-span, the bottom of a span that has sub-spans.
+    const top = attached ? 0 : radius;
+    const bottom = n.children !== null ? 0 : radius;
     const path = new Path2D();
-    path.roundRect(x0, y, bw, bh, radius);
+    path.roundRect(x0, y, bw, bh, [top, top, bottom, bottom]);
 
     // Body fill.
     if (style.pattern === 'outline') {
@@ -3968,7 +3939,7 @@ export class TimelineViewElement extends HTMLElement {
       for (const s of n.segs) {
         let sx0 = Math.max(x0, this.gutterW + timeToX(s.start, rv, plotW));
         const sx1 = Math.min(x1, this.gutterW + timeToX(s.end ?? (n.end ?? now), rv, plotW));
-        const ss = this.resolved(n.catKey, s.kind, null);
+        const ss = this.resolved(n.root.catKey, s.kind, null, n.depth);
         if (ss.pattern === 'outline') {
           // A terminal cut (e.g. a kill tail: cancel requested → finished).
           const minW = TERMINAL_SEG_MIN_DEVICE_PX / dpr;

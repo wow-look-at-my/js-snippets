@@ -149,37 +149,43 @@ if (parentRow && hits.some((r) => r.parentId === parentRow.id)) {
 	const strangers = hits.filter((r) => r.y > parentRow.y && r.y < lastFamilyY && !inFamily(r));
 	check(strangers.length === 0, `subspans: no stranger inside the family block (${strangers.map((s) => s.id).join(', ') || 'none'})`);
 
-	// Between the parent row and the first sub-span row lies the track gap.
+	// Read the canvas at the parent's top edge, the gap, and the sub-span's bottom edge: off the vertical center, where labels draw.
 	const firstKid = kids[0];
-	const lastParentY = Math.max(...hits.filter((r) => r.id === pid).map((r) => r.y));
-	const gapY = (lastParentY + firstKid.y) / 2;
-	const px = await page.evaluate(([cx, cy, ox]) => {
+	const parentYs = hits.filter((r) => r.id === pid).map((r) => r.y);
+	const kidYs = hits.filter((r) => r.id === firstKid.id).map((r) => r.y);
+	const gapY = (Math.max(...parentYs) + Math.min(...kidYs)) / 2;
+	const px = await page.evaluate(([cx, py, gy, ky]) => {
 		const el = document.getElementById('subspans');
 		const canvas = el.shadowRoot.querySelector('canvas');
 		const r = canvas.getBoundingClientRect();
 		const ctx = canvas.getContext('2d');
 		const dpr = canvas.width / r.width;
-		const read = (px, py) => Array.from(ctx.getImageData(Math.round((px - r.left) * dpr), Math.round((py - r.top) * dpr), 1, 1).data).slice(0, 3);
-		return { inside: read(cx, cy), outside: read(ox, cy) };
-	}, [sx, gapY, sbox.x + sbox.width * 0.995]);
-	const diff = px.inside.reduce((s, v, i) => s + Math.abs(v - px.outside[i]), 0);
-	check(diff >= 6, `subspans: the family box tints the gap between parent and sub-span rows (inside ${px.inside} vs outside ${px.outside})`);
+		const read = (x, y) => Array.from(ctx.getImageData(Math.round((x - r.left) * dpr), Math.round((y - r.top) * dpr), 1, 1).data).slice(0, 3);
+		return { parent: read(cx, py), gap: read(cx, gy), kid: read(cx, ky) };
+	}, [sx, Math.min(...parentYs) + 2, gapY, Math.max(...kidYs) - 2]);
+	const dist = (a, b) => a.reduce((s, v, i) => s + Math.abs(v - b[i]), 0);
+	const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+	const hue = ([r, g, b]) => {
+		const mx = Math.max(r, g, b);
+		const d = mx - Math.min(r, g, b);
+		if (d === 0) return 0;
+		const h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+		return (h * 60 + 360) % 360;
+	};
+	const hueGap = Math.min(Math.abs(hue(px.kid) - hue(px.parent)), 360 - Math.abs(hue(px.kid) - hue(px.parent)));
+	check(dist(px.gap, px.kid) <= 12, `subspans: the sub-span is attached, its color fills the gap up to the parent (gap ${px.gap} vs sub-span ${px.kid})`);
+	check(lum(px.kid) < lum(px.parent) - 8, `subspans: the sub-span is a darker shade than its parent (sub-span ${px.kid} vs parent ${px.parent})`);
+	check(hueGap <= 20, `subspans: the sub-span keeps its parent's hue (${Math.round(hueGap)} degrees apart)`);
 
 	// Hover a sub-span: the gallery's tooltip names the parent from hit.parent.
 	await page.mouse.move(sx, firstKid.y);
 	await page.waitForTimeout(120);
 	const tip = await page.evaluate(() => document.getElementById('subspans').shadowRoot.querySelector('.tooltip')?.textContent ?? '');
 	check(/part of /.test(tip), `subspans: the sub-span tooltip names its parent (${JSON.stringify(tip.slice(0, 80))})`);
-
-	// The empty part of the box hits the parent.
-	let boxHit = null;
-	for (let xx = sbox.x + sbox.width * 0.15; xx < sbox.x + sbox.width * 0.95; xx += 6) {
-		const h = await hoverAt(xx, firstKid.y);
-		if (h && h.id === pid) { boxHit = xx; break; }
-	}
-	check(boxHit !== null, 'subspans: the empty part of the family box hits the parent');
 }
 
+await page.mouse.move(0, 0);
+await page.waitForTimeout(150);
 for (const id of ['static', 'floor', 'subspans']) {
 	const el = await page.$('#' + id);
 	await el.screenshot({ path: `${outDir}/timeline-${id}.png` });
