@@ -23,7 +23,7 @@ A sub-span nests only under a parent in the same lane. A parent in another lane,
 
 A sub-span takes its root's category for its hue. Its own `category` does not change the color. Its `state` still applies, so a failed sub-span keeps the failed treatment in the family's shade. A `colorFor` override still wins.
 
-A sub-span bar reaches up through the track gap to the row above it. Its top corners are square. The bar above casts a short shadow onto its top edge, so the join reads as tucked under and not as missing padding. A span with sub-spans has square bottom corners. An instant sub-span stays a pip.
+A sub-span bar reaches up through the track gap to the row above it. Its top corners are square. The bar above casts a short shadow onto its top edge. As a result, the join reads as tucked under and not as missing padding. A span with sub-spans has square bottom corners. An instant sub-span stays a pip.
 
 The block's extent is the union of every member. The block is ongoing while the parent or any member is ongoing.
 
