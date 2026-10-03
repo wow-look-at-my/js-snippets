@@ -15,6 +15,8 @@ real component: it is captured from the [showcase gallery](#deploy) by
 `node scripts/screenshot-showcase.mjs`, so it cannot drift into showing a
 chart the code no longer draws.
 
+Sub-spans: an interval whose `parentId` names another interval in its lane nests under it, in a boxed block with the parent on top. A sub-span's own sub-spans nest a level deeper. See `docs/timeline/sub-spans.md`.
+
 ## `<dag-view>`
 
 ![The dag-view component: a build pipeline drawn as layered boxes joined by arrows, with category colours, hatched and stippled node states, a long edge bending around two layers, and a notice strip naming two edges the graph could not draw](docs/dag-view.png)
