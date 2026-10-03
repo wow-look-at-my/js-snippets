@@ -95,10 +95,10 @@ check(!f2.follow, 'floor: a backward pan still disengages follow');
 const m = await read('main');
 check(m.min === null && m.max === null && m.follow, 'main: unbounded and still following (no regression)');
 
-// -- Sub-spans ---------------------------------------------------------------------------
+// -- Sub-spans
+// ---------------------------------------------------------------------------
 // Every 'intervalhover' the element fires, with the pointer position that
 // caused it, is the only public window onto the element's row layout.
-// The event fires on CHANGE only, so the page keeps the current hover state.
 await page.evaluate(() => {
 	const el = document.getElementById('subspans');
 	window.__hover = null;
