@@ -163,7 +163,6 @@ if (parentRow && hits.some((r) => r.parentId === parentRow.id)) {
 		const read = (x, y) => Array.from(ctx.getImageData(Math.round((x - r.left) * dpr), Math.round((y - r.top) * dpr), 1, 1).data).slice(0, 3);
 		return { parent: read(cx, py), gap: read(cx, gy), kid: read(cx, ky) };
 	}, [sx, Math.min(...parentYs) + 2, gapY, Math.max(...kidYs) - 2]);
-	const dist = (a, b) => a.reduce((s, v, i) => s + Math.abs(v - b[i]), 0);
 	const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
 	const hue = ([r, g, b]) => {
 		const mx = Math.max(r, g, b);
@@ -173,7 +172,9 @@ if (parentRow && hits.some((r) => r.parentId === parentRow.id)) {
 		return (h * 60 + 360) % 360;
 	};
 	const hueGap = Math.min(Math.abs(hue(px.kid) - hue(px.parent)), 360 - Math.abs(hue(px.kid) - hue(px.parent)));
-	check(dist(px.gap, px.kid) <= 12, `subspans: the sub-span is attached, its color fills the gap up to the parent (gap ${px.gap} vs sub-span ${px.kid})`);
+	const gapHue = Math.min(Math.abs(hue(px.gap) - hue(px.kid)), 360 - Math.abs(hue(px.gap) - hue(px.kid)));
+	check(gapHue <= 20 && lum(px.gap) > 30, `subspans: the sub-span is attached, its color fills the gap up to the parent (gap ${px.gap} vs sub-span ${px.kid})`);
+	check(lum(px.gap) < lum(px.kid) - 15, `subspans: the bar above casts a shadow onto the sub-span's top edge (gap ${px.gap} vs body ${px.kid})`);
 	check(lum(px.kid) < lum(px.parent) - 8, `subspans: the sub-span is a darker shade than its parent (sub-span ${px.kid} vs parent ${px.parent})`);
 	check(hueGap <= 20, `subspans: the sub-span keeps its parent's hue (${Math.round(hueGap)} degrees apart)`);
 

@@ -278,6 +278,9 @@ const MM_STEP_MAX_FRAC = 0.25;
 const PATTERN_TILE_PX = 7;
 /** Oklch lightness a sub-span loses per nesting level, against its root's color. */
 const SUB_SPAN_SHADE_STEP = 0.11;
+/** Depth (CSS px) and strength of the shadow the bar above casts onto an attached sub-span. */
+const SUB_SPAN_SHADOW_PX = 6;
+const SUB_SPAN_SHADOW_ALPHA = 0.55;
 const EMPTY_ROOTS: NInterval[] = [];
 // Fraction of the span the window START may drift before track assignment re-runs (the visible-layout memo's quantum).
 const ASSIGN_QUANTUM_FRAC = 0.02;
@@ -3971,6 +3974,19 @@ export class TimelineViewElement extends HTMLElement {
         ctx.fillStyle = withAlpha('#000000', 0.35);
         ctx.fillRect(sx0, y, 1 / dpr, bh);
       }
+      ctx.restore();
+    }
+
+    // The bar above casts a shadow onto an attached sub-span, so the join reads as tucked under, not as missing padding.
+    if (attached) {
+      const sh = Math.min(SUB_SPAN_SHADOW_PX, bh / 2);
+      const grad = ctx.createLinearGradient(0, y, 0, y + sh);
+      grad.addColorStop(0, withAlpha('#000000', SUB_SPAN_SHADOW_ALPHA));
+      grad.addColorStop(1, withAlpha('#000000', 0));
+      ctx.save();
+      ctx.clip(path);
+      ctx.fillStyle = grad;
+      ctx.fillRect(x0, y, bw, sh);
       ctx.restore();
     }
 
