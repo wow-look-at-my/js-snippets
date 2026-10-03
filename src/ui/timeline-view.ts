@@ -1219,20 +1219,7 @@ export class TimelineViewElement extends HTMLElement {
     }
   }
 
-  /**
-   * Coalesce rebuild() to ONE run per animation frame. Every data-ingest
-   * path (mergeData / setData / setLanes / setIntervals) marks the layout
-   * dirty via this instead of re-laying-out synchronously — so a consumer
-   * feeding a BURST of merges pays a single O(N) rebuild on the next frame,
-   * not one per call (the per-merge rebuild is the historical "5s merge
-   * spike"; 6k merges in one task froze a real dashboard for 15s). rAF is
-   * parked while the tab is backgrounded, so a backlog buffered while hidden
-   * collapses into a single rebuild on foreground instead of freezing the
-   * main thread when it flushes. The draw is already coalesced the same way
-   * (invalidate → dirty → one rAF); this gives the layout the same treatment.
-   * No caller reads layout synchronously after ingest — the draw, hit-tests,
-   * and minimap all read it on the frame, after this runs.
-   */
+  /** Coalesce rebuild() to ONE run per animation frame. */
   private scheduleRebuild(): void {
     if (this.rebuildRaf !== 0) return;
     this.rebuildRaf = requestAnimationFrame(() => {
@@ -2496,7 +2483,7 @@ export class TimelineViewElement extends HTMLElement {
     return pattern;
   }
 
-  /** Reused by anchorPattern — setTransform reads the matrix synchronously, so one mutable instance is safe (and kills a per-patterned-fill allocation). */
+  /** Reused by anchorPattern — setTransform reads the matrix synchronously. */
   private patternMatrix = typeof DOMMatrix !== 'undefined' ? new DOMMatrix() : null;
 
   private anchorPattern(pat: CanvasPattern, ox: number, oy: number): CanvasPattern {
