@@ -396,7 +396,8 @@ const release: LaneSpec = {
     if (e2eFailed) test.e = e2e.e + 1 * SEC;
     const canary = { s: test.e - 12 * SEC, e: test.e + between(rnd, 14 * SEC, 24 * SEC) };
     if (canaryCancelled) canary.e = canary.s + between(rnd, 6 * SEC, 10 * SEC);
-    const approve = e2eFailed ? null : canary.e + 3 * SEC;
+    // A failed test or an aborted canary ends the release there: nothing is approved or promoted.
+    const approve = e2eFailed || canaryCancelled ? null : canary.e + 3 * SEC;
     const promote = approve === null ? null : { s: approve + 1 * SEC, e: approve + between(rnd, 16 * SEC, 26 * SEC) };
     const end = e2eFailed ? test.e : promote === null ? canary.e : promote.e;
     const version = `2.${(k % 40) + 1}.${k % 7}`;
@@ -406,7 +407,7 @@ const release: LaneSpec = {
         laneId: 'release',
         start,
         end,
-        finalState: e2eFailed ? 'failed' : '',
+        finalState: e2eFailed ? 'failed' : canaryCancelled ? 'cancelled' : '',
         label: `release v${version}`,
         liveLabels: [
           [build.e, `release v${version} · building`],
