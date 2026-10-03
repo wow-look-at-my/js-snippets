@@ -1643,9 +1643,7 @@ export class DagViewElement extends HTMLElement {
 
 // -- Drawing helpers -----------------------------------------------------------------
 
-/** A polyline with its corners rounded, appended to the current path. */
-/** A coordinate, to decimals. The snapshot is read by a person, and a layout
- * float carries digits of noise past the part that matters. */
+/** A coordinate to decimals: a person reads the snapshot. */
 function round(v: number): number {
   return Math.round(v * 100) / 100;
 }

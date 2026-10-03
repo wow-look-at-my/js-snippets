@@ -1,5 +1,4 @@
-/** <timeline-view> — a canvas-rendered, realtime swimlane timeline. A shared horizontal time axis across the full width; stacked labeled lanes, each a band of interval bars (left = start, right = end; a lane grows extra sub-tracks when its intervals overlap). Everything is data: lanes {id, label, group?}, intervals {id, laneId, start, end, label?, category?, state?, segments?, data?}, plus optional connectors between intervals, and vertical time markers. Color encodes CATEGORY (stable hue per category string); rendering STYLE encodes state/phase via a named style map (hatching, desaturation, stipple, emphasis borders + glyphs — never hue). Zero/near-zero-width intervals render as instant diamond pips (still colored, styled, hoverable, clickable — never an invisible
- *sliver). */
+// <timeline-view>: the canvas swimlane timeline. Color is category, style is state, never hue.
 
 import {
   toMs,
@@ -345,8 +344,6 @@ export class TimelineViewElement extends HTMLElement {
   private mmDrag: { mode: 'left' | 'right' | 'middle'; lastX: number } | null = null;
   private hadData = false; // data-emptiness edge → re-evaluate strip visibility
 
-  // -- Data extent / cull metadata (recomputed exactly in rebuild(); grown
-  // incrementally in ingestInterval so it is never stale-small between) --
   /** Max terminated end across ALL intervals (-Infinity with none) — the minimap extent's data end, O(1) per frame. */
   private mmLatestEnd = -Infinity;
   /** Ongoing (end = null) intervals, flat — live-drawn on the minimap every frame, never baked into the density texture. */
@@ -1222,11 +1219,6 @@ export class TimelineViewElement extends HTMLElement {
     }
   }
 
-  /**
-   * Re-sort and re-layout after any data change. Track assignment and lane
-   * heights come from the VISIBLE window (updateVisibleLayout), so a
-   * historical parallelism burst stops padding its lane once off-screen.
-   */
   /**
    * Coalesce rebuild() to ONE run per animation frame. Every data-ingest
    * path (mergeData / setData / setLanes / setIntervals) marks the layout
@@ -2504,15 +2496,6 @@ export class TimelineViewElement extends HTMLElement {
     return pattern;
   }
 
-  /*Anchoring to the (unclamped) content origin keeps the phase stable while
-   * a span is partially clipped off-screen AND rides lane scrolling/height
-   * changes in y. The origin folds mod the tile size — identical
-   * rendering (a whole-tile translate is identity), numerically tame for
-   * far-off-screen origins — and non-finite origins fall back to the
-   * canvas-anchored default. setTransform REPLACES the creation-time
-   * matrix, so the 1/dpr tile scale is re-applied here; call before every
-   * patterned fill — the cache shares one CanvasPattern per (kind, color)
-   * and the transform is read at fill time. */
   /** Reused by anchorPattern — setTransform reads the matrix synchronously, so one mutable instance is safe (and kills a per-patterned-fill allocation). */
   private patternMatrix = typeof DOMMatrix !== 'undefined' ? new DOMMatrix() : null;
 

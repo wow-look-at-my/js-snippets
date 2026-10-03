@@ -1,13 +1,4 @@
-/**
- * canvas-text — responsive multi-tier canvas text with alpha-fade truncation.
- *
- * A label is an ordered list of TIERS, fullest → most compact. fitTieredText
- * picks the largest tier that fits the available width; when even the last
- * tier overflows, it hard-clips that tier and flags the result `faded` —
- * FadeTextPainter then draws the trailing ~ - characters fading to
- * transparent instead of spending width on an ellipsis. Width comes from an
- * injected MeasureText fn (cached char-width arithmetic, or a memoized
- * ctx.measureText), so fitting stays pure and canvas-free.
+// Multi-tier canvas labels. The widest tier that fits draws; past the last tier the text clips and fades.
 
 /** Rendered width of `text` in px. Must be monotonic over prefixes of a string. */
 export type MeasureText = (text: string) => number;
