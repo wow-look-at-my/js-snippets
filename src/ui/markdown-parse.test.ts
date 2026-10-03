@@ -1,14 +1,4 @@
-// Tests for the pure half of the markdown renderer (ui/markdown-parse.ts):
-// the mdast tree micromark produces, and — the part that matters — the
-// sanitize transform that is the safety boundary. ui/markdown.ts itself is
-// DOM-bound (createElement / createTextNode) and not node-testable, see the
-// Testing section in CLAUDE.md; but because sanitizeTree runs BEFORE any
-// node reaches that walker, the properties below hold for the rendered
-// output too. That is the whole point of doing the sanitizing in the tree.
-//
-// Parsing correctness itself is micromark's job and is not re-tested here;
-// what IS tested is that GFM is actually switched on (tables, task lists,
-// strikethrough), since that is a configuration decision this module makes.
+// Tests for the pure half of the markdown renderer (ui/markdown-parse.ts): the mdast tree micromark produces.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -205,13 +195,12 @@ test('a refused image degrades to its alt text', () => {
 });
 
 test('reference-style links cannot smuggle a refused URL in via a definition', () => {
-  // The destination lives in a separate node from the link, so a check that
-  // only looked at `link` nodes would miss this entirely.
+  // The destination lives in a separate node from the link.
   const tree = parse('[click][bad]\n\n[bad]: javascript:alert(1)');
   assert.equal(linkish(tree).length, 0);
   assert.match(textIn(tree), /click/);
 
-  // The safe twin still resolves, so the guard is not just refusing everything.
+  // The safe twin still resolves, so the guard is not refusing everything.
   const ok = parse('[click][good]\n\n[good]: https://example.com/x');
   assert.equal(linkish(ok).length, 1);
 });

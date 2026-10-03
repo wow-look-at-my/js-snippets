@@ -28,8 +28,7 @@ test('severity reads the action half, and rule ORDER decides the traps', () => {
   assert.equal(severityOf('image.build_failed'), 'bad');
   assert.equal(severityOf('reload.held_red'), 'bad', 'a red gate status is bad news, not a mere hold');
 
-  // Order is the whole reason SEVERITY_RULES is a list: each of these
-  // matches a LATER rule too, and the earlier one has to win.
+  // Order is the whole reason SEVERITY_RULES is a list: each of these matches a LATER rule too.
   assert.equal(severityOf('hook.disabled_rejected'), 'bad', 'bad(rejected) over warn(disabled)');
   assert.equal(severityOf('reload.unverified'), 'warn', 'warn(unverified) over good(verified)');
   assert.equal(severityOf('concurrency.override_cleared'), 'good', 'good(cleared) must not trip warn(overridden)');
@@ -53,8 +52,7 @@ test('family is the namespace half; folding is an explicit alias map', () => {
   assert.equal(familyOf('bare'), 'bare');
   assert.equal(familyOf(''), '');
 
-  // The alias map exists because automatic plural-stripping is wrong: it
-  // would fold the ordinary family "status" into "statu".
+  // The alias map exists because automatic plural-stripping is wrong.
   assert.equal(familyOf('hooks.reloaded'), 'hooks', 'no folding without an explicit alias');
   assert.equal(familyOf('hooks.reloaded', { hooks: 'hook' }), 'hook');
   assert.equal(familyOf('status.changed', { hooks: 'hook' }), 'status', 'unrelated families are untouched');
@@ -87,8 +85,7 @@ test('selectEntries counts over the WHOLE input and shows only survivors', () =>
   assert.equal(all.severityCounts.get('info'), 1);
   assert.equal(all.familyCounts.get('run'), 2);
 
-  // Hiding a severity: counts are UNCHANGED (a chip must keep showing what
-  // it hides) while shown shrinks.
+  // Hiding a severity: counts are UNCHANGED (a chip must keep showing what it hides) while shown shrinks.
   const noBad = selectEntries(entries, { hiddenSeverities: ['bad'] });
   assert.deepEqual(noBad.shown.map((e) => e.kind), ['run.queued', 'run.skipped', 'hooks.reloaded']);
   assert.equal(noBad.severityCounts.get('bad'), 2, 'the hidden bucket still counts');

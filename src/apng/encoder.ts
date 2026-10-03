@@ -1,29 +1,4 @@
 // Size-optimising APNG encoder.
-//
-// Takes a list of RGBA8 frames and produces one animated PNG. Everything it
-// does beyond "write the frames out" is aimed at the file size:
-//
-//   - dirty rectangles: each frame stores only the bounding box of the pixels
-//     that moved since the previous one;
-//   - transparent skipping: inside that box, pixels that did not move are
-//     written as fully transparent and composited with blend_op=OVER, so the
-//     decoder keeps what was already there and deflate sees long zero runs;
-//   - a change threshold: channel movements at or below it are treated as no
-//     movement, which is what lets a dirty-rect encoder find anything static in
-//     input that carries resampling or sensor noise;
-//   - frame coalescing: a frame that changes nothing is dropped and its delay
-//     added to the frame before it;
-//   - exact palette detection: <= 256 distinct colours become an 8-bit indexed
-//     PNG, one byte per pixel instead of four, with no colour change at all;
-//   - per-row adaptive filter selection, and at effort 'best' a real trial of
-//     every legal (blend, filter) pairing per frame, keeping the smallest.
-//
-// Compression itself is the platform's: `CompressionStream('deflate')` emits
-// the zlib stream PNG wants. Supply `options.deflate` to swap in something
-// slower and denser.
-//
-// No DOM is used, so this runs unchanged in a worker (where it belongs — see
-// apng/worker.ts) and under node.
 
 import { concatBytes, filterScanlines, PNG_SIGNATURE, writeChunk, type FilterStrategy } from './png.ts';
 import { composite, cropRect, cropRectMasked, diffFrames, type Rect } from './diff.ts';
@@ -47,28 +22,19 @@ export type ApngColorType = 'auto' | 'rgba' | 'indexed';
 export type Deflate = (bytes: Uint8Array) => Promise<Uint8Array>;
 
 export interface ApngOptions {
-  /**
-   * Per-channel change threshold, 0..255. A pixel counts as unchanged while
-   * every colour channel is within this of what the decoder already shows.
-   * Default 2: invisible at 8 bits, and enough to absorb the ±1 noise that
-   * stops identical-looking frames from differencing to nothing. 0 is exact.
-   */
+  /* */
   threshold?: number;
   /** Same, for the alpha channel. Defaults to `threshold`. */
   alphaThreshold?: number;
-  /** Default per-frame duration in ms when a frame does not carry its own. Default 100. */
+  /** Default per-frame duration in ms when a frame does not carry its own. */
   delayMs?: number;
-  /** Times to play the animation; 0 (the default) loops forever. */
+  /* */
   loops?: number;
-  /** Colour type. 'auto' uses an exact palette when the frames fit in 256 colours. */
+  /** Colour type. 'auto' uses an exact palette when the frames fit in multiple colours. */
   colorType?: ApngColorType;
   /** Row filter strategy. Default 'adaptive'. Ignored at effort 'best', which tries them. */
   filter?: FilterStrategy;
-  /**
-   * 'fast' encodes each frame once with the heuristic choice of blend op and
-   * filter. 'best' compresses every legal combination and keeps the smallest,
-   * which costs several deflate passes per frame.
-   */
+  /** 'fast' encodes each frame once with the heuristic choice of blend op and filter. */
   effort?: ApngEffort;
   /** Drop frames that change nothing and add their delay to the previous frame. Default true. */
   coalesce?: boolean;
@@ -96,15 +62,12 @@ export interface ApngFrameStat {
   changed: number;
   /** Total display time in ms, including any coalesced frames. */
   delayMs: number;
-  /** How many source frames were folded into this one (0 when none were). */
+  /* */
   coalesced: number;
 }
 
 export interface ApngResult {
-  /**
-   * The complete .apng / .png file. Typed over a plain ArrayBuffer, which is
-   * what Blob and a postMessage transfer list accept.
-   */
+  /** The complete .apng / .png file. */
   bytes: Uint8Array<ArrayBuffer>;
   width: number;
   height: number;
@@ -129,8 +92,7 @@ export interface ApngResult {
 export async function deflateZlib(bytes: Uint8Array): Promise<Uint8Array> {
   const cs = new CompressionStream('deflate');
   const done = new Response(cs.readable).arrayBuffer();
-  // The stream is typed as taking a view onto a plain ArrayBuffer; a Uint8Array
-  // over any buffer is what it actually accepts.
+  // The stream is typed as taking a view onto a plain ArrayBuffer; a Uint8Array over any buffer is what it accepts.
   const writer = cs.writable.getWriter() as WritableStreamDefaultWriter<Uint8Array>;
   const write = writer.write(bytes).then(() => writer.close());
   const [buffer] = await Promise.all([done, write]);
@@ -149,7 +111,7 @@ function ihdr(width: number, height: number, colorType: number): Uint8Array {
   u32(v, 0, width);
   u32(v, 4, height);
   d[8] = 8; // bit depth
-  d[9] = colorType; // 6 = RGBA, 3 = indexed
+  d[9] = colorType;
   return writeChunk('IHDR', d);
 }
 
@@ -186,7 +148,7 @@ function fctl(seq: number, rect: Rect, delayMs: number, blend: 'source' | 'over'
   u32(v, 16, rect.y);
   v.setUint16(20, num);
   v.setUint16(22, den);
-  d[24] = 0; // dispose_op = NONE: leave the canvas for the next frame to build on
+  d[24] = 0; // dispose_op = NONE.
   d[25] = blend === 'over' ? 1 : 0;
   return writeChunk('fcTL', d);
 }
@@ -301,9 +263,7 @@ export async function encodeApng(
   if (options.colorType === 'indexed' && !palette) {
     throw new Error('colorType "indexed" requested but the frames use more than 256 distinct colours');
   }
-  // A blend_op=OVER payload writes transparent pixels, so the palette must
-  // contain one. buildPalette reserves a slot for it; if that ever stops
-  // holding, masked frames would index a colour that is not there.
+  // A blend_op=OVER payload writes transparent pixels.
   if (palette && palette.transparentIndex < 0) {
     throw new Error('internal: indexed APNG needs a transparent palette entry');
   }
@@ -323,8 +283,6 @@ export async function encodeApng(
     const image = images[i];
     const delayMs = frames[i].delayMs ?? defaultDelay;
 
-    // Frame 0 is the PNG's own image: full size, and a decoder that ignores
-    // the animation shows exactly it.
     const diff = i === 0 ? { rect: { x: 0, y: 0, w: width, h: height }, changed: width * height, opaque: false }
       : diffFrames(canvas, image, width, height, diffOptions);
 
@@ -336,8 +294,7 @@ export async function encodeApng(
         options.onProgress?.(i + 1, images.length);
         continue;
       }
-      // Coalescing off: still nothing changed, so store the smallest legal
-      // frame — one transparent pixel composited with OVER, which is a no-op.
+      // Coalescing off: still nothing changed, so store the smallest legal frame — one transparent pixel composited.
       const rect: Rect = { x: 0, y: 0, w: 1, h: 1 };
       const blank = Uint8Array.from(maskFill);
       const encoded = await encodeRect(blank, rect, palette, filter, effort, deflate);
@@ -350,24 +307,17 @@ export async function encodeApng(
     }
 
     const { rect } = diff;
-    // OVER only reproduces its source where that source is fully opaque, so it
-    // is legal exactly when every changed pixel is opaque. Frame 0 is the PNG's
-    // own image and is always stored whole.
+    // OVER only reproduces its source where that source is fully opaque.
     const overLegal = i > 0 && diff.opaque;
 
-    // With every pixel in the rectangle changed there is nothing for OVER to
-    // skip, so its payload is byte-identical to SOURCE's and trying both would
-    // compress the same bytes twice. That is the shape a full-frame change
-    // takes, which is exactly where effort 'best' is most expensive.
+    // With every pixel in the rectangle changed there is nothing for OVER to skip.
     const overIsSource = diff.changed === rect.w * rect.h;
     const blends: Array<'source' | 'over'> = [];
     if (overLegal) blends.push('over');
     if (!overLegal || (effort === 'best' && !overIsSource)) blends.push('source');
 
     let chosen: PendingFrame | undefined;
-    // The winning blend's pixels are kept, not recomputed: they are also what
-    // the canvas has to be advanced by, and re-cropping a rectangle the size of
-    // the changed area is not free.
+    // The winning blend's pixels are kept, not recomputed.
     let shown: Uint8Array | undefined;
     for (const blend of blends) {
       const payloadRgba = blend === 'over'
@@ -385,8 +335,7 @@ export async function encodeApng(
     if (!chosen || !shown) throw new Error(`internal: frame ${i} produced no encoding`);
     pending.push(chosen);
 
-    // Advance the canvas the way a decoder would, so the next frame diffs
-    // against what will actually be on screen.
+    // Advance the canvas the way a decoder would, so the next frame diffs against what will be on screen.
     composite(canvas, width, rect, shown, chosen.blend);
     options.onProgress?.(i + 1, images.length);
   }

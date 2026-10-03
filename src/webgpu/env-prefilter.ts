@@ -1,12 +1,4 @@
 // IBL environment map prefiltering — GGX importance sampling.
-//
-// Generates a mip chain where each level is convolved with a GGX lobe
-// at increasing roughness:
-//   mip 0 = sharp (roughness 0)
-//   mip N = fully diffuse (roughness 1)
-//
-// Use the output texture with textureSampleLevel(tex, sampler, uv, roughness * maxMip)
-// for split-sum specular IBL.
 
 import prefilterSource from './shaders/prefilter.wgsl';
 
@@ -17,18 +9,8 @@ interface MipLayout {
   bufOffset: number;
 }
 
-/**
- * Generate a prefiltered environment mip chain from an equirectangular HDRI.
- *
- * The source texture's mip 0 must contain the HDRI data. The output mip
- * levels 1..N are filled with GGX-convolved versions at increasing roughness.
- *
- * @param device      The GPUDevice.
- * @param texture     Target texture — must have mipLevelCount > 1 and COPY_DST usage.
- *                    Mip 0 must already be populated.
- * @param numSamples  Samples per pixel for the convolution (default 1024).
- *                    Higher = better quality, slower.
- */
+/** Generate a prefiltered environment mip chain from an equirectangular HDRI. Higher =
+ * better quality, slower. */
 export function prefilterEnvMap(
   device: GPUDevice,
   texture: GPUTexture,

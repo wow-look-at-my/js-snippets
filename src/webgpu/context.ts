@@ -12,26 +12,15 @@ export interface WebGPUContext {
 export interface InitWebGPUOptions {
   /** Passed to requestAdapter (e.g. 'high-performance'). */
   powerPreference?: GPUPowerPreference;
-  /**
-   * Limits to raise on the device, by name (e.g. maxStorageBufferBindingSize).
-   * Each is requested as min(adapter's supported value, the cap you give);
-   * pass Infinity to ask for the adapter's maximum. Names the adapter does
-   * not report are skipped, so requesting a limit never turns a working init
-   * into a validation failure.
-   */
+  /** Limits to raise on the device, by name (e.g. maxStorageBufferBindingSize). */
   limits?: Record<string, number>;
 }
 
-/**
- * Request a WebGPU device and configure a canvas context.
- *
- * @param canvas         The canvas element to bind.
- * @param features       Optional device features to request (only requested if
- *                       the adapter supports them).
- * @param options        Adapter power preference + limits to raise (see
- *                       `InitWebGPUOptions`).
- * @returns null if WebGPU is unavailable.
- */
+/** Request a WebGPU device and configure a canvas context. @param canvas The
+ * canvas element to bind. @param features Optional device features to request
+ * (only requested if the adapter supports them). @param options Adapter power
+ * preference + limits to raise (see `InitWebGPUOptions`). @returns null if
+ * WebGPU is unavailable. */
 export async function initWebGPU(
   canvas: HTMLCanvasElement,
   features?: GPUFeatureName[],

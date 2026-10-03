@@ -1,12 +1,4 @@
-/**
- * ui/activity-feed-math — the pure half of <activity-feed>.
- *
- * Everything here is DOM-free and node-tested: how an entry's kind maps to a
- * severity and a family, how a query and a hidden-facet set select entries,
- * and how the facet counts the chips display are derived. The element in
- * ui/activity-feed.ts owns rendering and re-exports this module, so a
- * consumer needs one import.
- */
+/** ui/activity-feed-math — the pure half of <activity-feed>. */
 
 /** One row of a feed. `time` accepts anything `new Date()` understands. */
 export interface ActivityEntry {
@@ -22,17 +14,8 @@ export interface ActivityEntry {
 export const SEVERITIES = ['bad', 'warn', 'skip', 'good', 'info'] as const;
 export type Severity = (typeof SEVERITIES)[number];
 
-/**
- * Severity rules over the ACTION half of a dotted kind
- * ("manager.inbox_dropped" → "inbox_dropped"), FIRST match wins.
- *
- * Order is load-bearing, and the traps are why this is a list rather than a
- * lookup: "hook.disabled_rejected" must be bad (not warn on "disabled") and
- * "reload.unverified" must be warn (not good on "verified"). Deriving
- * severity instead of enumerating kinds is the point — a feed's vocabulary
- * grows on the producer's side, and an enumeration silently greys out
- * everything it has not been taught yet.
- */
+/** Severity rules over the ACTION half of a dotted kind
+ * ("manager.inbox_dropped" → "inbox_dropped"), FIRST match wins. */
 export const SEVERITY_RULES: ReadonlyArray<readonly [Severity, RegExp]> = [
   ['bad', /(failed|error|denied|refused|dropped|unresolved|misconfigured|invalid|unknown|rejected|blind|_red$)/],
   ['skip', /skipped$/],
@@ -55,16 +38,8 @@ export function severityOf(kind: string): Severity {
   return 'info';
 }
 
-/**
- * The namespace half of a dotted kind — the subsystem that spoke. A kind
- * with no dot is its own family.
- *
- * `aliases` folds the singular/plural spellings producers reliably drift
- * into ({hooks: 'hook'} makes "hooks.reloaded" and "hook.enabled" one
- * family). It is an explicit map rather than automatic plural-stripping on
- * purpose: stripping a trailing "s" turns the perfectly ordinary family
- * "status" into "statu".
- */
+/** The namespace half of a dotted kind — the subsystem that spoke. A kind
+ * with no dot is its own family. */
 export function familyOf(kind: string, aliases?: Readonly<Record<string, string>>): string {
   const raw = String(kind ?? '').split('.')[0] ?? '';
   return aliases?.[raw] ?? raw;
@@ -154,11 +129,8 @@ export function isFiltering(filter: FeedFilter = {}): boolean {
   );
 }
 
-/**
- * Serialize/parse a filter for persistence (localStorage) and for the
- * `activity-filter-change` event. Deliberately a plain, sorted, stable
- * shape: a consumer storing it must not see spurious writes.
- */
+/** Serialize/parse a filter for persistence (localStorage) and for the
+ * `activity-filter-change` event. */
 export interface StoredFilter {
   query: string;
   hiddenSeverities: string[];

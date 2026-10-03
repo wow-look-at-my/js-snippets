@@ -1,29 +1,6 @@
-/**
- * Gallery section: <data-table>.
- *
- * The point of a showcase entry is to put every visual and behavioural
- * treatment on screen at once, because a DOM-bound component is not
- * node-tested — this page is where it is actually exercised. So the fixture
- * is chosen to cover the cases that are easy to get wrong rather than to
- * look tidy: blank cells (which must sort LAST in both directions), values
- * whose display string sorts differently from their real value ("900ms" vs
- * "1.2s"), a status facet, a long unbroken id, and a row set big enough
- * that filtering visibly changes the count.
- *
- * Three instances, because the states worth seeing are the ones a single
- * happy-path instance hides: fully-featured (query + chips + sorting + row
- * clicks), minimal (no query, no facets, no row listener — so the bar's
- * self-hiding and the rows-stay-out-of-the-tab-order path are visible),
- * and one filtered to nothing (which must not look like "no data").
- */
+/** Gallery section: <data-table>. */
 
-// SIDE-EFFECT IMPORT — this is what registers <data-table>, and it must
-// stay. Every use of the class below is a TYPE position (`as
-// DataTableElement<DemoRun>`), and a type-only import is ELIDED at compile
-// time: without this line nothing evaluates the module, the element never
-// upgrades, and the section sits on its light-DOM "loading…" line forever.
-// The build stays green throughout, which is precisely why the gallery has
-// to be looked at rather than merely compiled.
+// SIDE-EFFECT IMPORT — this is what registers <data-table>, and it must stay.
 import '../src/ui/data-table.ts';
 import type { DataTableElement, FacetGroup, TableColumn } from '../src/ui/data-table.ts';
 import { mulberry32 } from './fake-data.ts';
@@ -47,8 +24,7 @@ function makeRows(n: number, now: number): DemoRun[] {
   const rows: DemoRun[] = [];
   for (let i = 0; i < n; i++) {
     const status = STATUSES[Math.floor(rand() * STATUSES.length)] ?? 'success';
-    // Skipped runs did no work and running ones have not finished: both
-    // legitimately have NO duration, which is what exercises blank-last.
+    // Skipped runs did no work and running ones have not finished: both legitimately have NO duration.
     const ms = status === 'skipped' || status === 'running' ? null : Math.round(10 + rand() * 90_000);
     rows.push({
       id: `run-${(i + 1).toString().padStart(3, '0')}-${Math.floor(rand() * 1e6).toString(36)}`,
@@ -89,8 +65,8 @@ const COLUMNS: TableColumn<DemoRun>[] = [
       return span;
     },
   },
-  // value sorts (number), render displays ("1.2s"), text searches the
-  // string the reader can actually see.
+  // value sorts (number), render displays ("1.2s"), text searches the string
+  // the reader can see.
   {
     key: 'ms',
     label: 'Duration',
@@ -107,8 +83,7 @@ const FACETS: FacetGroup<DemoRun>[] = [
     key: 'status',
     label: 'run(s)',
     of: (r) => r.status,
-    // A closed vocabulary gets a pinned order so the chip row does not
-    // reshuffle as counts change under a filter.
+    // A closed vocabulary gets a pinned order so the chip row does not reshuffle as counts change under a filter.
     order: ['failure', 'timeout', 'running', 'success', 'skipped'],
     chipClass: (b) => `demo-chip-${b}`,
   },
@@ -165,9 +140,7 @@ export function mountDataTableDemo(now: number): void {
     });
   }
 
-  // The minimal case: no query box, no chips, no row listener. The filter
-  // bar hides itself entirely rather than leaving an empty strip, and the
-  // rows stay out of the tab order.
+  // The minimal case: no query box, no chips, no row listener.
   const plain = document.getElementById('demo-table-plain') as DataTableElement<DemoRun> | null;
   if (plain) {
     plain.columns = COLUMNS.slice(0, 3);
@@ -175,8 +148,7 @@ export function mountDataTableDemo(now: number): void {
     plain.rows = rows.slice(0, 6);
   }
 
-  // The filtered-empty state, which is NOT the same as having no data: a
-  // query nothing matches must say so and say how many it is hiding.
+  // The filtered-empty state, which is NOT the same as having no data.
   const empty = document.getElementById('demo-table-empty') as DataTableElement<DemoRun> | null;
   if (empty) {
     empty.columns = COLUMNS.slice(0, 4);

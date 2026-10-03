@@ -1,29 +1,4 @@
-// Pure math for the <timeline-view> element: time<->pixel scales, an
-// anchor-preserving zoom (with wheel-delta normalization and gesture
-// routing), the follow-now engage/disengage rule (plus the eased follow
-// lead — engage/disengage/jump transitions glide, never teleport), feed
-// staleness (a dead live feed freezes the live edge at the last vouched
-// timestamp instead of extrapolating), a device-pixel-snapped render
-// origin (whole-pixel scrolling), a nice TIME tick ladder
-// (1/2/5/10/15/30 across ms → s → min → h → days, with per-step label
-// granularity), greedy first-fit sub-track packing (whole-set and
-// visible-window variants) plus the STICKY TrackAllocator (rows that stop
-// reshuffling while you watch), lane layout, auto-fit lane demotion (compact
-// track heights, tallest lanes first, hysteretic), label-fit and instant-interval
-// (zero/near-zero DURATION) helpers, scale-aware clustering of instant
-// markers (clusters split as you zoom in), the minimap strip's window
-// math (extent derivation, px mapping, handle hit zones, drag/resize/
-// center semantics with extent + span clamps), stable category → hue
-// hashing, data-coverage / range-request bookkeeping for async history
-// loading, render-loop pacing tiers, and hit-testing. No DOM or browser APIs —
-// everything here runs (and is tested) under node; ui/timeline-view.ts is
-// the canvas-bound half that consumes it.
-//
-// Two families that <dag-view> needs the same way live in their own modules
-// now — ./hit-test.ts (rect and polyline hit shapes) and ./color.ts (the
-// category hue hashing, the dim transform, the label halo). Both are
-// re-exported below, so every existing `from './timeline-view-math.ts'`
-// import keeps resolving.
+// Pure math for the <timeline-view> element: time<->pixel scales, an anchor-preserving zoom.
 
 import type { HitRect } from './hit-test.ts';
 
@@ -61,10 +36,7 @@ export interface TimelineInterval {
   end?: number | Date | null;
   /** Text drawn inside the bar when it fits (never overflows the bar). */
   label?: string;
-  /**
-   * Ordered label fallbacks, fullest → most compact; the widest that fits
-   * draws. Overrides the tiers otherwise derived from `label`.
-   */
+  /** Ordered label fallbacks, fullest → most compact; the widest that fits draws. */
   labelTiers?: string[];
   /** Color key: same category = same hue. Defaults to lane.group, then laneId. */
   category?: string;
@@ -78,7 +50,7 @@ export interface TimelineInterval {
   data?: unknown;
 }
 
-/** A line between two intervals (e.g. a handoff or dependency of the consumer's choosing). */
+/** A line between intervals (e.g. a handoff or dependency of the consumer's choosing). */
 export interface TimelineConnector {
   fromIntervalId: string;
   toIntervalId: string;
@@ -109,27 +81,17 @@ export interface TimeView {
   end: number;
 }
 
-/** Hard zoom clamps: ~2 s to ~7 days of visible span. */
+/* */
 export const MIN_SPAN_MS = 2_000;
 export const MAX_SPAN_MS = 7 * 86_400_000;
 
-/** The default visible span at the reference 16:9 container aspect: 3 minutes. */
+/* */
 export const DEFAULT_SPAN_REF_MS = 180_000;
 
 /** The container aspect ratio DEFAULT_SPAN_REF_MS is calibrated at. */
 const DEFAULT_SPAN_REF_ASPECT = 16 / 9;
 
-/**
- * The DEFAULT visible span for a container of `hostW` × `hostH` CSS px:
- * DEFAULT_SPAN_REF_MS (3 min) at a 16:9 aspect, scaled LINEARLY by the
- * actual aspect ratio — a wider container shows proportionally more time
- * at the same ms-per-pixel density, a squarer one less — clamped to
- * [MIN_SPAN_MS, MAX_SPAN_MS]. Degenerate sizes (zero/negative/non-finite
- * — an unlaid-out host) fall back to the 3-minute reference. The element
- * applies this on every resize until the first user gesture or
- * programmatic setViewport (`viewTouched`); it never overrides a chosen
- * window.
- */
+/* */
 export function defaultSpanForAspect(hostW: number, hostH: number, refSpanMs = DEFAULT_SPAN_REF_MS): number {
   let span = refSpanMs;
   if (Number.isFinite(hostW) && hostW > 0 && Number.isFinite(hostH) && hostH > 0) {
@@ -138,7 +100,7 @@ export function defaultSpanForAspect(hostW: number, hostH: number, refSpanMs = D
   return Math.min(MAX_SPAN_MS, Math.max(MIN_SPAN_MS, span));
 }
 
-/** Time → x in [0, width] for the view (un-clamped; callers cull). */
+/* */
 export function timeToX(t: number, view: TimeView, width: number): number {
   return ((t - view.start) / (view.end - view.start)) * width;
 }
@@ -153,26 +115,15 @@ export function panView(view: TimeView, dt: number): TimeView {
   return { start: view.start + dt, end: view.end + dt };
 }
 
-/**
- * The hard right end stop for user-driven views: the right edge never
- * passes `now` (span preserved; views already at/before now come back
- * unchanged). Every user input path (wheel, drag, pinch, keyboard,
- * setViewport) clamps through this, so panning/zooming toward the future
- * reliably parks EXACTLY at the stop — which is what makes the
- * FOLLOW_SNAP_DEVICE_PX follow re-engage trivially hittable.
- */
+/** The hard right end stop for user-driven views: the right edge never passes
+ * `now` (span preserved; views already at/before now come back unchanged). */
 export function clampViewToNow(view: TimeView, now: number): TimeView {
   if (view.end <= now) return view;
   return { start: now - (view.end - view.start), end: now };
 }
 
-/**
- * Static scroll bounds: the earliest time the view may start at and the
- * latest it may end at. Each side is INDEPENDENT — a null side is
- * unbounded, so `{ min, max: null }` limits how far back the user can
- * scroll while the right edge still tracks the live clock, and
- * `{ min: null, max }` freezes the right edge over an unlimited past.
- */
+/** Static scroll bounds: the earliest time the view may start at and the
+ * latest it may end at. */
 export interface TimeBounds {
   min: number | null;
   max: number | null;
@@ -198,12 +149,8 @@ export function clampViewToBounds(view: TimeView, bounds: TimeBounds): TimeView 
   return out;
 }
 
-/**
- * The widest span `bounds` can show, for a zoom clamp: the distance
- * between two finite stops, else `maxSpan`. Never below `minSpan` — a
- * bounded range narrower than the hard zoom floor still zooms to the
- * floor, and clampViewToBounds then parks that window over the range.
- */
+/** The widest span `bounds` can show, for a zoom clamp: the distance between finite stops, else `maxSpan`. Never below `minSpan` — a bounded range narrower than the hard zoom floor still zooms to the floor, and clampViewToBounds then parks that
+ * window over the range. */
 export function boundedMaxSpan(bounds: TimeBounds, maxSpan = MAX_SPAN_MS, minSpan = MIN_SPAN_MS): number {
   const { min, max } = bounds;
   if (min === null || max === null || !Number.isFinite(min) || !Number.isFinite(max)) return maxSpan;
@@ -254,11 +201,7 @@ export function fitSpanView(start: number | Date, end: number | Date, pad = 0.05
   return { start: lo - span * p, end: hi + span * p };
 }
 
-/**
- * Normalize a WheelEvent delta to pixels. deltaMode 0 (pixel) passes
- * through 1:1; 1 (line) and 2 (page) — discrete wheels — convert via the
- * given heights. Non-finite deltas normalize to 0.
- */
+/* */
 export function wheelDeltaToPixels(delta: number, deltaMode: number, lineHeight = 16, pageHeight = 800): number {
   if (!Number.isFinite(delta)) return 0;
   if (deltaMode === 1) return delta * lineHeight;
@@ -269,11 +212,8 @@ export function wheelDeltaToPixels(delta: number, deltaMode: number, lineHeight 
 /** Pixels of zoom wheel per doubling of the scale. */
 export const ZOOM_PX_PER_DOUBLE = 260;
 
-/**
- * Continuous exponential zoom factor for a wheel delta in pixels: negative
- * (scroll up / pinch out) zooms in. ZOOM_PX_PER_DOUBLE px doubles the scale,
- * so factors compose exactly: f(a) * f(b) === f(a + b).
- */
+/** Continuous exponential zoom factor for a wheel delta in pixels: negative
+ * (scroll up / pinch out) zooms in. */
 export function zoomFactorForWheel(deltaPx: number): number {
   return Math.pow(2, -deltaPx / ZOOM_PX_PER_DOUBLE);
 }
@@ -290,41 +230,24 @@ export interface WheelInput {
 
 /** Where a wheel gesture's energy goes (all deltaMode-normalized pixels). */
 export interface WheelRoute {
-  /** Zoom (ctrl/meta + wheel), from the vertical delta. 0 = no zoom. */
+  /** Zoom (ctrl/meta + wheel), from the vertical delta. */
   zoomPx: number;
   /** Horizontal time pan. */
   panPx: number;
   /** Vertical lane-stack scroll. */
   laneScrollPx: number;
-  /**
-   * False = the chart takes NOTHING from this event — the caller must not
-   * preventDefault, so the page scrolls normally over the chart. True the
-   * moment any axis routes somewhere (preventDefault the whole event; a
-   * diagonal gesture's unconsumed axis is dropped, never half-forwarded).
-   */
+  /** False = the chart takes NOTHING from this event — the caller must not preventDefault. */
   consumed: boolean;
 }
 
-/**
- * Direction-aware lane-stack scrollability: whether the stack can move
- * up (toward earlier lanes; scroll offset > 0) and/or down (offset <
- * max) RIGHT NOW. Feeding this — rather than a bare overflow bit — is
- * what lets a plain vertical wheel scroll an overflowing stack IN PLACE
- * while still handing the page every wheel the stack cannot use (the
- * standard nested-scroller contract).
- */
+/** Direction-aware lane-stack scrollability: whether the stack can move up
+ * (toward earlier lanes. */
 export interface LaneScrollable {
   up: boolean;
   down: boolean;
 }
 
-/**
- * routeWheel/WheelGestureRouter's lane-stack input: the legacy boolean
- * ("lanes overflow" — vertical wheels then NEVER consumed, the pinned
- * page-scroll-always-wins behavior) or the direction-aware LaneScrollable
- * form, which additionally lets vertical-dominant wheels scroll the stack
- * while it can actually move in the wheel's direction.
- */
+/** routeWheel/WheelGestureRouter's lane-stack input: the boolean. */
 export type LaneScrollInput = boolean | LaneScrollable;
 
 /** Whether the stack overflows at all — gates the minor-dy nudge inside a
@@ -333,9 +256,8 @@ function laneOverflows(lanes: LaneScrollInput): boolean {
   return typeof lanes === 'boolean' ? lanes : lanes.up || lanes.down;
 }
 
-/** Whether the stack can take a vertical delta: moves in dy's direction
- * with headroom. Always false for the legacy boolean form (vertical
- * wheels then belong to the page unconditionally) and for a zero dy. */
+/** Whether the stack can take a vertical delta: moves in dy's direction with
+ * headroom. */
 function laneCanTake(lanes: LaneScrollInput, dy: number): boolean {
   if (typeof lanes === 'boolean') return false;
   if (dy > 0) return lanes.down;
@@ -343,35 +265,10 @@ function laneCanTake(lanes: LaneScrollInput, dy: number): boolean {
   return false;
 }
 
-/**
- * Route a wheel/trackpad gesture: ctrl/meta+wheel zooms (always consumed —
+/** Route a wheel/trackpad gesture: ctrl/meta+wheel zooms (always consumed —
  * a pinch stream must never leak browser page-zoom, even on a zero-delta
  * tick); shift+wheel pans time (a vertical wheel pans horizontally);
- * otherwise the DOMINANT axis decides. Horizontal-dominant (|dx| > |dy|):
- * deltaX pans time — consumed — and the gesture's minor vertical
- * component still nudges the lane stack when it overflows the host (a
- * diagonal two-finger pan moves both axes; the event is consumed either
- * way, so nothing is half-forwarded). Vertical-dominant — ties included —
- * follows the NESTED-SCROLLER contract when given the direction-aware
- * LaneScrollable form: the stack takes the wheel (consumed,
- * laneScrollPx = dy) exactly while it can actually move in the wheel's
- * direction, and the moment it cannot — at its edge, or no overflow —
- * the event routes NOTHING and the page scrolls normally, so a tall lane
- * stack is scrollable in place and the page is always reachable past it.
- * With the legacy boolean overflow form, vertical-dominant NEVER
- * consumes, whether or not the lanes overflow — the pinned behavior that
- * keeps mere overflow from eating page scroll (an overflowing stack once
- * captured plain deltaY unconditionally, which ate the page's vertical
- * scroll on exactly the busy charts that always overflow; the
- * direction-aware form cannot regress into that, because consumption
- * requires headroom, which scrolling exhausts).
- *
- * This is the PER-EVENT rule — exact for a FRESH/ISOLATED event. A real
- * trackpad swipe is a STREAM of events whose jittery minority are
- * individually opposite-dominant, so the element routes streams through
- * WheelGestureRouter, which applies this rule to a gesture's first
- * decisive event and then holds that axis for the whole stream.
- */
+ * otherwise the DOMINANT axis decides. */
 export function routeWheel(e: WheelInput, lanes: LaneScrollInput): WheelRoute {
   const dx = wheelDeltaToPixels(e.deltaX, e.deltaMode);
   const dy = wheelDeltaToPixels(e.deltaY, e.deltaMode);
@@ -387,39 +284,10 @@ export function routeWheel(e: WheelInput, lanes: LaneScrollInput): WheelRoute {
   return { zoomPx: 0, panPx: dx, laneScrollPx: laneOverflows(lanes) ? dy : 0, consumed: true };
 }
 
-/** The three wheel-routing outcomes, without magnitudes (see classifyWheel). */
+/** Those wheel-routing outcomes, without magnitudes (see classifyWheel). */
 export type WheelClass = 'zoom' | 'pan' | 'passthrough';
 
-/**
- * classifyWheel(e): the routing decision without magnitudes.
- *   'zoom'        iff e.ctrlKey || e.metaKey                       (always consumed, even zero-delta)
- *   'pan'         iff (e.shiftKey && (dyPx || dxPx) !== 0)         (shift-pan: dy first, else dx — Chrome vs Firefox)
- *                  || (!mods && |dxPx| > |dyPx|)                   (horizontal-dominant; implies dxPx !== 0)
- *   'passthrough' otherwise — vertical-dominant (ties included), shift with all-zero deltas,
- *                  or an all-zero unmodified tick. NEVER preventDefault on 'passthrough'.
- * where dxPx/dyPx = wheelDeltaToPixels(delta, e.deltaMode) — classification happens
- * AFTER deltaMode normalization so a line-mode (Firefox mouse) wheel classifies
- * identically to its pixel-mode equivalent.
- *
- * A readability/test wrapper over routeWheel's `consumed` contract — the
- * pinned invariant (see the test suite): for all e and every lanes input
- * o that gives the stack no vertical headroom (the legacy boolean form,
- * or a LaneScrollable with neither direction available),
- * routeWheel(e, o).consumed === (classifyWheel(e) !== 'passthrough').
- * The lanes input deliberately has NO input here: mere OVERFLOW must
- * never influence consumption — an overflowing lane stack capturing
- * plain vertical wheels unconditionally is exactly the regression this
- * pins out. (The direction-aware LaneScrollable form consumes vertical
- * wheels ONLY while the stack has headroom in the wheel's direction —
- * headroom that scrolling exhausts — which is a scroll TARGET decision,
- * not the overflow capture: classifyWheel stays the no-headroom table.)
- *
- * Like routeWheel, this describes a FRESH/ISOLATED event only: within a
- * live gesture, WheelGestureRouter's axis lock governs consumption, so a
- * 'passthrough'-classed jitter event inside a locked-horizontal stream IS
- * consumed (and a 'pan'-classed one inside a locked-vertical stream is
- * NOT).
- */
+/** classifyWheel(e): the routing decision without magnitudes. */
 export function classifyWheel(e: WheelInput): WheelClass {
   if (e.ctrlKey || e.metaKey) return 'zoom';
   const dx = wheelDeltaToPixels(e.deltaX, e.deltaMode);
@@ -428,97 +296,18 @@ export function classifyWheel(e: WheelInput): WheelClass {
   return Math.abs(dx) > Math.abs(dy) ? 'pan' : 'passthrough';
 }
 
-/**
- * Milliseconds of unmodified-wheel silence that ends a gesture: an
- * unmodified event arriving more than this after the previous unmodified
- * event classifies FRESH (per routeWheel's dominant-axis rule) instead of
- * inheriting the stream's axis lock. Sized between one momentum-tail
- * event spacing (well under it at ~16ms cadence, and still over the
- * sparse tail ticks) and a deliberate pause before a new gesture.
- */
+/** Milliseconds of unmodified-wheel silence that ends a gesture. */
 export const WHEEL_GESTURE_GAP_MS = 200;
 
-/**
- * Mid-gesture decisive-flip re-lock thresholds: the opposite axis must
- * beat the locked axis by MORE than the ratio AND carry at least the
- * pixel floor. The floor is sized above any proportional swipe jitter
- * (a mostly-horizontal swipe's vertical wobble rides at ~5-15px against
- * ~120px of dx, and shrinks with the swipe through the momentum tail)
- * but under a single deliberate scroll tick (~50-150px trackpad, 48px
- * for a 3-line discrete wheel).
- */
+/** Mid-gesture decisive-flip re-lock thresholds: the opposite axis must beat the locked axis by MORE than the ratio AND carry. */
 export const WHEEL_AXIS_FLIP_RATIO = 2;
 export const WHEEL_AXIS_FLIP_MIN_PX = 24;
 
-/**
- * Stream-level wheel router: routeWheel's per-event table plus a GESTURE
- * AXIS LOCK. A physical trackpad swipe arrives as a STREAM of wheel
- * events, and the jittery minority inside a mostly-horizontal swipe are
- * individually vertical-dominant (dx -4, dy 10 at gesture edges and
- * momentum tails) — per-event routing let each of those through to the
- * page, so a horizontal chart pan crept the page vertically; and
- * symmetrically, a page scroll's horizontal-dominant jitter nudged the
- * chart sideways. The first decisive unmodified event of a gesture LOCKS
- * the stream's axis:
- *
- *   'h' (|dx| > |dy|): EVERY unmodified event in the gesture is consumed
- *       — dx pans time and dy nudges the lane stack when it overflows
- *       (the per-event horizontal-dominant route, applied stream-wide),
- *       so the incidental vertical component never reaches the page.
- *   'v' (ties included): the gesture's TARGET latches from the lane
- *       stack's scrollability at lock time (routeWheel's nested-scroller
- *       rule). Stack can move in the initial direction → a LANE-SCROLL
- *       gesture: every unmodified event is consumed with
- *       laneScrollPx = dy for the rest of the gesture (the element clamps
- *       at the edges — hitting an edge mid-swipe does NOT hand the tail
- *       to the page, exactly the browser's own scroll-latching behavior;
- *       the NEXT gesture re-evaluates and passes through). Stack cannot
- *       move that way (at its edge, no overflow, or the legacy boolean
- *       input) → a PAGE gesture: NOTHING is consumed for the rest of the
- *       gesture — the page scrolls, and a horizontal-jitter event never
- *       pans the chart.
- *
- * A gap of more than WHEEL_GESTURE_GAP_MS since the gesture's last
- * unmodified event ends it; the next unmodified event re-classifies
- * fresh (a deliberate axis change usually comes with a natural pause).
- * Zero-delta unmodified ticks route nothing and neither start, extend,
- * nor reset a gesture. Modifier events (ctrl/meta zoom, shift pan) route
- * exactly as routeWheel and neither read nor extend the lock — a pinch
- * mid-scroll is its own intent, and the surrounding gesture survives it
- * (unless the modifier hold itself outlasts the gap, which is a real
- * pause).
- *
- * DECISIVE-FLIP RE-LOCK: a mid-gesture event whose OPPOSITE axis beats
- * the locked one by more than WHEEL_AXIS_FLIP_RATIO with at least
- * WHEEL_AXIS_FLIP_MIN_PX of magnitude re-locks the gesture to that axis
- * on the spot. The magnitude floor is what keeps jitter from flipping:
- * a swipe's incidental minor axis is proportional to its major one
- * (dy ~8 against dx ~120), so a proportional wobble can never clear the
- * floor AND the ratio at once, while a genuine direction change (a full
- * ~100px vertical tick mid-h-stream) flips immediately. The case that
- * makes this load-bearing rather than polish: a page scroll carries a
- * SECOND chart under the cursor mid-stream, and the first event its
- * fresh router happens to see is a horizontal-dominant jitter event —
- * without the flip that chart locks 'h' and eats the rest of the page's
- * scroll (browser-verified on the two-chart showcase).
- *
- * Pure with respect to time: `ts` is the caller's clock — the element
- * passes e.timeStamp; tests drive it explicitly — and the router never
- * reads Date.now(). Pinned invariant (see the test suite): a FRESH
- * router routes any single event exactly like routeWheel, so the
- * per-event behavior table above stays the isolated-event contract.
- */
+/** Stream-level wheel router: routeWheel's per-event table plus a GESTURE AXIS
+ * LOCK. */
 export class WheelGestureRouter {
   private axis: 'h' | 'v' | null = null;
-  /**
-   * A 'v'-locked gesture's latched target: true = the lane stack (every
-   * unmodified event consumed, laneScrollPx = dy, the element clamps at
-   * edges), false = the page (nothing consumed). Latched from
-   * scrollability when the 'v' lock is taken — at gesture start or on a
-   * decisive flip — and held for the whole gesture, so a stack that hits
-   * its edge mid-swipe never janks the tail into page scroll; the next
-   * gesture re-evaluates against fresh scrollability.
-   */
+  /** A 'v'-locked gesture's latched target: true = the lane stack. */
   private vLane = false;
   private lastTs = -Infinity;
 
@@ -534,9 +323,7 @@ export class WheelGestureRouter {
     const dy = wheelDeltaToPixels(e.deltaY, e.deltaMode);
     if (dx === 0 && dy === 0) return { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false };
     if (this.axis === null || ts - this.lastTs > WHEEL_GESTURE_GAP_MS) {
-      // Fresh gesture: the per-event dominant-axis rule locks the stream,
-      // and a 'v' lock latches its target (lane stack vs page) from the
-      // stack's CURRENT scrollability in the initial direction.
+      // Fresh gesture: the per-event dominant-axis rule locks the stream.
       this.axis = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
       if (this.axis === 'v') this.vLane = laneCanTake(lanes, dy);
     } else if (this.axis === 'h' && Math.abs(dy) > WHEEL_AXIS_FLIP_RATIO * Math.abs(dx) && Math.abs(dy) >= WHEEL_AXIS_FLIP_MIN_PX) {
@@ -558,39 +345,10 @@ export class WheelGestureRouter {
 
 /** Fraction of the span "now" sits in from the right edge while following. */
 export const FOLLOW_LEAD_FRAC = 0.02;
-/**
- * A gesture ending with the right edge within this many DEVICE pixels
- * (literal screen pixels — at dpr 2 this is 1 CSS px) of the `now` end
- * stop re-engages follow.
- */
+/* */
 export const FOLLOW_SNAP_DEVICE_PX = 2;
 
-/**
- * Whether follow-now is engaged after a user-driven viewport change.
- *
- * A PURE PAN that moves the right edge backward (into the past) always
- * disengages. This is load-bearing for trackpads: a two-finger pan arrives
- * as many small wheel events, and an unconditional magnetic rule re-pinned
- * the view after every event smaller than the snap zone — making it
- * impossible to leave "now" by scrolling. While ALREADY following, any
- * other NON-ZOOM gesture stays pinned (a forward pan at the stop stays
- * live). ZOOM gestures never inherit the pin: the element passes
- * `wasFollowing: false` for them, because during a zoom the
- * cursor-anchored view must beat the now pin (the pin kept only the
- * zoomed SPAN and re-derived the position from `now`, anchoring
- * wheel/pinch zoom at the now marker instead of the cursor) — so a zoom
- * re-earns follow through the same snap rule as any fresh gesture: an
- * anchored zoom-in that pulls the right edge out of the snap zone parks
- * with the anchor intact, while one that stays at the live edge (or a
- * zoom-out pressing into the end stop) keeps following. While NOT
- * following, a gesture re-engages only when the right edge lands within
- * FOLLOW_SNAP_DEVICE_PX DEVICE pixels of the `now` end stop — pass the
- * view's ms-per-DEVICE-pixel scale (span / (plotWidthCss * dpr)). The
- * zone is deliberately tiny (the old span-fraction zone re-docked views
- * that merely got NEAR the edge): user views hard-stop at now
- * (clampViewToNow), so a forward drag parks exactly at the stop and
- * reliably re-docks, while a view parked 3+ device px short stays put.
- */
+/** Whether follow-now is engaged after a user-driven viewport change. */
 export function followAfterGesture(
   wasFollowing: boolean,
   prevEnd: number,
@@ -606,29 +364,13 @@ export function followAfterGesture(
 
 // -- Follow-lead easing ---------------------------------------------------------------
 
-/**
- * Duration of the follow-lead ease (ms): engaging follow ramps the lead in
- * from where the gesture parked, and a backward-pan disengage glides any
- * residual lead back out — both over this window, instead of teleporting
- * the view by span * FOLLOW_LEAD_FRAC in a single frame (~2% of the plot
- * width — 50+ device px on a wide monitor).
- */
+/** Duration of the follow-lead ease (ms): engaging follow ramps the lead in from where the gesture parked. */
 export const FOLLOW_LEAD_TWEEN_MS = 200;
 /** Duration of the jump-to-now glide (ms): fast, deliberate — but continuous. */
 export const JUMP_TO_NOW_TWEEN_MS = 250;
 
-/**
- * The eased follow lead `elapsedMs` into a glide from `fromFrac` toward
- * `targetFrac` over `tweenMs`. Leads are FRACTIONS of the span (like
- * FOLLOW_LEAD_FRAC) — dimensionless, so zooming mid-glide rescales the
- * lead with the span exactly like the steady-state lead does. easeOutQuad
- * (the LAYOUT_TWEEN family): monotone from → target with no overshoot,
- * the per-tick step is bounded by |target - from| * 2 * dt / tweenMs (the
- * no-teleport guarantee — the ease's steepest slope is at t=0), and it
- * lands EXACTLY on the target at elapsed >= tweenMs (no asymptote). A
- * non-positive tweenMs snaps straight to the target — the
- * prefers-reduced-motion path.
- */
+/** The eased follow lead `elapsedMs` into a glide from `fromFrac` toward
+ * `targetFrac` over `tweenMs`. */
 export function followLeadAt(fromFrac: number, targetFrac: number, elapsedMs: number, tweenMs: number): number {
   if (!(tweenMs > 0) || !(elapsedMs < tweenMs)) return targetFrac;
   if (!(elapsedMs > 0)) return fromFrac;
@@ -636,15 +378,8 @@ export function followLeadAt(fromFrac: number, targetFrac: number, elapsedMs: nu
   return fromFrac + (targetFrac - fromFrac) * p * (2 - p);
 }
 
-/**
- * The lead fraction a user gesture legitimately holds: its own end
- * relative to `now`, capped at `maxFrac` — the lead the view was already
- * allowed (a gesture may consume lead or park behind now, never mint
- * lead). ENGAGE seeds the ease-in from this (a gesture parked at/just
- * short of the now stop seeds ≈ 0; a jump-to-now from deep in the past
- * seeds very negative — the glide crosses the gap); DISENGAGE floors it
- * at 0 for the residual that glides back out.
- */
+/** The lead fraction a user gesture legitimately holds: its own end relative
+ * to `now`. */
 export function gestureLeadFrac(endMs: number, now: number, span: number, maxFrac: number): number {
   if (!(span > 0)) return Math.min(0, maxFrac);
   return Math.min((endMs - now) / span, maxFrac);
@@ -652,51 +387,30 @@ export function gestureLeadFrac(endMs: number, now: number, span: number, maxFra
 
 // -- Feed staleness ---------------------------------------------------------------
 
-/**
- * Default ms without fresh data before a live chart declares its feed
- * STALE (the element's `staleAfterMs`). Tune to ~2 poll intervals of the
- * consumer's live feed; a non-finite or non-positive value disables
- * staleness entirely (static, never-fed datasets).
- */
+/** Default ms without fresh data before a live chart declares its feed STALE (the element's `staleAfterMs`). */
 export const STALE_AFTER_DEFAULT_MS = 10_000;
 
-/**
- * Whether the live feed is stale: fresh data last arrived at `lastFresh`
+/** Whether the live feed is stale: fresh data last arrived at `lastFresh`
  * (null = no data has EVER arrived — an empty chart is never stale) and
- * more than `staleAfterMs` has since passed. The guard against a chart
- * misrepresenting state when its feed silently dies: a finished run whose
- * end never arrived would otherwise render as "running" forever.
- */
+ * more than `staleAfterMs` has since passed. */
 export function feedIsStale(now: number, lastFresh: number | null, staleAfterMs: number): boolean {
   if (lastFresh === null || !Number.isFinite(staleAfterMs) || staleAfterMs <= 0) return false;
   return now - lastFresh > staleAfterMs;
 }
 
-/**
- * The LIVE EDGE every live semantic advances to — ongoing (end = null)
- * bar ends, the now line, the follow-mode pin, and the user-view forward
- * clamp: real `now` while the feed is fresh, FROZEN at `lastFresh` once
- * stale. Once stale the chart never extrapolates past the last timestamp
- * the data actually vouched for — frozen bars can only be honest. (The
- * element eases the transition between the two targets with followLeadAt;
- * this is the steady-state value.)
- */
+/** The LIVE EDGE every live semantic advances to — ongoing (end = null) bar
+ * ends, the now line, the follow-mode pin, and the user-view forward clamp. */
 export function liveEdgeTarget(now: number, lastFresh: number | null, staleAfterMs: number): number {
   return feedIsStale(now, lastFresh, staleAfterMs) ? (lastFresh as number) : now;
 }
 
 // -- Whole-pixel scrolling ------------------------------------------------------------
 
-/**
- * Snap a view's ORIGIN to the device-pixel grid, span preserved: with the
+/** Snap a view's ORIGIN to the device-pixel grid, span preserved: with the
  * snapped view, any fixed time's x keeps a constant subpixel phase, so a
- * moving viewport translates the whole scene in WHOLE device-pixel steps
- * and bars keep exact relative offsets. This is the ONE place rounding may
- * touch time→x. Rounding per element instead makes neighboring bars round
- * in different directions as a fractional translation slides under them —
- * they visibly jiggle relative to each other. Snapping happens in DEVICE
- * pixels (dpr-aware) so HiDPI displays don't land on half pixels.
- */
+ * moving viewport translates the whole scene in WHOLE device-pixel steps and
+ * bars keep exact relative offsets. This is the place rounding may touch
+ * time→x. */
 export function snapViewToDevicePixels(view: TimeView, plotWidthCss: number, dpr: number): TimeView {
   const span = view.end - view.start;
   const msPerDevPx = span / (plotWidthCss * dpr);
@@ -705,39 +419,15 @@ export function snapViewToDevicePixels(view: TimeView, plotWidthCss: number, dpr
   return { start, end: start + span };
 }
 
-/**
- * Snap a CSS-px coordinate to the nearest WHOLE device pixel — for TEXT
- * draw origins only. Glyphs rasterize sharpest when their origin sits on
- * the device-pixel grid (a fractional baseline smears every horizontal
- * stroke across two pixel rows as gray), and text — unlike bar
- * geometry — tolerates per-element rounding: nothing tiles against a
- * label, so the at-most-half-device-px step during scrolls/tweens reads
- * as stepping, never as neighbors jiggling. Geometry keeps the single
- * global view-origin rounding (snapViewToDevicePixels); never round bars
- * per element.
- */
+/** Snap a CSS-px coordinate to the nearest WHOLE device pixel — for TEXT
+ * draw origins only. */
 export function snapTextOrigin(v: number, dpr: number): number {
   if (!Number.isFinite(v) || !(dpr > 0)) return v;
   return Math.round(v * dpr) / dpr;
 }
 
-/**
- * The now line's x (CSS px, `gutterX` offset included), snapped to the
- * device-pixel grid + half a device px (a crisp 1px stroke). Computed
- * against the RAW view — deliberately NOT the snapViewToDevicePixels
- * render view all scene geometry uses: while follow-now pins the view,
- * `now` sits at a FIXED fraction of the raw view's span, so this x is
- * frame-to-frame CONSTANT; routing it through the snapped view instead
- * re-adds the origin's per-frame quantization error (±half a device px),
- * which flips the rounded x between adjacent device pixels as the view
- * slides — the now line visibly wiggles while everything else scrolls
- * smoothly. On a parked (static) view the two computations differ only by
- * a constant sub-device-px offset, so the line just steps whole device
- * pixels as the clock advances. Scene geometry must keep the snapped
- * render view (bars are SCENE-anchored and must translate together); the
- * now line alone is VIEWPORT-anchored, which is why it alone reads the
- * raw view. Degenerate dpr passes the unsnapped x through.
- */
+/** The now line's x (CSS px, `gutterX` offset included), snapped to the
+ * device-pixel grid + half a device px (a crisp 1px stroke). */
 export function nowLineX(now: number, view: TimeView, gutterX: number, plotWidthCss: number, dpr: number): number {
   const x = gutterX + timeToX(now, view, plotWidthCss);
   if (!Number.isFinite(x) || !(dpr > 0)) return x;
@@ -746,10 +436,7 @@ export function nowLineX(now: number, view: TimeView, gutterX: number, plotWidth
 
 // -- Time ticks --------------------------------------------------------------------
 
-/**
- * The tick ladder, in ms: 1/2/5-style steps through ms, then the natural
- * time subdivisions (10/15/30 s and min, 1/2/3/6/12 h), then days/weeks.
- */
+/* */
 export const TIME_TICK_STEPS: readonly number[] = [
   1, 2, 5, 10, 20, 50, 100, 200, 500,
   1_000, 2_000, 5_000, 10_000, 15_000, 30_000,
@@ -789,8 +476,8 @@ export function timeTicks(view: TimeView, maxTicks: number, tzOffsetMs = 0): num
 /** Civil date parts for a UTC-shifted timestamp (pure, Date-free). */
 interface Civil {
   y: number;
-  mo: number; // 1-12
-  d: number; // 1-31
+  mo: number;
+  d: number;
   h: number;
   mi: number;
   s: number;
@@ -830,13 +517,10 @@ function pad2(n: number): string {
   return n < 10 ? `0${n}` : String(n);
 }
 
-/**
- * Tick label with granularity matched to the step: sub-second steps show
+/** Tick label with granularity matched to the step: sub-second steps show
  * `:SS.mmm`, second steps `HH:MM:SS`, minute/hour steps `HH:MM`, and day+
- * steps `Mon D`. A tick exactly at local midnight labels as the date (the
- * day boundary reads as a date, not '00:00'). Times are rendered in the
- * zone given by `tzOffsetMs` (see timeTicks).
- */
+ * steps `Mon D`. Times are rendered in the zone given by `tzOffsetMs`
+ * (see timeTicks). */
 export function formatTimeTick(t: number, step: number, tzOffsetMs = 0): string {
   const c = civil(t, tzOffsetMs);
   if (step < 86_400_000 && c.dayMs === 0) return `${MONTHS[c.mo - 1]} ${c.d}`;
@@ -928,21 +612,13 @@ function lowestFit(trackEnds: readonly number[], start: number, rows: number): n
   }
 }
 
-/**
- * packTracks over only the items that intersect `view` (a partially
- * visible interval counts; an ongoing one — end null — intersects every
- * window at/after its start). Same deterministic (start, id) ordering and
- * first-fit reuse as packTracks, evaluated over the visible subset only —
- * so one historical parallelism burst stops padding its lane the moment it
- * scrolls out of view. Assignment is a pure function of the visible SET:
- * while the window slides over unchanged overlap, nothing hops tracks.
- * Items outside the view get track -1 (callers keep or cull them);
- * trackCount is >= 1, so a lane with nothing visible collapses to one
- * track. STATELESS — when the visible membership changes, everything
- * reflows into freed tracks; the element rows its lanes through the
- * sticky TrackAllocator below instead, which shares this contract but
- * keeps visible rows pinned across membership churn.
- */
+/** packTracks over only the items that intersect `view` (a partially visible
+ * interval counts; an ongoing one — end null — intersects every window
+ * at/after its start). Same deterministic (start, id) ordering and first-fit
+ * reuse as packTracks, evaluated over the visible subset only — so one
+ * historical parallelism burst stops padding its lane the moment it scrolls
+ * out of view. Assignment is a pure function of the visible SET: while the
+ * window slides over unchanged overlap, nothing hops tracks. */
 export function packVisibleTracks(items: readonly PackItem[], view: TimeView): { tracks: number[]; trackCount: number } {
   const order: number[] = [];
   for (let i = 0; i < items.length; i++) {
@@ -967,44 +643,20 @@ export function packVisibleTracks(items: readonly PackItem[], view: TimeView): {
   return { tracks, trackCount: Math.max(1, trackEnds.length) };
 }
 
-/**
- * Bound on remembered id → track assignments per TrackAllocator (LRU
- * eviction beyond it): generous enough to cover every id a lane plausibly
- * cycles through between revisits, small enough that an unbounded live
- * feed can never grow the memory forever. An evicted id simply re-packs
- * as new on return.
- */
+/** Bound on remembered id → track assignments per TrackAllocator (LRU eviction beyond it). */
 export const TRACK_MEMORY_CAP = 2048;
 
-/**
- * STICKY sub-track allocation for one lane — the STATEFUL counterpart of
+/** STICKY sub-track allocation for one lane — the STATEFUL counterpart of
  * packVisibleTracks, built so rows stop shifting under the viewer as the
  * visible membership churns (panning, live updates):
  *
- * - An item assigned in the PREVIOUS call and still visible KEEPS its
+ * - An item assigned in the call and still visible KEEPS its
  *   track unconditionally (re-verified against the other keepers, so
  *   even an item whose times were live-edited can never create a
  *   same-track overlap).
  * - An item RETURNING after scrolling out gets its remembered track back
  *   when no visible occupant conflicts — best-effort row memory, bounded
- *   by an LRU cap (`memoryCap`, default TRACK_MEMORY_CAP).
- * - Everything else — brand-new arrivals, the rare displaced returner —
- *   takes the LOWEST track with no time overlap among the items placed
- *   this call. Density recovers from the bottom: once a tall burst
- *   scrolls off-screen its high tracks fall out of use and the lane
- *   shrinks to what is still visible, WITHOUT re-rowing anything the
- *   viewer is looking at (a lone survivor parked on a high track holds
- *   its row — and the lane's height — until it leaves the window).
- *
- * Same contract as packVisibleTracks otherwise: tracks[i] aligned to the
- * input (-1 = outside the view; callers keep the previous assignment),
- * trackCount = highest in-use visible track + 1 (>= 1 — an empty window
- * collapses to one track), footprints via PACK_MIN_MS instants and
- * ongoing-blocks-forever, visible same-track items can never overlap in
- * time, and results are deterministic given the same call sequence. A
- * FRESH allocator's first call reproduces packVisibleTracks exactly (no
- * memory yet — pure lowest-free in (start, id) order).
- */
+ *   by an LRU cap (`memoryCap`, default TRACK_MEMORY_CAP). */
 export class TrackAllocator {
   /** id → last assigned track. Map insertion order doubles as LRU recency. */
   private memory = new Map<string, number>();
@@ -1013,10 +665,7 @@ export class TrackAllocator {
   /** Double-buffer partner for `live` (swapped per call — no Set churn). */
   private liveNext = new Set<string>();
   private cap: number;
-  // Per-call scratch, reused across calls (assign runs on the element's
-  // layout path): index lists and the per-track placed footprints as flat
-  // [start, end, …] pairs. The returned `tracks` array is NOT reused —
-  // it is the output contract and callers may hold it.
+  // Per-call scratch, reused across calls (assign runs on the element's layout path).
   private visScratch: number[] = [];
   private returningScratch: number[] = [];
   private freshScratch: number[] = [];
@@ -1040,10 +689,7 @@ export class TrackAllocator {
       const ib = items[b];
       return ia.start - ib.start || (ia.id < ib.id ? -1 : ia.id > ib.id ? 1 : 0);
     });
-    // Per-track footprints placed THIS call — the only conflict authority
-    // (memory is a preference, never proof of fit). placedUsed tracks how
-    // many scratch slots are valid this call; slots clear lazily as the
-    // high-water mark grows.
+    // Per-track footprints placed THIS call — the only conflict authority.
     const placed = this.placedScratch;
     let placedUsed = 0;
     // A multi-row item (a sub-span family) must fit on EVERY row of its run.
@@ -1072,7 +718,6 @@ export class TrackAllocator {
       while (!canPlace(t, s, e, rows)) t++;
       return t;
     };
-    // Pass 1 — keepers: continuously-visible items hold their rows.
     const returning = this.returningScratch;
     const fresh = this.freshScratch;
     returning.length = 0;
@@ -1098,8 +743,7 @@ export class TrackAllocator {
       const it = items[i];
       place(i, lowestFree(it.start, packEnd(it), packRows(it)));
     }
-    // Remember every visible assignment (refreshing LRU recency), then
-    // prune the oldest beyond the cap. `live` double-buffers via swap.
+    // Remember every visible assignment (refreshing LRU recency), then prune the oldest beyond the cap.
     const liveNext = this.liveNext;
     liveNext.clear();
     let maxTrack = -1;
@@ -1221,7 +865,7 @@ export interface LaneMetrics {
 
 /** Computed vertical extents of each lane, in stacked order. */
 export interface LaneLayout {
-  /** Top y of each lane (starting at 0; add the axis offset / scroll externally). */
+  /* */
   tops: number[];
   /** Height of each lane. */
   heights: number[];
@@ -1229,11 +873,8 @@ export interface LaneLayout {
   totalHeight: number;
 }
 
-/**
- * Height of one lane given its track count, at `trackHeight` px per track
- * (defaults to the metrics' normal height). Fractional counts are allowed —
- * they drive the lane-height tween.
- */
+/** Height of one lane given its track count, at `trackHeight` px per track (defaults to the metrics' normal height). Fractional counts are allowed — they drive the
+ * lane-height tween. */
 export function laneHeight(trackCount: number, m: LaneMetrics, trackHeight = m.trackHeight): number {
   const n = Math.max(1, trackCount);
   return m.lanePad * 2 + n * trackHeight + (n - 1) * m.trackGap;
@@ -1265,60 +906,28 @@ export function trackTop(track: number, m: LaneMetrics, trackHeight = m.trackHei
 
 // -- Auto-fit (compact lanes) ----------------------------------------------------------
 
-/**
- * Headroom hysteresis for auto-fit: a demoted lane only re-promotes when
- * the resulting layout would fit with this fraction of the available
- * height to spare, so heights can't flap when hovering at the boundary.
- */
+/** Headroom hysteresis for auto-fit: a demoted lane only re-promotes when the resulting layout would fit with this fraction. */
 export const FIT_HYSTERESIS_FRAC = 0.1;
 
 /** Result of computeAutoFit. */
 export interface FitResult {
   /** Per lane (input order): true = render ALL of that lane's tracks at the compact height. */
   demoted: boolean[];
-  /**
-   * Number of demoted lanes — the hysteresis state. Feed it back as
-   * `prevDemotedCount` on the next evaluation.
-   */
+  /** Number of demoted lanes — the hysteresis state. Feed it back as `prevDemotedCount` on the next evaluation. */
   count: number;
 }
 
-/**
- * The order lanes are demoted to compact in: by visible track count
+/** The order lanes are demoted to compact in: by visible track count
  * DESCENDING (the tallest / most parallel lane first — one compact tall
- * lane recovers the most height), ties broken by LATER display order
- * first — so when two lanes are equally tall, the one further down the
- * chart demotes first and top-of-chart lanes keep their detail longest.
- * Returns lane indices, first-to-demote first. Deterministic for a given
- * count list.
- */
+ * lane recovers the most height). */
 export function demotionOrder(trackCounts: readonly number[]): number[] {
   const order = trackCounts.map((_, i) => i);
   order.sort((a, b) => trackCounts[b] - trackCounts[a] || b - a);
   return order;
 }
 
-/**
- * Auto-fit: decide which lanes render at the compact track height so the
- * lane stack fits `availHeight` (the host's plot height). Evaluate with
- * the NATURAL layout (every lane at the normal track height); while it
- * overflows, demote lanes one at a time in demotionOrder() until the
- * total fits or every lane is compact (if all-compact still overflows,
- * the caller's vertical lane scrolling takes over). Demotion applies to a
- * whole lane — all of its tracks go compact together.
- *
- * Deterministic and oscillation-free: the result is a pure function of
- * (track counts, metrics, heights, prevDemotedCount). Demotion reacts
- * immediately (an overflowing layout never persists), but promotion is
- * hysteretic — a demoted lane is only promoted when the layout stays
- * fitting with `hysteresisFrac` headroom (so all lanes re-promote only
- * once the natural layout fits within availHeight * (1 - hysteresisFrac)).
- * Between the two thresholds the previous demotion COUNT is kept; the
- * demotion SET is always re-derived from the CURRENT counts, so a lane
- * whose parallelism left the window hands its demotion to the now-tallest
- * lane deterministically. `compactTrackHeight` is clamped to at most the
- * normal track height.
- */
+/** Auto-fit: decide which lanes render at the compact track height so the lane stack fits `availHeight` (the host's plot height). Evaluate with the NATURAL layout (every lane at the normal track height); while it overflows, demote lanes one at a time in demotionOrder() until the total fits or every lane is compact (if all-compact still overflows, the caller's vertical lane scrolling takes over). Demotion applies to a whole lane — all of its tracks go compact together. Deterministic and oscillation-free: the result is a pure function of (track counts, metrics, heights, prevDemotedCount). Between both thresholds the demotion COUNT is kept; the demotion SET is always re-derived from the CURRENT counts, so
+ *a lane whose parallelism left the window hands its demotion to the now-tallest lane deterministically. `compactTrackHeight` is clamped to at most the normal track height. */
 export function computeAutoFit(
   trackCounts: readonly number[],
   m: LaneMetrics,
@@ -1339,8 +948,7 @@ export function computeAutoFit(
     total += hN;
     savings[i] = hN - laneHeight(trackCounts[i], m, compact);
   }
-  // kMin: fewest demotions (in order) that fit availHeight. kHead: fewest
-  // that fit with headroom (>= kMin). Both saturate at nLanes.
+  // kMin: fewest demotions (in order) that fit availHeight. kHead: fewest that fit with headroom (>= kMin).
   const headAvail = availHeight * (1 - hysteresisFrac);
   let kMin = total <= availHeight ? 0 : nLanes;
   let kHead = total <= headAvail ? 0 : nLanes;
@@ -1350,8 +958,7 @@ export function computeAutoFit(
     if (kMin === nLanes && running <= availHeight) kMin = k;
     if (kHead === nLanes && running <= headAvail) kHead = k;
   }
-  // Hysteresis on the count: demote immediately when overflowing, promote
-  // only as far as keeps the headroom, otherwise keep the previous count.
+  // Hysteresis on the count: demote immediately when overflowing, promote only as far as keeps the headroom.
   const prev = Math.max(0, Math.min(nLanes, Math.floor(prevDemotedCount)));
   const count = prev < kMin ? kMin : prev > kHead ? kHead : prev;
   for (let i = 0; i < count; i++) demoted[order[i]] = true;
@@ -1388,31 +995,16 @@ export function isInstantWidth(widthPx: number, threshold = INSTANT_THRESHOLD_PX
 /** Minimum rendered width (CSS px) for a real-duration bar — clamped up, never demoted to a pip. */
 export const MIN_BAR_PX = 2;
 
-/**
- * Rendered width of [startMs, endMs] mapped through the view's scale,
- * computed from the DURATION alone. This — not a difference of two rounded
- * screen coordinates — is what the bar-vs-pip decision must use: it is
- * exactly invariant under viewport translation, so an event's shape can
- * never flicker while the timeline scrolls (round(xEnd) - round(xStart)
- * oscillates ±1px as the bar's subpixel phase shifts).
- */
+/** Rendered width of [startMs, endMs] mapped through the view's scale,
+ * computed from the DURATION alone. */
 export function durationWidthPx(startMs: number, endMs: number, view: TimeView, plotWidth: number): number {
   const span = view.end - view.start;
   return span > 0 ? ((endMs - startMs) / span) * plotWidth : 0;
 }
 
-/**
- * Which ends of [startMs, endMs] are CLIPPED by the view — the interval's
+/** Which ends of [startMs, endMs] are CLIPPED by the view — the interval's
  * true extent continues off-screen past that edge. Drives the element's
- * edge-continuation shadow. Two deliberate exemptions: an end within half
- * a pixel of the window edge does NOT count (the interval genuinely
- * starts/ends there — and the device-pixel view snap shifts edges by up
- * to a pixel, which must never read as continuation); and a side only
- * counts when the visible part reaches all the way through the shadow
- * zone (`fadePx`), so a barely-poking stub stays a visible stub instead
- * of being swallowed by it. Pass the live edge as `endMs` for ongoing
- * intervals.
- */
+ * edge-continuation shadow. */
 export function edgeContinuation(
   startMs: number,
   endMs: number,
@@ -1431,47 +1023,20 @@ export function edgeContinuation(
 
 // -- Instant clustering ----------------------------------------------------------------
 
-/**
- * Fraction of a pip's width between two drawn pips. Under 1, so a dense
- * run draws its pips OVERLAPPING — packed edge over edge, each still its
- * own diamond, which is what a saturated row of events looks like.
- * Spacing them apart instead would throw away marks the row had room for.
- */
+/* */
 export const CLUSTER_OVERLAP_FRAC = 0.5;
 
-/**
- * Floor on that pitch, in CSS px. Below it the outlines stop resolving
- * and the row smears into one shape — the exact failure the thinning
- * exists to prevent (docs/timeline/zoom-out-never-merges.md).
- */
+/** Floor on that pitch, in CSS px. */
 export const CLUSTER_MIN_PITCH_PX = 3;
 
-/**
- * Default centre-to-centre distance below which two instants cannot both
- * be drawn: half a full-size pip (~12px incl. its stroke). The element
- * overrides it per lane, because a compact lane's pip shrinks to a dot
- * and more of them fit.
- *
- * ONE constant does two jobs, and they are the same job: instants closer
- * than this chain into a cluster, and within a cluster the members are
- * THINNED to exactly this pitch. Marks are dropped to hold it, never
- * widened or merged to close it.
- */
+/** Default centre-to-centre distance below which instants cannot both be drawn: half a full-size pip. */
 export const CLUSTER_PITCH_PX = 12 * CLUSTER_OVERLAP_FRAC;
 
-/**
- * A cluster up to this wide (CSS px) is POINT-LIKE: its members really do
- * sit at one spot, so it draws as the ×N stack glyph. Anything wider
- * spans real time and draws its thinned marks instead — see
- * InstantCluster.
- */
+/** A cluster up to this wide (CSS px) is POINT-LIKE: its members do sit at one spot, so it draws as the ×N stack glyph. */
 export const CLUSTER_STACK_MAX_PX = 12;
 
-/**
- * One drawn mark of a spread cluster — the unit it draws, hit-tests and
- * zooms by. It is one member, drawn as the pip that member always was,
- * standing for the members the thinning dropped after it.
- */
+/** One drawn mark of a spread cluster — the unit it draws, hit-tests and
+ * zooms by. */
 export interface ClusterMark {
   /** The drawn member's timestamp — never a midpoint, never snapped. */
   time: number;
@@ -1484,50 +1049,15 @@ export interface ClusterMark {
 export interface InstantCluster {
   /** Indices into the input array, in (start, id) order. */
   indices: number[];
-  /**
-   * Member start-time extent [first, last] (equal ends when every member
-   * is coincident) — the click-to-zoom target (clusterZoomView) and the
-   * marker anchor (clusterMarkerTime).
-   */
+  /** Member start-time extent [first, last] (equal ends when every member is coincident) — the click-to-zoom target (clusterZoomView). */
   extent: TimeRange;
-  /**
-   * The members THINNED to a drawable pitch, in time order, together
-   * covering every member exactly once. Zooming out drops marks; it
-   * never merges them, so N events can never render as one shape (see
-   * docs/timeline/zoom-out-never-merges.md).
-   */
+  /** The members THINNED to a drawable pitch, in time order, together covering every member exactly once. */
   marks: ClusterMark[];
 }
 
-/**
- * SCALE-AWARE clustering of instant markers: a greedy transitive sweep
- * in time order merges instants whose centers sit within `pitchPx` CSS px
- * of their neighbor at the view's scale — exactly the ones whose pips
- * would overdraw each other — and zooming in progressively splits every
- * cluster until each pip stands at its true timestamp.
- *
- * The chain is maximal: it breaks only at a real gap in the data, never
- * at a width cap, so a cluster is "one visually continuous run of
- * instants" and nothing about it depends on where the sweep started. A
- * run that spans real time is not compacted to a point — it carries
- * `marks`: its members THINNED to `pitchPx`, each at its own true
- * timestamp and each drawn as the pip it always was. Marks are dropped,
- * never merged and never redrawn as some other glyph, so however far out
- * you zoom the run stays a row of separated pips (halve the width, halve
- * the pips) and can never fuse into one shape. The rule and the two ways
- * this has been got wrong: docs/timeline/zoom-out-never-merges.md.
- *
- * Only instants participate: an item must be terminal (end != null — an
- * ongoing interval will grow into a bar) with a duration mapping under
- * `instantPx` (the pip threshold) at this scale. Membership depends only
- * on time DELTAS and the scale — never on the viewport's position — so a
- * pure pan can never change clusters (no jitter), and items beyond the
- * view still cluster, so a group scrolls into view already formed.
- * Clusters have >= 2 members (a lone pip is not a cluster; everything
- * un-clustered gets memberOf -1). Deterministic under input re-ordering:
- * the sweep runs in (start, id) order and indices refer to input
- * positions.
- */
+/** SCALE-AWARE clustering of instant markers: a greedy transitive sweep in time order merges instants whose centers sit within `pitchPx` CSS px of their neighbor at the view's scale — exactly the ones whose pips would overdraw each other — and zooming in progressively splits every cluster until each pip stands at its true timestamp. The chain is maximal: it breaks only at a real gap in the data, never at a width cap, so a cluster is "one visually continuous run of instants" and nothing about it depends on where the sweep started. A run that spans real time is not compacted to a point — it carries `marks`: its members THINNED to `pitchPx`, each at its own true timestamp
+ *and each drawn as the pip it always was. Marks are dropped, never merged and never redrawn as some other glyph, so however far out you zoom the run stays a row of separated pips (halve the width, halve the pips) and can never fuse into one shape. The rule and both ways this has been got wrong: docs/timeline/zoom-out-never-merges.md. Only instants participate: an item must be terminal (end != null — an ongoing interval will grow into a bar) with a duration mapping under `instantPx` (the pip threshold) at this scale. Membership depends only on time DELTAS and the scale — never on the viewport's position — so a pure pan can never change clusters (no jitter), and items
+ *beyond the view still cluster, so a group scrolls into view already formed. Deterministic under input re-ordering: the sweep runs in (start, id) order and indices refer to input positions. */
 export function clusterInstants(
   items: readonly PackItem[],
   view: TimeView,
@@ -1548,10 +1078,7 @@ export function clusterInstants(
     if (it.end == null || it.end - it.start >= instantMaxMs) continue;
     order.push(i);
   }
-  // The element feeds (start, id)-sorted lane arrays, making `order`
-  // already sorted — detect that in O(n) plain compares and skip the
-  // comparator sort (whose closure calls dominated re-cluster frames
-  // during zooms). Unsorted input still sorts exactly as before.
+  // The element feeds (start, id)-sorted lane arrays.
   let sorted = true;
   for (let k = 1; k < order.length; k++) {
     const ia = items[order[k - 1]];
@@ -1568,12 +1095,7 @@ export function clusterInstants(
       return ia.start - ib.start || (ia.id < ib.id ? -1 : ia.id > ib.id ? 1 : 0);
     });
   }
-  // Greedy transitive sweep over `order` as index ranges (no per-bucket
-  // array churn — this runs on the layout hot path): a bucket is
-  // order[bucketStart, oi); it flushes when the next instant's gap from
-  // its predecessor reaches pitchMs — the point where the two pips no
-  // longer collide — and at the end. The same walk thins the bucket to
-  // that same pitch.
+  // Greedy transitive sweep over `order` as index ranges (no per-bucket array churn — this runs on the layout hot path).
   let bucketStart = 0;
   for (let oi = 0; oi <= order.length; oi++) {
     const boundary = oi === order.length || (oi > bucketStart && items[order[oi]].start - items[order[oi - 1]].start >= pitchMs);
@@ -1586,10 +1108,7 @@ export function clusterInstants(
         indices[k] = idx;
         memberOf[idx] = clusters.length;
       }
-      // THIN to the drawable pitch: keep a member only once it clears the
-      // last kept one by a whole mark plus its gap, so drawn marks never
-      // touch. Everything skipped is stood for by the mark before it —
-      // dropped from the picture, never fused into it.
+      // THIN to the drawable pitch: keep a member only once it clears the last kept one by a whole mark plus its gap.
       const marks: ClusterMark[] = [];
       for (let k = 0; k < len; k++) {
         const t = items[indices[k]].start;
@@ -1612,13 +1131,10 @@ export function clusterInstants(
 /** Fraction of the zoomed window a clicked cluster's member extent occupies (centered). */
 export const CLUSTER_ZOOM_FILL_FRAC = 0.6;
 
-/**
- * The view a cluster click zooms to: the member extent centered, filling
+/** The view a cluster click zooms to: the member extent centered, filling
  * CLUSTER_ZOOM_FILL_FRAC of the window, never narrower than `minSpan` —
  * deep enough that the members separate past the join threshold and the
- * cluster SPLITS. Fully coincident members zoom to minSpan and stay one
- * marker: they genuinely share a timestamp, and the tooltip lists them.
- */
+ * cluster SPLITS. */
 export function clusterZoomView(extent: TimeRange, minSpan = MIN_SPAN_MS, fillFrac = CLUSTER_ZOOM_FILL_FRAC): TimeView {
   const dur = Math.max(0, extent.end - extent.start);
   const span = Math.max(fillFrac > 0 ? dur / fillFrac : dur, minSpan);
@@ -1626,27 +1142,20 @@ export function clusterZoomView(extent: TimeRange, minSpan = MIN_SPAN_MS, fillFr
   return { start: mid - span / 2, end: mid + span / 2 };
 }
 
-/**
- * Where a cluster's marker sits, in TIME: the extent midpoint while that
- * fits the window, slid along the visible slice of the extent when the
- * window clips it (the sticky-label pattern — a transitive chain
- * straddling a viewport edge keeps an on-screen marker instead of hiding
- * its members' evidence), and null once no part of the extent is
- * visible. `marginMs` insets the slid marker from the window edges (pass
- * the marker radius in ms) so it stays fully visible. Continuous in the
- * view — panning slides it smoothly, never a jump — and constant (the
- * midpoint) while the extent is fully inside the window.
- */
+/** Where a cluster's marker sits, in TIME: the extent midpoint while that fits
+ * the window, slid along the visible slice of the extent when the window
+ * clips it (the sticky-label pattern — a transitive chain straddling a
+ * viewport edge keeps an on-screen marker instead of hiding its members'
+ * evidence), and null once no part of the extent is visible. `marginMs`
+ * insets the slid marker from the window edges (pass the marker radius in ms)
+ * so it stays fully visible. */
 export function clusterMarkerTime(extent: TimeRange, view: TimeView, marginMs: number): number | null {
   if (extent.end < view.start || extent.start > view.end) return null;
   const mid = (extent.start + extent.end) / 2;
   let lo = Math.max(extent.start, view.start + marginMs);
   let hi = Math.min(extent.end, view.end - marginMs);
   if (lo > hi) {
-    // Margins can cross on a tiny window, a near-point extent, or an
-    // extent about to exit — fall back to the UN-inset visible slice
-    // (never empty once the visibility gate above passed), so the marker
-    // stays continuous and on-screen to the last visible sliver.
+    // Margins can cross on a tiny window, a near-point extent.
     lo = Math.max(extent.start, view.start);
     hi = Math.min(extent.end, view.end);
   }
@@ -1754,13 +1263,7 @@ function clampWindowToExtent(next: TimeView, extent: TimeView): TimeView {
   return next;
 }
 
-/**
- * Grab-the-middle: pan the window by a pointer delta in strip px, span
- * preserved, clamped inside the extent at both ends (a window wider than
- * the whole extent pins to the extent's live end). Pixel-delta based so
- * a drag stays 1:1 under the pointer even while the extent's live end
- * advances mid-drag.
- */
+/** Grab-the-middle: pan the window by a pointer delta in strip px, span preserved, clamped inside the extent at both ends (a window wider than the whole extent pins to the extent's live end). */
 export function minimapPan(view: TimeView, dxPx: number, extent: TimeView, width: number): TimeView {
   if (!(extent.end - extent.start > 0) || !(width > 0)) return { start: view.start, end: view.end };
   return clampWindowToExtent(panView(view, (dxPx * (extent.end - extent.start)) / width), extent);
@@ -1852,16 +1355,13 @@ export interface SegmentHit {
   end: number;
 }
 
-/**
- * The segment PAINTED at time `t` inside an interval's bar: the LAST array
+/** The segment PAINTED at time `t` inside an interval's bar: the LAST array
  * entry covering t (segments draw in order — later overpaints earlier),
  * with the draw path's clamps (start floored to `intervalStart`, null/late
  * end capped to `intervalEnd` — pass the effective end: `end ?? now`).
  * Coverage is half-open [start, end) so shared phase boundaries resolve to
- * the incoming phase, EXCEPT t at the interval's own end still hits a
- * segment ending there (the bar's last pixel must resolve). Null when no
- * segment covers t (the pointer is over the base bar, or off it).
- */
+ * the incoming phase, EXCEPT t at the interval's own end still hits a segment
+ * ending there (the bar's last pixel must resolve). */
 export function segmentAtTime(
   segments: readonly TimelineSegment[] | null | undefined,
   intervalStart: number,
@@ -1901,48 +1401,24 @@ export type StylePattern = 'solid' | 'hatch' | 'stipple' | 'outline';
 /** Rendering treatment for one interval `state` or segment `kind`. */
 export interface IntervalStyle {
   pattern?: StylePattern;
-  /** Multiplies the fill alpha (default 1). */
+  /* */
   alphaScale?: number;
-  /** Multiplies the category chroma/saturation (default 1). */
+  /* */
   saturationScale?: number;
-  /** Multiplies the category lightness (default 1). */
+  /* */
   lightnessScale?: number;
   /** Border treatment; `emphasis: true` uses the theme emphasis color. */
   border?: { width?: number; dash?: number[]; emphasis?: boolean };
   /** Corner glyph: 'bang' is the unmissable failure mark. */
   glyph?: 'none' | 'bang' | 'dot';
-  /**
-   * A DIMMED region: its GEOMETRY — fill, hatching, border — gets the
-   * uniform dimColor transform (50% saturation, 50% value), as if one
-   * filter lay over the section. Label/badge text is deliberately
-   * EXEMPT: it always renders at the full-contrast theme foreground
-   * over a thin counter-color halo (labelHaloColor), so labels stay
-   * readable over dimmed and hatched surfaces at every zoom — deriving
-   * text color from the section produced unreadable grey-on-grey that
-   * flipped with the zoom level.
-   */
+  /* */
   dimmed?: boolean;
 }
 
 /** Named style map: interval `state` / segment `kind` → treatment. */
 export type StyleMap = Record<string, IntervalStyle>;
 
-/**
- * Built-in treatments (consumer keys spread on top via the element's
- * `styles` property): '' solid; 'emphasis'/'failed' unmissable — thick
- * emphasis border + corner bang glyph + stipple, hue untouched;
- * 'dim'/'queued' uniformly dimmed (the `dimmed` flag: 50% saturation,
- * 50% value over fill and border; label text stays full-contrast — see
- * `dimmed`'s doc); 'hatch'/'waiting'
- * 45° stripes, dimmed the same way (a wait is de-emphasized time);
- * 'outline' hollow; 'cancelled' hollow + DASHED category-hue border —
- * reads "stopped, not failed" at a glance: never the emphasis color,
- * never the bang glyph, never a solid success body. (Below dash
- * legibility the element draws a BAR's border solid; the hollow body
- * still separates a tiny cancelled bar from a solid one. Pips are exempt:
- * a cancelled instant keeps a dashed diamond outline, the pattern
- * rescaled to close around the perimeter.)
- */
+/* */
 export const DEFAULT_STYLES: StyleMap = {
   '': { pattern: 'solid' },
   emphasis: { pattern: 'stipple', border: { width: 2, emphasis: true }, glyph: 'bang' },
@@ -1996,19 +1472,9 @@ export function subtractRanges(span: TimeRange, covers: readonly TimeRange[]): T
   return out;
 }
 
-/**
- * The range a consumer may ask `loadRange` about for this viewport: the
- * visible window plus a little backward prefetch, clamped to `now` AND to
- * the covered end. The covered-end clamp is load-bearing: the region
- * between the last covered time and "now" belongs to the consumer's LIVE
- * data feed (setData/mergeData `coverage`), and in follow mode "now"
- * advances every frame — if loadRange could be asked for that forward
- * sliver, a fresh gap would reopen the moment each request settled and the
- * loader would refire serially at ~one request per round-trip (~30/s),
- * forever. loadRange exists for BACKWARD history only. With no coverage at
- * all the probe may still reach `now` (the bootstrap load), which latches
- * once it settles. Returns null when nothing is requestable.
- */
+/** The range a consumer may ask `loadRange` about for this viewport: the
+ * visible window plus a little backward prefetch, clamped to `now` AND to the
+ * covered end. */
 export function historyProbe(view: TimeView, now: number, coveredEnd: number | null, prefetchFrac = 0.15): TimeRange | null {
   const span = view.end - view.start;
   let end = Math.min(view.end, now);
@@ -2019,24 +1485,20 @@ export function historyProbe(view: TimeView, now: number, coveredEnd: number | n
 
 /** Options for CoverageTracker. */
 export interface CoverageOptions {
-  /** Never request less than this much history at once (default 60 s). */
+  /* */
   minChunkMs?: number;
-  /** Fixed delay between retries of a failed load (default 2 s). */
+  /* */
   retryMs?: number;
 }
 
-/**
- * Bookkeeping for `loadRange`-style async history loading. Tracks which
- * time ranges are covered by data the consumer has supplied, which request
- * is in flight (one at a time — no request storms), the exhausted-history
- * boundary, and the fixed retry cadence for rejected loads.
- *
- *   const next = tracker.nextRequest(view, now); // range to fetch, or null
- *   ...call loadRange(next)...                    // tracker marked it in flight
- *   tracker.settle(next, { ok: true });           // → covered
- *   tracker.settle(next, { ok: true, exhausted: true }); // → history ends here
- *   tracker.settle(next, { ok: false });          // → retried ~retryMs later, forever
- */
+/** Bookkeeping for `loadRange`-style async history loading. Tracks which time ranges are
+ * covered by data the consumer has supplied, which request is in flight (one at a time
+ * — no request storms), the exhausted-history boundary, and the fixed retry cadence
+ * for rejected loads. const next = tracker.nextRequest(view, now); // range to fetch, or
+ * null ...call loadRange(next)... // tracker marked it in flight tracker.settle(next, {
+ * ok: true }); // → covered tracker.settle(next, { ok: true, exhausted: true }); //
+ * → history ends here tracker.settle(next, { ok: false }); // → retried ~retryMs
+ * later, forever */
 export class CoverageTracker {
   private covered: TimeRange[] = [];
   private inflight: TimeRange | null = null;
@@ -2073,12 +1535,8 @@ export class CoverageTracker {
     return this.inflight;
   }
 
-  /**
-   * True while a failed load is waiting out the fixed retry cadence
-   * (nothing in flight, next attempt scheduled). Callers driving requests
-   * from a frame loop must keep the loop alive while this is true, or the
-   * retry parks until the next unrelated wakeup.
-   */
+  /** True while a failed load is waiting out the fixed retry cadence (nothing
+   * in flight, next attempt scheduled). */
   waitingRetry(now: number): boolean {
     return this.inflight === null && now < this.retryAt;
   }
@@ -2124,11 +1582,7 @@ export class CoverageTracker {
     if (!this.inflight || this.inflight.start !== range.start || this.inflight.end !== range.end) return;
     this.inflight = null;
     if (!result.ok) {
-      // Fixed cadence, forever: the next attempt is always exactly
-      // retryEvery away — no growth, no attempt cap, no give-up. A growing
-      // backoff quietly converts a transient failure into a permanently
-      // parked gap; a steady short cadence keeps the gap loading (and its
-      // affordance honest) until the consumer's loader recovers.
+      // Fixed cadence, forever: the next attempt is always exactly retryEvery away — no growth, no attempt cap.
       this.retryAt = now + this.retryEvery;
       return;
     }
@@ -2153,45 +1607,24 @@ export const IDLE_BATTERY_FRAME_MS = 100;
 /** Full-rate grace window after the last input — interaction never feels throttled. */
 export const INTERACT_GRACE_MS = 500;
 
-/** ms-per-frame budget for a tier (0 = render every rAF tick). */
+/* */
 export function frameBudgetMs(tier: RenderTier): number {
   if (tier === 'idle') return IDLE_FRAME_MS;
   if (tier === 'idle-battery') return IDLE_BATTERY_FRAME_MS;
   return 0;
 }
 
-/**
- * Frame gate for a rAF loop: render when the tier's budget has elapsed
- * since the last RENDERED frame. The half-tick slack keeps a 33.3ms budget
- * from aliasing down (a 60Hz display ticks at 16.7ms — without slack,
- * 33.3ms would round up to every 3rd tick = 20fps instead of 30).
- */
+/** Frame gate for a rAF loop: render when the tier's budget has elapsed since
+ * the last RENDERED frame. */
 export function shouldRender(nowTs: number, lastRenderTs: number, budgetMs: number, rafIntervalMs = 16.7): boolean {
   if (budgetMs <= 0) return true;
   return nowTs - lastRenderTs >= budgetMs - rafIntervalMs / 2;
 }
 
-/**
- * Draw budget (ms per rendered frame) while the ONLY motion on screen is
+/** Draw budget (ms per rendered frame) while the ONLY motion on screen is
  * CLOCK-driven — the follow-now scroll and ongoing-bar growth. The scene
- * then translates exactly one whole DEVICE pixel per
- * span / (plotWidthCss * dpr) ms, so redrawing any faster produces
- * pixel-identical frames. The effective rate is therefore
- * min(tier fps, device px per second) — expressed here in budget form as
- * max(tierBudgetMs, per-device-pixel period), which makes the tier
- * budget the structural CEILING (the result is never below it, so the
- * chart never draws faster than the pre-existing tier pacing — the
- * interactive tier's 0 budget yields the bare per-pixel period, i.e.
- * min(display rate, px rate)). There is deliberately NO upper cap: a
- * slowly scrolling chart draws exactly at its own per-pixel rate, each
- * 1px step landing the instant it is due — extra frames between steps
- * would be identical, and a fixed wake floor (the retired ~1s clock-wake
- * cap) is precisely what read as stuttery stepping. Delivery is the
- * caller's rAF loop SKIPPING frames against this budget on an even
- * due-time grid — never a timer — so the cadence stays frame-aligned
- * and even. Degenerate geometry (empty/invalid span, no width, bad dpr)
- * falls back to the tier budget: plain pacing, never a bogus throttle.
- */
+ * then translates exactly one whole DEVICE pixel per span / (plotWidthCss *
+ * dpr) ms, so redrawing any faster produces pixel-identical frames. */
 export function clockDrawBudgetMs(view: TimeView, plotWidthCss: number, dpr: number, tierBudgetMs: number): number {
   const span = view.end - view.start;
   const wDev = plotWidthCss * dpr;

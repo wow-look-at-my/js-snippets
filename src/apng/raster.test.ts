@@ -1,5 +1,4 @@
 // Tests for the pure fit maths behind rasterising a source into a frame.
-// `rasterizeToRgba` itself needs a canvas and is left to browser use.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,9 +6,7 @@ import assert from 'node:assert/strict';
 import { clampSize, fitRect } from './raster.ts';
 
 test('contain fits the whole source and centres it', () => {
-  // 2:1 source into a square: full width, half height, centred vertically.
   assert.deepEqual(fitRect(200, 100, 100, 100, 'contain'), { x: 0, y: 25, w: 100, h: 50 });
-  // 1:2 source into a square: full height, half width.
   assert.deepEqual(fitRect(100, 200, 100, 100, 'contain'), { x: 25, y: 0, w: 50, h: 100 });
 });
 

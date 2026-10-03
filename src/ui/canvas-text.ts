@@ -4,26 +4,15 @@
  * A label is an ordered list of TIERS, fullest → most compact. fitTieredText
  * picks the largest tier that fits the available width; when even the last
  * tier overflows, it hard-clips that tier and flags the result `faded` —
- * FadeTextPainter then draws the trailing ~2-3 characters fading to
+ * FadeTextPainter then draws the trailing ~ - characters fading to
  * transparent instead of spending width on an ellipsis. Width comes from an
  * injected MeasureText fn (cached char-width arithmetic, or a memoized
  * ctx.measureText), so fitting stays pure and canvas-free.
- *
- *   const tiers = deriveLabelTiers('wow-look-at-my/gosmopolitan - workflow_job');
- *   // ['wow-look-at-my/gosmopolitan - workflow_job',
- *   //  'gosmopolitan - workflow_job',
- *   //  'gosmopolitan']
- *   const fit = fitTieredText(tiers, availPx, (s) => s.length * charW);
- *   if (fit !== null) {
- *     if (fit.faded) painter.paint(ctx, fit.text, x, y, fit.width, FADE_TAIL_CHARS * charW, fg, halo, 3);
- *     else ctx.fillText(fit.text, x, y);
- *   }
- */
 
 /** Rendered width of `text` in px. Must be monotonic over prefixes of a string. */
 export type MeasureText = (text: string) => number;
 
-/** Fade-tail length in character widths — covers the last ~2-3 characters. */
+/* */
 export const FADE_TAIL_CHARS = 2.5;
 
 /** Default minimum characters a clipped (faded) result keeps; fewer → suppressed. */
@@ -32,7 +21,7 @@ export const MIN_CLIP_CHARS = 3;
 export interface FittedText {
   /** Text to draw: a full tier, or the clipped head of the most compact one. */
   text: string;
-  /** Index of the chosen tier (0 for a plain-string input). */
+  /* */
   tier: number;
   /** True when `text` is clipped and should be drawn with a fade tail. */
   faded: boolean;
@@ -65,7 +54,7 @@ export function deriveLabelTiers(label: string): string[] {
   return tiers;
 }
 
-/** Index of the largest (earliest) non-empty tier that fits `availPx`, or -1. */
+/* */
 export function selectTier(tiers: readonly string[], availPx: number, measure: MeasureText): number {
   for (let i = 0; i < tiers.length; i++) {
     if (tiers[i] !== '' && measure(tiers[i]) <= availPx) return i;
@@ -129,12 +118,7 @@ export function fitTieredText(
   return { text: clipped, tier: lastTier, faded: true, width: measure(clipped) };
 }
 
-/**
- * Draws text whose trailing `fadePx` alpha-fades to transparent. One cached
- * gradient per (color, fade width) spans [0, fadePx] in user space and
- * ctx.translate positions it at each label's trailing edge — no gradient is
- * ever created per label per frame.
- */
+/** Draws text whose trailing `fadePx` alpha-fades to transparent. */
 export class FadeTextPainter {
   private grads = new Map<string, CanvasGradient>();
 

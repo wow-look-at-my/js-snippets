@@ -1,17 +1,4 @@
-// Least-squares infinite-cylinder fit to a 3D point cloud (Eberly's
-// formulation). Pure math, no DOM/GPU.
-//
-// The energy is E(C, W, r) = mean( (|P(X - C)|^2 - r^2)^2 ), where P projects
-// out the axis direction W. For a FIXED W both C and r have a closed form, so
-// the fit reduces to a search over directions alone — that is what makes this
-// tractable and what fitCylinderForAxis exposes on its own.
-//
-// The direction search is a deterministic hemisphere sweep plus a local pattern
-// search. W and -W describe the same cylinder, so half the sphere covers every
-// case. The sweep is what keeps a short, wide cylinder from converging onto the
-// wrong axis: its point cloud is FLAT, so the principal axis of the cloud is
-// perpendicular to the true axis, and a purely local search started there
-// finds a minimum that fits nothing.
+// Least-squares infinite-cylinder fit to a 3D point cloud (Eberly's formulation). Pure math, no DOM/GPU.
 
 import { hammersley, uniformHemisphere } from './sampling.ts';
 import { fitOrthoLine3 } from './least-squares.ts';
@@ -23,7 +10,7 @@ export type CylinderFit = {
   // Unit axis direction.
   axis: Vec3;
   radius: number;
-  // Eberly's energy: mean((|P(X-C)|^2 - r^2)^2). Compare two fits with it.
+  // Compare fits with it.
   error: number;
   // Root mean square of the RADIAL residual |P(X-C)| - r, in point units.
   rms: number;
@@ -33,12 +20,11 @@ export type CylinderFit = {
 };
 
 export type CylinderFitOptions = {
-  // Initial axis guess. Given one, the global sweep is skipped and only the
-  // local search runs — use it to refine a known axis cheaply.
+  // Initial axis guess.
   direction?: Vec3;
-  // Hemisphere directions tried in the global sweep. Default 256.
+  // Hemisphere directions tried in the global sweep.
   directionSamples?: number;
-  // Local pattern-search iterations after the sweep. Default 64.
+  // Local pattern-search iterations after the sweep.
   refineSteps?: number;
   // The local search stops once its angular step falls below this. Default 1e-9.
   tolerance?: number;
@@ -109,7 +95,6 @@ export function fitCylinderForAxis(points: readonly Vec3[], direction: Vec3): Cy
   const projected: Vec3[] = [];
   const sqrLengths: number[] = [];
 
-  // A = mean outer(PY, PY), B = mean |PY|^2 PY, both over mean-centred points.
   const a = [
     [0, 0, 0],
     [0, 0, 0],
@@ -135,9 +120,7 @@ export function fitCylinderForAxis(points: readonly Vec3[], direction: Vec3): Cy
     b[i] /= n;
   }
 
-  // Ahat = -S A S, with S the skew-symmetric cross-product matrix of w. Ahat is
-  // the adjugate-like operator that inverts A inside the plane perpendicular to
-  // w, where the centre offset lives.
+  // Ahat = -S A S, with S the skew-symmetric cross-product matrix of w.
   const s = [
     [0, -w[2], w[1]],
     [w[2], 0, -w[0]],
@@ -225,8 +208,7 @@ function candidateDirections(points: readonly Vec3[], samples: number): Vec3[] {
   if (principal) out.push(principal.direction);
   for (let i = 0; i < samples; i++) {
     const [u, v] = hammersley(i, samples);
-    // u = cos(theta) = 0 is the equator, which uniformHemisphere maps to a
-    // direction in the XY plane. Every hemisphere direction is reachable.
+    // u = cos(theta) = 0 is the equator, which uniformHemisphere maps to a direction in the XY plane.
     out.push(uniformHemisphere(u, v));
   }
   return out;
@@ -270,8 +252,8 @@ function refineDirection(
 }
 
 // Fit an infinite cylinder to the points. Null when the cloud cannot determine
-// one: fewer than 5 points (a cylinder has 5 degrees of freedom), or every
-// candidate axis degenerate.
+// one: a bounded number of points (a cylinder has a few degrees of freedom),
+// or every candidate axis degenerate.
 //
 // The returned axis is infinite; height and extent report how far the DATA
 // reaches along it, so a caller drawing a capped cylinder has the interval.

@@ -1,28 +1,4 @@
 // GPU exclusive prefix scan (Blelloch) over a u32 region of a storage buffer.
-//
-// Layout contract: the input run, the output run, and the scratch region are
-// element-addressed regions of ONE storage buffer. This is deliberate:
-// - a scratch region inside the same buffer (fused layouts) cannot be bound as
-//   a second writable binding — WebGPU rejects overlapping writable ranges;
-// - element-granular bases (u32 indices in a uniform) sidestep the 256-byte
-//   min bind-group offset alignment, so regions can start at ANY element.
-// Callers with a dedicated scratch buffer can simply suballocate: put src/dst
-// and scratch in the same buffer.
-//
-// Shape: createScan(device) compiles the pipelines once per device;
-// GpuScan.prepare(region) bakes a fixed region layout into per-level uniform
-// buffers + bind groups once; PreparedScan.encode(pass) records the dispatches
-// into a CALLER-owned compute pass — so the caller can wrap the scan in its
-// own timestamp-query window and keep issuing dependent dispatches in the same
-// pass — with zero per-frame allocation. Re-prepare only when the layout
-// (buffer identity, count, or region bases) changes.
-//
-// The level math (planScan) is pure and lives in ./scan-plan.ts (re-exported
-// here) so it stays node-testable without the .wgsl import.
-//
-// Limits: workgroups are 256 threads (the WebGPU default limit — no limit
-// bump needed); the whole buffer is bound, so buffer.size must be within
-// maxStorageBufferBindingSize; buffer needs STORAGE usage.
 
 import scanWgsl from './shaders/scan.wgsl';
 import { planScan } from './scan-plan.ts';
@@ -36,12 +12,7 @@ export interface PreparedScan {
   plan: ScanPlan;
   /** ABSOLUTE element index (into the buffer) holding the grand total. */
   grandTotalElem: number;
-  /**
-   * Record the scan's dispatches into an open compute pass. After it returns,
-   * dst[i] = sum of src[0..i) and the grand total is at grandTotalElem (both
-   * visible to later dispatches in the same pass or encoder).
-   * Leaves the pass's pipeline/bind-group 0 changed — reset them after.
-   */
+  /** Record the scan's dispatches into an open compute pass. */
   encode(pass: GPUComputePassEncoder): void;
   /** Destroy the per-level uniform buffers. */
   destroy(): void;
@@ -91,8 +62,8 @@ export function createScan(device: GPUDevice): GpuScan {
   return {
     prepare(region: ScanRegion): PreparedScan {
       const plan = planScan(region.count, maxWg);
-      // Absolute per-level bases: level 0 reads/writes the caller's runs; each
-      // further level scans the previous level's sums in place inside scratch.
+      // Absolute per-level bases: level multiple reads/writes the caller's
+      // runs; each further level scans the level's sums in place inside scratch.
       const uniforms = plan.levels.map((l, i) => {
         const prevSums = i === 0 ? 0 : region.scratchElem + plan.levels[i - 1].sumsBase;
         const src = i === 0 ? region.srcElem : prevSums;

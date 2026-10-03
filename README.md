@@ -6,31 +6,19 @@ Reusable ES modules served via [buildhost](https://github.com/wow-look-at-my/bui
 
 ## `<timeline-view>`
 
-![The timeline-view component: labeled swimlanes of interval bars on a shared time axis, with sub-track packing, hatched wait segments, dashed kill tails, diamond instant pips, a time marker, a minimap and a live edge](docs/timeline-view.png)
+![The timeline-view component: labeled swimlanes of interval bars on a shared time axis, with sub-track packing, hatched wait segments, dashed kill tails. This is diamond instant pips, a time marker, a minimap and a live edge](docs/timeline-view.png)
 
-A canvas-rendered realtime swimlane chart in one custom element — sub-track
-packing, phase segments inside bars, instant pips, async backward history,
-follow-now, trackpad pan/zoom and `--timeline-*` theming. That picture is the
-real component: it is captured from the [showcase gallery](#deploy) by
-`node scripts/screenshot-showcase.mjs`, so it cannot drift into showing a
-chart the code no longer draws.
+A canvas-rendered realtime swimlane chart in one custom element — sub-track packing, phase segments inside bars, instant pips, async backward history, follow-now. This is trackpad pan/zoom and `--timeline-*` theming. That picture is the real component: it is captured from the [showcase gallery](#deploy) by `node scripts/screenshot-showcase.mjs`. As a result, it cannot drift into showing a chart the code no longer draws.
 
 Sub-spans: an interval whose `parentId` names another interval in its lane nests under it, in a boxed block with the parent on top. A sub-span's own sub-spans nest a level deeper. See `docs/timeline/sub-spans.md`.
 
 ## `<dag-view>`
 
-![The dag-view component: a build pipeline drawn as layered boxes joined by arrows, with category colours, hatched and stippled node states, a long edge bending around two layers, and a notice strip naming two edges the graph could not draw](docs/dag-view.png)
+![The dag-view component: a build pipeline drawn as layered boxes joined by arrows, with category colours, hatched and stippled node states. This is a long edge bending layers, and a notice strip naming two edges the graph can not draw](docs/dag-view.png)
 
-A canvas-rendered dependency graph in one custom element — layered
-(Sugiyama) layout, pan/zoom, hover-to-fade-everything-else, search, keyboard
-graph walking and `--dag-*` theming.
+A canvas-rendered dependency graph in one custom element — layered (Sugiyama) layout, pan/zoom, hover-to-fade-everything-else, search. This is keyboard graph walking and `--dag-*` theming.
 
-What it will not do is quietly tidy your data. A circular dependency is
-drawn, dashed and in the emphasis colour, with its arrow still pointing the
-true way; an edge naming a node that does not exist is dropped and
-**counted**. The notice strip says so, and `info` returns the same facts as
-data. Captured from the [showcase gallery](#deploy) by
-`node scripts/check-dag-view.ts --readme`.
+What it will not do is quietly tidy your data. A circular dependency is drawn, dashed and in the emphasis colour, with its arrow still pointing the true way. An edge naming a node that does not exist is dropped and **counted**. The notice strip says so, and `info` returns the same facts as data. Captured from the [showcase gallery](#deploy) by `node scripts/check-dag-view.ts --readme`.
 
 ## Usage
 
@@ -106,15 +94,15 @@ pnpm install
 pnpm build      # ts0 build (type-check + compile src/ -> dist/) + assemble dist/llms.txt
 ```
 
-[ts0](https://github.com/wow-look-at-my/ts0)'s "js" library target compiles every `.ts` under `src/` to a parallel `.js` under `dist/`, preserving structure (`src/webgpu/sky.ts` → `dist/webgpu/sky.js`). Code shared between modules (e.g. `vec3`, used by `mat4`) is deduplicated into a chunk and imported — never copied into both — so you still import a single URL and the browser fetches any shared chunk transitively. WGSL shaders are imported as strings via the `loaders: { ".wgsl": "text" }` field in `ts0.json`. `ts0 build` type-checks first (`tsc --noEmit`), so there is no separate type-check step.
+[ts0](https://github.com/wow-look-at-my/ts0)'s "js" library target compiles every `.ts` under `src/` to a parallel `.js` under `dist/`, preserving structure (`src/webgpu/sky.ts` → `dist/webgpu/sky.js`). Code shared between modules (e.g. `vec3`, used by `mat4`) is deduplicated into a chunk and imported — never copied into both — so you still import a single URL. The browser fetches any shared chunk transitively. WGSL shaders are imported as strings via the `loaders: { ".wgsl": "text" }` field in `ts0.json`. `ts0 build` type-checks first (`tsc --noEmit`), so there is no separate type-check step.
 
-The build also emits a TypeScript declaration sibling for every module — `dist/webgpu/sky.js` gets `dist/webgpu/sky.d.ts` — and deploys carry them to the site at the same URL with the extension swapped (`https://…/js-snippets/ui/timeline-view.d.ts` next to `…/ui/timeline-view.js`), so consumers can fetch types alongside the code. Shared chunks and tests get no declarations.
+The build also emits a TypeScript declaration sibling for every module — `dist/webgpu/sky.js` gets `dist/webgpu/sky.d.ts`. They deploys carry them to the site at the same URL with the extension swapped (`https://…/js-snippets/ui/timeline-view.d.ts` next to `…/ui/timeline-view.js`), so consumers can fetch types alongside the code. Shared chunks and tests get no declarations.
 
 ## Deploy
 
 CI runs on every push (`.github/workflows/deploy.yml`). Every push publishes `dist/` to buildhost sites: `master` → the stable `library` site (the base URL above), any other branch → `library-<branch>` for pre-merge verification.
 
-The legacy GitHub Pages site was unpublished 2026-07-20 in the org-wide GitHub Pages shutdown; buildhost is the only host. The `github.io` origin is dead — do not import from or reintroduce it.
+The legacy GitHub Pages site was unpublished 2026-07-20 in the org-wide GitHub Pages shutdown. Buildhost is the only host. The `github.io` origin is dead — do not import from or reintroduce it.
 
 Branches that touch the timeline chart (`src/ui/`) or `showcase/` also publish a live single-file demo of `<timeline-view>` (fake local data, every visual looping) to buildhost: `https://sites.pazer.build/js-snippets/branch/<branch>/` (`/` in branch names flattened to `-`). The preview is private/token-gated by operator decision — do not add `public: 'true'` to the publish step. Build it locally with `pnpm build:showcase` → `showcase/dist/index.html`.
 

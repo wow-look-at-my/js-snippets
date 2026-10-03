@@ -1,27 +1,14 @@
 // Palette detection for the APNG encoder. Pure — no DOM, no browser APIs.
-//
-// An 8-bit indexed PNG stores one byte per pixel instead of four. For the
-// content animated PNGs are usually made of — UI recordings, pixel art, charts,
-// line drawings — that is a 4x cut before deflate even runs, and deflate does
-// better on the narrower alphabet too. This module only ever detects an EXACT
-// palette: if the frames genuinely use more than 256 distinct RGBA values it
-// gives up and the caller stays on RGBA. Nothing here quantises, so indexing can
-// never change a pixel.
-//
-// Entries are ordered non-opaque first because PNG's tRNS chunk is a prefix of
-// the palette: alpha is stored for entries 0..n-1 and every later entry is
-// implicitly opaque, so grouping the transparent ones up front makes tRNS as
-// short as it can be.
 
-/** An exact RGBA -> index mapping for 8-bit indexed (colour type 3) output. */
+/* */
 export interface Palette {
-  /** Palette entries, 4 bytes (RGBA) each, in index order. */
+  /** Palette entries, a few bytes (RGBA) each, in index order. */
   rgba: Uint8Array;
-  /** Number of entries (1..256). */
+  /* */
   size: number;
-  /** Length of the tRNS prefix: entries [0, trnsCount) have alpha < 255. */
+  /* */
   trnsCount: number;
-  /** Index of a fully transparent entry, or -1 if the palette has none. */
+  /* */
   transparentIndex: number;
   /** Packed-RGBA key -> palette index. */
   lookup: Map<number, number>;
@@ -32,29 +19,18 @@ export function packRgba(r: number, g: number, b: number, a: number): number {
   return ((r << 24) | (g << 16) | (b << 8) | a) >>> 0;
 }
 
-/**
- * Build an exact palette covering every pixel of every image, or return null
- * when they use more than `limit` distinct colours.
- *
- * `reserveTransparent` adds a fully transparent entry when the images do not
- * already contain one — the encoder needs it to write "leave this pixel alone"
- * into a blend_op=OVER frame. It costs one palette slot, so the effective
- * colour budget is `limit - 1` for fully opaque input.
- *
- * Bails out as soon as the distinct-colour count exceeds the budget, so
- * photographic input costs a few thousand pixel reads rather than a full scan.
- */
+/** Build an exact palette covering every pixel of every image, or return null
+ * when they use more than `limit` distinct colours. `reserveTransparent` adds a
+ * fully transparent entry when the images do not already contain one — the
+ * encoder needs it to write "leave this pixel alone" into a blend_op=OVER frame.
+ * It costs one palette slot, so the effective colour budget is `limit - 1` for
+ * fully opaque input. */
 export function buildPalette(
   images: readonly Uint8Array[],
   limit = 256,
   reserveTransparent = true,
 ): Palette | null {
-  // Colours are interned to a slot so the per-pixel work is an integer compare
-  // against the previous pixel, and the Map is touched once per RUN of one
-  // colour rather than once per pixel. On the flat content that palettises at
-  // all — UI, pixel art, charts — runs are long and this is most of the scan's
-  // cost. Counts stay EXACT pixel counts (they order the palette below), so the
-  // output is identical to counting one pixel at a time.
+  // Colours are interned to a slot so the per-pixel work is an integer compare against the pixel.
   const slotOf = new Map<number, number>();
   const keys: number[] = [];
   const counts: number[] = [];
@@ -125,14 +101,11 @@ export function buildPalette(
   return { rgba, size, trnsCount, transparentIndex, lookup };
 }
 
-/**
- * Map an RGBA8 image to one byte per pixel through `palette`.
- *
- * Throws on a colour the palette does not contain: the palette is built from
- * the very pixels being indexed, so a miss means the caller mixed images from
- * two different builds — silently substituting a nearby colour would ship a
- * corrupted frame that looks almost right.
- */
+/** Map an RGBA8 image to one byte per pixel through `palette`. Throws on a
+ * colour the palette does not contain: the palette is built from the very
+ * pixels being indexed, so a miss means the caller mixed images from
+ * different builds — silently substituting a nearby colour would ship a
+ * corrupted frame that looks almost right. */
 export function indexImage(src: Uint8Array, palette: Palette): Uint8Array {
   const n = src.length >> 2;
   const out = new Uint8Array(n);

@@ -1,17 +1,10 @@
 // Deterministic procedural noise -- integer hash -> value noise -> fbm, in 2D
-// and 3D. Pure functions, no DOM, no allocations in the hot path. All outputs
-// are deterministic for a given (coords, seed) and lie in [0, 1] unless noted.
-//
-// The 2D lattice is tileable: `cells` is the number of lattice points across the
-// [0,1) domain, and the hash wraps coordinates by `cells` so the noise repeats
-// seamlessly. The 3D variant is non-tiling (an unbounded integer lattice).
+// and 3D. Pure functions, no DOM, no allocations in the hot path.
 
 // -- 2D ------------------------------------------------------------------------
 
-/**
- * Deterministic 2D lattice hash in [0, 1). Lattice coords are wrapped by
- * `period` so the noise tiles seamlessly at that period.
- */
+/*Lattice coords are wrapped by `period` so the noise tiles seamlessly at
+ * that period. */
 export function hash2(ix: number, iy: number, period: number, seed: number): number {
   const x = ((ix % period) + period) % period;
   const y = ((iy % period) + period) % period;
@@ -21,15 +14,12 @@ export function hash2(ix: number, iy: number, period: number, seed: number): num
   return (h >>> 0) / 4294967295;
 }
 
-/** Quintic smootherstep easing (Perlin's 6t^5-15t^4+10t^3). */
+/* */
 export function smootherstep(t: number): number {
   return t * t * t * (t * (t * 6 - 15) + 10);
 }
 
-/**
- * Tileable 2D value noise in [0, 1). `cells` = lattice points across the [0,1)
- * domain; `u`/`v` are domain coordinates. Quintic interpolation.
- */
+/*Quintic interpolation. */
 export function valueNoise2(u: number, v: number, cells: number, seed: number): number {
   const x = u * cells;
   const y = v * cells;
@@ -44,10 +34,7 @@ export function valueNoise2(u: number, v: number, cells: number, seed: number): 
   return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy;
 }
 
-/**
- * 2D fractal Brownian motion: `octaves` octaves of `valueNoise2`, each doubling
- * the cell count and halving the amplitude, normalised back to [0, 1).
- */
+/* */
 export function fbm2(u: number, v: number, baseCells: number, octaves: number, seed: number): number {
   let sum = 0, amp = 1, norm = 0, cells = baseCells;
   for (let o = 0; o < octaves; o++) {
@@ -59,10 +46,7 @@ export function fbm2(u: number, v: number, baseCells: number, octaves: number, s
   return sum / norm;
 }
 
-/**
- * Ridged 2D noise in [0, 1): `(1 - |2*fbm - 1|)^2`, which folds the fbm at its
- * midline and squares the result to sharpen the ridge lines.
- */
+/* */
 export function ridged2(u: number, v: number, baseCells: number, octaves: number, seed: number): number {
   const n = fbm2(u, v, baseCells, octaves, seed);
   const r = 1 - Math.abs(2 * n - 1);
@@ -71,7 +55,7 @@ export function ridged2(u: number, v: number, baseCells: number, octaves: number
 
 // -- 3D ------------------------------------------------------------------------
 
-/** Deterministic 3D lattice hash in [0, 1) (non-tiling). */
+/* */
 export function hash3(x: number, y: number, z: number, seed: number): number {
   let h = (x | 0) * 374761393 + (y | 0) * 668265263 + (z | 0) * 1274126177 + (seed | 0) * 40503;
   h = Math.imul(h ^ (h >>> 13), 1274126177);
@@ -79,12 +63,12 @@ export function hash3(x: number, y: number, z: number, seed: number): number {
   return (h >>> 0) / 4294967296;
 }
 
-/** Cubic smoothstep easing (3t^2-2t^3). */
+/* */
 function smooth3(t: number): number {
   return t * t * (3 - 2 * t);
 }
 
-/** 3D value noise in [0, 1) on an unbounded integer lattice. Cubic interpolation. */
+/*Cubic interpolation. */
 export function valueNoise3(x: number, y: number, z: number, seed: number): number {
   const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
   const xf = x - xi, yf = y - yi, zf = z - zi;
@@ -101,10 +85,7 @@ export function valueNoise3(x: number, y: number, z: number, seed: number): numb
   );
 }
 
-/**
- * 3D fractal Brownian motion: `octaves` octaves of `valueNoise3`, each doubling
- * the frequency and halving the amplitude, normalised back to [0, 1).
- */
+/* */
 export function fbm3(x: number, y: number, z: number, seed: number, octaves = 4): number {
   let f = 0, amp = 0.5, sum = 0, freq = 1;
   for (let o = 0; o < octaves; o++) {

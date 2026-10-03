@@ -1,11 +1,4 @@
 // PNG container primitives: CRC-32, chunk framing, and scanline filtering.
-// Pure — no DOM, no browser APIs — so it runs and is tested under node.
-//
-// Filtering is where most of a PNG's compression comes from: each scanline is
-// prefixed with a filter byte and its pixels are stored as residuals against
-// already-decoded neighbours, which turns smooth gradients into runs of small
-// numbers deflate can pack. `filterScanlines` implements all five spec filters
-// plus the adaptive selector every real encoder uses.
 
 /** The 8-byte PNG file signature that opens every stream. */
 export const PNG_SIGNATURE = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -22,13 +15,7 @@ const CRC_TABLE = (() => {
   return t;
 })();
 
-/**
- * PNG's CRC-32 (IEEE 802.3, the zlib polynomial) over `bytes`.
- *
- * `seed` continues a running CRC and is the *finalised* value of the previous
- * call, so a chunk's CRC can be computed over its type and data separately:
- * `crc32(data, crc32(typeBytes))`.
- */
+/* */
 export function crc32(bytes: Uint8Array, seed = 0): number {
   let c = ~seed >>> 0;
   for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
@@ -37,10 +24,8 @@ export function crc32(bytes: Uint8Array, seed = 0): number {
 
 // -- Chunks --------------------------------------------------------------------
 
-/**
- * Frame one PNG chunk: length, 4-byte ASCII type, data, CRC-32 of type+data.
- * `type` must be exactly 4 characters.
- */
+/** Frame one PNG chunk: length, 4-byte ASCII type, data, CRC-32 of
+ * type+data. `type` must be a few characters. */
 export function writeChunk(type: string, data: Uint8Array): Uint8Array {
   if (type.length !== 4) throw new Error(`PNG chunk type must be 4 characters, got ${JSON.stringify(type)}`);
   const out = new Uint8Array(12 + data.length);
@@ -67,15 +52,7 @@ export function concatBytes(parts: readonly Uint8Array[]): Uint8Array<ArrayBuffe
 
 // -- Scanline filtering --------------------------------------------------------
 
-/**
- * How `filterScanlines` picks a filter byte per row.
- *
- * `adaptive` is the standard minimum-sum-of-absolute-differences heuristic:
- * try all five and keep the row whose residuals are smallest as signed bytes.
- * The fixed strategies exist because they are cheaper and sometimes win — a
- * frame whose unchanged pixels were zeroed out is mostly zero runs, which
- * `none` leaves intact and the predictive filters would churn.
- */
+/** How `filterScanlines` picks a filter byte per row. */
 export type FilterStrategy = 'none' | 'sub' | 'up' | 'average' | 'paeth' | 'adaptive';
 
 /** The filter strategies, in the order a UI should offer them. */
@@ -145,14 +122,9 @@ function rowCost(bytes: Uint8Array, at: number, stride: number): number {
   return sum;
 }
 
-/**
- * Filter `height` raw scanlines of `stride` bytes each into the PNG's
+/** Filter `height` raw scanlines of `stride` bytes each into the PNG's
  * pre-compression form: one filter byte followed by `stride` residual bytes
- * per row.
- *
- * `bpp` is the byte distance to the pixel on the left (4 for RGBA8, 1 for
- * 8-bit indexed) — the spec's "bpp", floored at 1.
- */
+ * per row. */
 export function filterScanlines(
   raw: Uint8Array,
   stride: number,
@@ -192,14 +164,11 @@ export function filterScanlines(
   return out;
 }
 
-/**
- * The inverse of `filterScanlines`: reconstruct `height` raw scanlines of
- * `stride` bytes from PNG's filter-byte-prefixed rows.
- *
- * Exported because a caller that verifies its own output (or reads a PNG it
- * did not write) needs the exact same predictor arithmetic; getting it from
- * here rather than reimplementing it is what keeps the two halves in step.
- */
+/** The inverse of `filterScanlines`: reconstruct `height` raw scanlines of
+ * `stride` bytes from PNG's filter-byte-prefixed rows. Exported because a
+ * caller that verifies its own output (or reads a PNG it did not write)
+ * needs the exact same predictor arithmetic; getting it from here rather
+ * than reimplementing it is what keeps both halves in step. */
 export function unfilterScanlines(
   filtered: Uint8Array,
   stride: number,

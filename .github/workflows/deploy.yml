@@ -37,13 +37,16 @@ jobs:
       # No lockfile is committed, so this resolves the ts0 branch dependency to its current HEAD every run.
       - run: pnpm install
 
+      - name: Install just
+        run: sudo apt-get install -y just
+
       - name: Test
         # Type-checks sources AND tests, then runs them; the publish is later in this same job, so a failure gates it.
-        run: pnpm test
+        run: just test
 
       - name: Build
         # Type-checks, compiles src/ -> dist/, then assembles dist/llms.txt.
-        run: pnpm build
+        run: just build
 
       # master publishes the canonical 'library' site, every other branch 'library-<flattened>' — the prefix is what keeps these clear of the showcase previews below.
       - name: Library site name
@@ -75,10 +78,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      # NOT YET COVERED, and that count is real failures rather than an exemption: src/ui/llms.txt, 1805 across 1591 lines. Add it to `files` once converted; add it here temporarily to see what is left.
       - uses: wow-look-at-my/actions@ste-lint#latest
-        with:
-          files: docs/**/*.md llms-header.txt src/math/llms.txt src/webgl2/llms.txt src/auto-refresh/llms.txt src/editor/llms.txt src/apng/llms.txt src/webgpu/llms.txt
 
   # timelinewire/ is a nested Go LIBRARY module (no main package), so autorelease is off: there is no binary to publish.
   go:
@@ -191,8 +191,12 @@ jobs:
       - run: pnpm install
         if: steps.gate.outputs.publish == 'true'
 
+      - name: Install just
+        if: steps.gate.outputs.publish == 'true'
+        run: sudo apt-get install -y just
+
       # ts0's single-HTML target: bundles THIS branch's own src/ui (CSS inlined) into showcase/dist/index.html.
-      - run: pnpm build:showcase
+      - run: just build-showcase
         if: steps.gate.outputs.publish == 'true'
 
       - name: Publish preview to buildhost

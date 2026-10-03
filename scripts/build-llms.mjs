@@ -1,10 +1,4 @@
 // Combine llms-header.txt + every src/**/llms.txt into dist/llms.txt.
-//
-// This is the one piece of the old esbuild build.ts that isn't a TypeScript
-// compile: ts0 handles src/**/*.ts -> dist/**/*.js, and this script assembles
-// the machine-readable docs that ship at the site root. Run it after `ts0
-// build` (see the "build" npm script); it creates dist/ if needed so it also
-// works standalone.
 import { readdirSync, statSync, readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 

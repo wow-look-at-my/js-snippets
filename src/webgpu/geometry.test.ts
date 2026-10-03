@@ -1,11 +1,4 @@
 // Tests for the procedural mesh generators.
-//
-// These are pure typed-array generators (no GPU), so they unit-test cleanly.
-// For every generator we assert structural invariants: positions/normals share
-// the same vertex count, every index is in range, normals are ~unit length,
-// positions stay within the expected bounds for the generator's parameters,
-// and every non-degenerate triangle is wound counter-clockwise viewed from
-// outside (front-facing under WebGPU's default frontFace: 'ccw').
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -56,8 +49,8 @@ function bounds(m: Mesh): { min: number[]; max: number[] } {
 
 test('createCube: structural invariants and bounds', () => {
   const m = createCube(2);
-  assert.equal(vertexCount(m), 24); // 6 faces * 4 verts
-  assert.equal(m.indices.length, 36); // 6 faces * 2 tris * 3
+  assert.equal(vertexCount(m), 24);
+  assert.equal(m.indices.length, 36);
   assertIndicesInRange(m);
   assertNormalsUnit(m);
   const b = bounds(m);
@@ -101,7 +94,6 @@ test('createCylinder: structural invariants, radius and height bounds', () => {
   assertIndicesInRange(m);
   assertNormalsUnit(m);
   const b = bounds(m);
-  // Half-height is 1; radius 0.5.
   assert.ok(Math.abs(b.min[1] + 1) < 1e-6, `min y ~ -1: ${b.min[1]}`);
   assert.ok(Math.abs(b.max[1] - 1) < 1e-6, `max y ~ +1: ${b.max[1]}`);
   for (const a of [0, 2]) {
@@ -116,7 +108,6 @@ test('createPlane: a single quad in the XZ plane', () => {
   assert.equal(m.indices.length, 6);
   assertIndicesInRange(m);
   assertNormalsUnit(m);
-  // All normals point +Y; all positions lie on y = 0.
   for (let i = 0; i < m.positions.length; i += 3) {
     assert.equal(m.positions[i + 1], 0, 'plane vertex on y=0');
   }
@@ -140,10 +131,10 @@ test('createTorus: structural invariants and bounds', () => {
 });
 
 // Winding oracle: for each non-degenerate triangle, the geometric normal
-// cross(p1 - p0, p2 - p0) must agree with the average of the three stored
-// vertex normals (dot > 0) — i.e. the triangle is counter-clockwise viewed
-// from outside, front-facing under WebGPU's default frontFace: 'ccw'.
-// Zero-area triangles (e.g. sphere pole rows, a cone's apex row) are skipped.
+// cross(p1 - p0, p2 - p0) must agree with the average of those stored vertex
+// normals (dot > 0) — i.e. the triangle is counter-clockwise viewed from
+// outside, front-facing under WebGPU's default frontFace: 'ccw'. Zero-area
+// triangles (e.g. sphere pole rows, a cone's apex row) are skipped.
 function windingDots(m: Mesh): { tri: number; dot: number }[] {
   const dots: { tri: number; dot: number }[] = [];
   const P = m.positions, N = m.normals, I = m.indices;
@@ -163,9 +154,6 @@ function windingDots(m: Mesh): { tri: number; dot: number }[] {
   return dots;
 }
 
-// One representative instance per generator; the cylinder also as a frustum
-// (unequal radii) and a cone (radiusTop 0, whose apex-row triangles are all
-// degenerate and must be skipped, not failed).
 function windingCases(): [string, Mesh][] {
   return [
     ['createCube', createCube(2)],
@@ -215,7 +203,7 @@ test('flipWinding: (a,b,c) -> (a,c,b), no mutation, arrays pass through, double 
     assert.equal(flipped.indices[t + 1], m.indices[t + 2], `tri ${t / 3} vertex 1 <- 2`);
     assert.equal(flipped.indices[t + 2], m.indices[t + 1], `tri ${t / 3} vertex 2 <- 1`);
   }
-  // Flipping twice restores the original index order exactly.
+  // Flipping twice restores the index order exactly.
   const twice = flipWinding(flipped);
   assert.deepEqual(Array.from(twice.indices), before, 'double flip round-trips');
 });

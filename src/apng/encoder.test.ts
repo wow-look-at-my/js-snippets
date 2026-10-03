@@ -1,14 +1,4 @@
 // Tests for the APNG encoder.
-//
-// The oracle is a decoder. Every optimisation here — dirty rectangles,
-// transparent skipping, palettes, frame coalescing — changes what is stored
-// without being allowed to change what is SEEN, and the only way to check that
-// is to decode the file back and replay it. So this file carries a small,
-// independent APNG reader (chunk walk with CRC verification, inflate, unfilter,
-// composite) and asserts the replayed frames match the originals.
-//
-// Asserting on the encoder's own stats instead would prove only that it agrees
-// with itself.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -210,7 +200,7 @@ function walkFrames(count: number, alpha = 255): ApngFrame[] {
   return Array.from({ length: count }, (_, i) => ({ data: sceneFrame(2 + i * 3, 5, 6, alpha) }));
 }
 
-/** Largest per-channel difference between two RGBA images. */
+/** Largest per-channel difference between RGBA images. */
 function maxChannelDelta(a: Uint8Array, b: Uint8Array): number {
   let worst = 0;
   for (let i = 0; i < a.length; i++) worst = Math.max(worst, Math.abs(a[i] - b[i]));
@@ -249,7 +239,6 @@ test('threshold 0 reproduces every frame exactly', async () => {
 });
 
 test('a non-zero threshold stays within itself on every pixel of every frame', async () => {
-  // Add ±2 dither so a thresholding encoder has something to ignore.
   let seed = 99;
   const frames = walkFrames(6).map((f) => {
     const px = (f.data as Uint8Array).slice();
@@ -360,7 +349,7 @@ test('few-colour frames become an indexed PNG and still decode exactly', async (
   const frames = [{ data: flat(0) }, { data: flat(4) }, { data: flat(8) }];
   const result = await encodeApng(W, H, frames, { threshold: 0 });
   assert.equal(result.colorType, 'indexed');
-  assert.equal(result.paletteSize, 3); // two colours plus the transparent sentinel
+  assert.equal(result.paletteSize, 3); // colours plus the transparent sentinel
 
   const decoded = await decodeApng(result.bytes);
   assert.equal(decoded.colorType, 3);
@@ -426,9 +415,7 @@ test('effort "best" is never larger than "fast"', async () => {
 });
 
 test('differencing beats storing every frame whole', async () => {
-  // A noisy background is the honest fixture: a smooth gradient compresses so
-  // well whole that storing it eight times would also look cheap, and the test
-  // would pass without differencing doing anything.
+  // A noisy background is the honest fixture: a smooth gradient compresses so well whole that storing it several times would also look cheap.
   const noise = new Uint8Array(W * H * 4);
   let seed = 4242;
   for (let i = 0; i < noise.length; i += 4) {
@@ -451,7 +438,7 @@ test('differencing beats storing every frame whole', async () => {
   const result = await encodeApng(W, H, frames, { threshold: 0, colorType: 'rgba' });
   const keyframe = result.frames[0].bytes;
   const laterBytes = result.frames.slice(1).reduce((s, f) => s + f.bytes, 0);
-  // Seven more frames of a static scene cost a fraction of one whole frame.
+  // More frames of a static scene cost a fraction of one whole frame.
   assert.ok(laterBytes < keyframe / 4, `${laterBytes} vs one whole frame at ${keyframe}`);
 
   const decoded = await decodeApng(result.bytes);

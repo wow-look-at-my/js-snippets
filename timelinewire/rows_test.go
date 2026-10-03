@@ -12,9 +12,9 @@ import (
 )
 
 // goldenRow declares, as tags, exactly the columns goldenSchema() names by
-// hand — so the two paths must agree byte for byte on the shared fixture.
-// That is what makes the tagged path a refactor of the manual one rather than
-// a second format.
+// hand — so both paths must agree byte for byte on the shared fixture. That
+// is what makes the tagged path a refactor of the manual one rather than a
+// second format.
 type goldenRow struct {
 	ID         uint64    `wire:"id,deltau"`
 	Kind       string    `wire:"kind,string"`
@@ -66,8 +66,8 @@ func TestEncodeRowsMatchesGolden(t *testing.T) {
 	assert.Equal(t, strings.TrimSpace(string(raw)), base64.StdEncoding.EncodeToString(got))
 }
 
-// The derived schema must equal the hand-written one — including ORDER, which
-// is what the wire actually depends on.
+// The derived schema must equal the hand-written one — including ORDER,
+// which is what the wire depends on.
 func TestSchemaOfMatchesHandWritten(t *testing.T) {
 	got, err := SchemaOf(goldenRow{}, "TLC1")
 	require.NoError(t, err)
@@ -189,8 +189,7 @@ func TestWants(t *testing.T) {
 	assert.True(t, Wants("application/json, "+mt+";q=0.9", mt))
 	assert.True(t, Wants(" APPLICATION/VND.EXAMPLE.V1 ", mt), "media types are case-insensitive")
 
-	// The whole reason the match is exact: a wildcard must keep meaning the
-	// readable encoding, or the endpoint stops being inspectable by hand.
+	// The whole reason the match is exact: a wildcard must keep meaning the readable encoding.
 	assert.False(t, Wants("*/*", mt))
 	assert.False(t, Wants("application/*", mt))
 	assert.False(t, Wants("", mt))
@@ -201,16 +200,7 @@ func TestWants(t *testing.T) {
 
 // What tagging COSTS, kept measurable rather than asserted. The pair runs the
 // same 100k rows through EncodeRows and through the hand-written mapping it
-// replaces, so the price of reflection stays a number anyone can re-read:
-//
-//	go test -bench BenchmarkEncode -benchmem ./...
-//
-// Reflection is ~1.8x the mapping step and allocates no more (per-type plans,
-// column slices addressed directly rather than through the page's maps, and
-// time.Time read through its address so a three-word value never boxes). In
-// absolute terms that is 18 ms against 10 for a FULL 100k ring, once, on the
-// server; the hour-long window a chart actually first-paints is ~4k rows,
-// well under a millisecond either way.
+// replaces, so the price of reflection stays a number anyone can re-read.
 func benchRows() ([]goldenRow, Header) {
 	rows := make([]goldenRow, 100_000)
 	base := time.UnixMilli(1_780_000_000_000).UTC()

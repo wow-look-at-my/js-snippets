@@ -1,38 +1,13 @@
-// Both halves of running the APNG encoder off the main thread: the worker-side
-// message handler, and the main-thread client that talks to it.
-//
-// Encoding is CPU-bound for as long as it takes — diffing every pixel of every
-// frame, then deflating each one, possibly several times over at effort 'best'.
-// On the main thread that is a frozen page, so this module exists to make the
-// off-thread path the easy one. There is deliberately NO in-page fallback: if a
-// worker cannot be created, `createApngEncoder` throws rather than quietly
-// blocking the UI it was written to protect.
-//
-// A worker script must be same-origin, so the consumer owns a two-line worker
-// file of its own and this module supplies the body:
-//
-//   // apng-worker.js — served from the consumer's own origin
-//   import { installApngWorker } from 'https://…/apng/worker.js';
-//   installApngWorker();
-//
-//   // main thread
-//   const encoder = createApngEncoder(new URL('./apng-worker.js', import.meta.url));
-//   const result = await encoder.encode(w, h, frames, { threshold: 2 }, onProgress);
+// Both halves of running the APNG encoder off the main thread: the worker-side message handler, and the main-thread client that talks.
 
 import { encodeApng, type ApngFrame, type ApngOptions, type ApngResult } from './encoder.ts';
 import { rasterizeToRgba, type FitMode } from './raster.ts';
 
-/**
- * The `ApngOptions` that survive a structured clone — no functions — plus how
- * a bitmap frame is fitted to the output size.
- */
+/** The `ApngOptions` that survive a structured clone — no functions — plus how a bitmap frame is fitted. */
 export type ApngWorkerOptions = Omit<ApngOptions, 'deflate' | 'onProgress'> & { fit?: FitMode };
 
-/**
- * A frame to encode: either RGBA8 bytes already the right size, or an
- * ImageBitmap of any size, which the WORKER rasterises so the page never
- * touches pixels.
- */
+/** A frame to encode: either RGBA8 bytes already the right size, or an
+ * ImageBitmap of any size, which the WORKER rasterises. */
 export type ApngSourceFrame =
   | { data: Uint8Array | Uint8ClampedArray; delayMs?: number }
   | { bitmap: ImageBitmap; delayMs?: number };
@@ -117,11 +92,7 @@ export interface ApngEncoder {
     options?: ApngWorkerOptions,
     onProgress?: ApngProgress,
   ): Promise<ApngResult>;
-  /**
-   * Kill the worker, rejecting everything in flight. A later `encode` starts a
-   * fresh one — this is how a caller abandons a long encode whose inputs just
-   * changed.
-   */
+  /** Kill the worker, rejecting everything in flight. */
   terminate(): void;
 }
 
@@ -191,8 +162,7 @@ export function createApngEncoder(
       return new Promise<ApngResult>((resolve, reject) => {
         pending.set(id, { resolve, reject, onProgress });
         // Bitmaps are never transferred: a caller that re-encodes on every
-        // settings change needs to keep them. `transferFrames` moves the byte
-        // buffers only, and only when the caller says it is done with them.
+        // settings change needs to keep them.
         const transfer: Transferable[] = transferFrames
           ? payload.flatMap((f) => ('bitmap' in f ? [] : [f.data.buffer as ArrayBuffer]))
           : [];

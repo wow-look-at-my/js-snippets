@@ -1,9 +1,4 @@
 // Tests for exact palette detection.
-//
-// The load-bearing property is that palettising is LOSSLESS: every colour in
-// the input round-trips through the palette unchanged, or no palette is built
-// at all. A palette that quietly drops a rare colour would produce a file that
-// decodes fine and shows the wrong pixels.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

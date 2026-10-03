@@ -9,7 +9,6 @@ test('chooseIndexArray picks Uint16Array when every index fits 16 bits', () => {
 });
 
 test('chooseIndexArray picks Uint16Array at the 65536-vertex boundary', () => {
-  // Max valid index 65535 still fits in 16 bits.
   const out = chooseIndexArray([65535, 0, 1], 65536);
   assert.ok(out instanceof Uint16Array);
   assert.equal(out[0], 65535);

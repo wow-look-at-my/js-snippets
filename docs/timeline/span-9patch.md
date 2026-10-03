@@ -19,7 +19,7 @@ So the row that matters is the sub-pixel one, where blits resample. The hatched 
 
 ## The bug that nearly buried this
 
-The first version baked a middle exactly one hatch period (5px) wide. Every blit boundary resamples about a pixel of the slice's edge, so a fifth of the tile sat on a seam. The reconstructed hatch then rendered as disconnected dashes with a visible seam per tile, next to a path version drawing continuous diagonals. That looked like proof the technique was unusable. It was proof the strip was too narrow: at four periods the sub-pixel 9-patch and the path render alike.
+The first version baked a middle exactly one hatch period (5px) wide. Every blit boundary resamples about a pixel of the slice's edge, so a fifth of the tile sat on a seam. The reconstructed hatch then rendered as disconnected dashes with a visible seam per tile, next to a path version drawing continuous diagonals. That looked like proof the technique was unusable. It was proof the strip was too narrow: at multiple periods the sub-pixel 9-patch and the path render alike.
 
 The lesson is the ordinary one — a technique that looks broken is a bug in the harness until the harness has been fixed once.
 

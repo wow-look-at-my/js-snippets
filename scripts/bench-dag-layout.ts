@@ -1,16 +1,4 @@
-// Measures the layout on a REAL captured graph, so a change to the layout is
-// judged on the fleet that broke it rather than on a hand-made fixture.
-//
-// Input is a snapshot from <dag-view>'s own right-click copy. It carries the
-// nodes and the edges, which is the layout's whole input -- the coordinates
-// in it are the OUTPUT being replaced, and are read only to report what the
-// captured run produced.
-//
-//   node scripts/bench-dag-layout.ts <snapshot.json>
-//
-// Prints the shape, the wire length and the crossings, plus a per-layer
-// breakdown of how much of each row is real boxes and how much is edge
-// routing slots.
+// Measures the layout on a REAL captured graph, so a change to the layout is judged on the fleet that broke it.
 
 import { readFileSync } from 'node:fs';
 import {

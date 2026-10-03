@@ -54,8 +54,7 @@ test('compareValues orders numbers numerically, not lexically', () => {
 });
 
 test('compareValues sorts nullish LAST in both directions', () => {
-  // Absence is not a value. Blanks marching to the top of every descending
-  // sort makes a mostly-empty column useless.
+  // Absence is not a value. Blanks marching to the top of every descending sort makes a mostly-empty column useless.
   assert.ok(compareValues(null, 1) > 0);
   assert.ok(compareValues(1, null) < 0);
   assert.ok(compareValues(undefined, 'a') > 0);
@@ -105,8 +104,7 @@ test('nextSortState cycles asc -> desc -> unsorted', () => {
   assert.deepEqual(a, { key: 'ms', dir: 'asc' });
   const b = nextSortState(a, 'ms');
   assert.deepEqual(b, { key: 'ms', dir: 'desc' });
-  // Returning to unsorted is how the producer's order (usually newest
-  // first) becomes reachable again — no asc/desc pair reproduces it.
+  // Returning to unsorted is how the producer's order (usually newest first) becomes reachable again.
   assert.equal(nextSortState(b, 'ms'), null);
   // A different column starts its own cycle.
   assert.deepEqual(nextSortState(b, 'id'), { key: 'id', dir: 'asc' });
@@ -147,8 +145,7 @@ test('selectRows hides facet buckets and counts across ALL rows', () => {
   const { shown, facetCounts } = selectRows(rows, COLUMNS, { facets, hidden });
 
   assert.deepEqual(shown.map((r) => r.id), ['alpha', 'beta']);
-  // The hidden bucket must KEEP its count: the number you need to decide
-  // whether to unhide is exactly the one a shown-only count would zero.
+  // The hidden bucket must KEEP its count.
   assert.equal(facetCounts.get('status')?.get('skipped'), 1);
   assert.equal(facetCounts.get('status')?.get('success'), 1);
 });
@@ -197,9 +194,7 @@ test('selectRows tolerates a missing row list', () => {
 });
 
 test('a host-filtered group is excluded from selection by the caller', () => {
-  // <data-table> drops FacetGroup.local === false groups before calling
-  // selectRows: the host already applied them, upstream of its own row cap.
-  // Re-applying here is how a server-filtered window gets emptied twice.
+  // <data-table> drops FacetGroup.local === false groups before calling selectRows: the host already applied them.
   const facets = [{ key: 'status', of: (r: Run) => r.status }];
   const hidden = new Map([['status', new Set(['success'])]]);
   const withGroup = selectRows(rows, COLUMNS, { facets, hidden });

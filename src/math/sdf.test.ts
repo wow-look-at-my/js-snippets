@@ -1,13 +1,4 @@
-// Tests for the pure signed-distance-field math. Ported from the
-// distance-field-shadows scratchpad's smoke.mjs oracle and adapted to this
-// library's API (a `SceneSDF` callback + `transformPoint`, rather than the
-// scratchpad's bundled `evalSceneSDF`).
-//
-// Covers: primitive distances + signs, column-major inverse-model transforms,
-// trilinear reconstruction of a linear field, the sampleGrid outside extension,
-// the Inigo Quilez soft-shadow march (umbra/penumbra/monotone, baked vs
-// analytic, k narrows the penumbra), and intersectAABB hit/miss + clip
-// equivalence.
+// Tests for the pure signed-distance-field math..mjs oracle and adapted to this library's API.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -84,8 +75,6 @@ test('transformPoint applies a column-major affine (inverse-model) transform', (
 });
 
 test('transformPoint + sdBox: a yawed long box maps world axes to local axes', () => {
-  // Box with a long X axis (he = [1.5, 0.5, 0.5]) yawed 90deg about Y. Its long
-  // axis now lies along world Z; the short axis along world X.
   const inv = rigidInvY([0, 0, 0], Math.PI / 2);
   near(sdBox(transformPoint(inv, [0, 0, 2]), [1.5, 0.5, 0.5, 0]), 0.5, 1e-6, 'long axis -> world Z');
   near(sdBox(transformPoint(inv, [2, 0, 0]), [1.5, 0.5, 0.5, 0]), 1.5, 1e-6, 'short axis -> world X');

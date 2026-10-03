@@ -1,28 +1,4 @@
-// Pure math for the <dag-view> element: graph normalization, cycle
-// breaking (reported, never silently dropped), layer assignment, dummy-node
-// insertion, crossing-reduction ordering, coordinate assignment, edge
-// routing, the pan/zoom viewport transform, culling, hit tests and
-// reachability. No DOM or browser APIs -- everything here runs (and is
-// tested) under node; ui/dag-view.ts is the canvas-bound half that consumes
-// it.
-//
-// THE LAYOUT IS A LAYERED (Sugiyama) DRAWING. A dependency graph has a
-// direction, and the whole point of drawing one is to see that direction:
-// every edge must point the same way down the page. A force-directed blob
-// cannot promise that, so the pipeline is the classical one --
-//
-//   normalize -> break cycles -> assign layers -> insert dummies
-//     -> order within layers -> assign cross-axis coordinates -> route
-//
-// -- with each stage a separate exported function over plain data, so each
-// one is testable on its own and a consumer can stop after any of them.
-//
-// DETERMINISM IS A HARD REQUIREMENT. The same nodes and edges must produce
-// the same picture on every machine and every reload: a graph that
-// reshuffles when you refresh it cannot be compared against what you saw a
-// minute ago. Every stage that could tie breaks the tie on the node's index
-// in the input, never on iteration order of a Map built elsewhere and never
-// on a random source.
+// Pure math for the <dag-view> element: graph normalization, cycle breaking (reported, never silently dropped), layer assignment.
 
 import { hashString } from './color.ts';
 import { distSqToSegment } from './hit-test.ts';
@@ -41,22 +17,14 @@ export interface DagNode {
   category?: string;
   /** Style-map key: picks the fill pattern and border treatment. */
   state?: string;
-  /**
-   * Pins the node to a layer. Layer assignment still runs, and a pin that
-   * would put a node at or before one of its own dependencies is IGNORED
-   * rather than honoured -- the edge direction outranks the hint. Read
-   * `LayerResult.ignoredPins` to find out that happened.
-   */
+  /** Pins the node to a layer. */
   layer?: number;
   /** Consumer payload, passed back untouched on every event and callback. */
   meta?: unknown;
 }
 
-/**
- * One directed edge, read as "`to` depends on `from`", so `from` is drawn
- * ABOVE `to` (or left of it in 'LR'). This is the direction a dependency
- * graph is usually spoken in: the thing you need comes first.
- */
+/** One directed edge, read as "`to` depends on `from`", so `from` is drawn
+ * ABOVE `to` (or left of it in 'LR'). */
 export interface DagEdge {
   from: string;
   to: string;
@@ -88,20 +56,14 @@ export interface DagGraph {
   out: readonly (readonly number[])[];
   /** Per node, the indices pointing at IT (its dependencies). */
   in: readonly (readonly number[])[];
-  /**
-   * Input edges that are not in the graph. NEVER empty-and-forgotten: the
-   * element surfaces the count, because an edge that vanishes without a
-   * word is a graph that quietly lies about what depends on what.
-   */
+  /** Input edges that are not in the graph. */
   rejected: readonly RejectedEdge[];
 }
 
-/**
- * Validate and index the input. A duplicate edge (same from/to, whatever
- * its label) is kept once -- two lines between the same pair say nothing a
- * reader can act on -- and a node id that repeats keeps its FIRST
- * occurrence, so an id is a stable identity for the whole render.
- */
+/** Validate and index the input. A duplicate edge (same from/to, whatever
+ * its label) is kept once -- a couple of lines between the same pair say
+ * nothing a reader can act on -- and a node id that repeats keeps its
+ * FIRST occurrence, so an id is a stable identity for the whole render. */
 export function buildGraph(nodes: readonly DagNode[], edges: readonly DagEdge[]): DagGraph {
   const index = new Map<string, number>();
   const kept: DagNode[] = [];
@@ -220,7 +182,7 @@ export function breakCycles(graph: DagGraph): CycleResult {
 
 /** Per-node layer plus the pins the edge directions overruled. */
 export interface LayerResult {
-  /** Layer of each node, 0-based, 0 = no dependencies. */
+  /* */
   layers: readonly number[];
   /** Highest layer index in use. */
   maxLayer: number;
@@ -230,13 +192,7 @@ export interface LayerResult {
 
 /** Options for assignLayers. */
 export interface LayerOptions {
-  /**
-   * 'sources' puts every node as EARLY as its dependencies allow (the
-   * default: a node sits directly under the last thing it needs).
-   * 'sinks' pushes every node as LATE as its dependents allow, which
-   * bottom-aligns the leaves and reads better when the interesting nodes
-   * are the ones nothing depends on yet.
-   */
+  /** 'sources' puts every node as EARLY as its dependencies allow. */
   align?: 'sources' | 'sinks';
 }
 
@@ -269,9 +225,9 @@ export function assignLayers(graph: DagGraph, acyclic: CycleResult, opts: LayerO
   for (const l of layers) maxLayer = Math.max(maxLayer, l);
 
   if (opts.align === 'sinks') {
-    // Walk the topological order backwards and pull each node down to just
-    // above its earliest dependent. A node with no dependents lands on the
-    // last layer, which is what bottom-aligning means.
+    // Walk the topological order backwards and pull each node down to above
+    // its earliest dependent. A node with no dependents lands on the last
+    // layer, which is what bottom-aligning means.
     for (let i = order.length - 1; i >= 0; i--) {
       const v = order[i];
       if (graph.nodes[v].layer !== undefined) continue;
@@ -284,33 +240,12 @@ export function assignLayers(graph: DagGraph, acyclic: CycleResult, opts: LayerO
   return { layers, maxLayer, ignoredPins };
 }
 
-/**
- * Nodes per row before a layer wraps onto another row. A rank wider than
- * this is not readable at any zoom, so it is broken up.
- */
+/** Nodes per row before a layer wraps onto another row. */
 export const DEFAULT_MAX_LAYER_WIDTH = 14;
 
-/**
- * Break a layer that is too wide to read into consecutive rows.
- *
- * Longest-path layering answers "how deep is this node", and on a real
- * fleet the answer is 0 for most of them: 118 repositories with 53
- * dependencies between them leave about 70 with no internal dependency at
- * all, and every one of those lands on layer 0. assignCoordinates then packs
- * that layer into ONE row, because a layer is a row. The drawing comes out
- * around 13000 units wide and 250 tall, and `fit` answers that shape by
- * zooming out until every box is a coloured speck. The graph is not empty
- * and it is not broken. It is unreadable, which the reader cannot tell
- * apart.
- *
- * Splitting a layer is safe by construction. Longest-path layering puts an
- * edge's two ends on DIFFERENT layers, so no two nodes sharing a layer have
- * an edge between them, and consecutive rows carved out of one layer keep
- * every edge pointing forwards. Later layers shift down by the rows added
- * above them.
- *
- * `max` of 0 turns this off and restores one row per layer.
- */
+/** Break a layer that is too wide to read into consecutive rows. The graph is
+ *not empty and it is not broken. It is unreadable, which the reader cannot
+ *tell apart. */
 export function wrapWideLayers(layout: LayerResult, max = DEFAULT_MAX_LAYER_WIDTH): LayerResult {
   if (max <= 0) return layout;
   const members: number[][] = [];
@@ -321,12 +256,9 @@ export function wrapWideLayers(layout: LayerResult, max = DEFAULT_MAX_LAYER_WIDT
   let next = 0;
   let maxLayer = 0;
   for (const row of members) {
-    // An empty layer still consumes its index, so a pinned node that named a
-    // far layer keeps the gap it asked for.
+    // An empty layer still consumes its index, so a pinned node that named a far layer keeps the gap it asked for.
     const rows = row.length === 0 ? 1 : Math.ceil(row.length / max);
-    // Widen to the flattest split rather than filling every row to `max` and
-    // leaving a remainder of one. 15 nodes read better as 8 and 7 than as 14
-    // and 1.
+    // Widen to the flattest split rather than filling every row to `max` and leaving a remainder of one.
     const per = row.length === 0 ? 0 : Math.ceil(row.length / rows);
     row.forEach((v, i) => {
       layers[v] = next + Math.floor(i / per);
@@ -346,8 +278,7 @@ export function wrapWideLayers(layout: LayerResult, max = DEFAULT_MAX_LAYER_WIDT
 export function topoOrder(out: readonly (readonly number[])[], n: number): number[] {
   const indeg = new Int32Array(n);
   for (let v = 0; v < n; v++) for (const w of out[v]) indeg[w]++;
-  // A binary heap would be faster; at DAG sizes a person can read, the
-  // sorted-array frontier is simpler and its determinism is obvious.
+  // A binary heap will be faster.
   const frontier: number[] = [];
   for (let v = 0; v < n; v++) if (indeg[v] === 0) frontier.push(v);
   const order: number[] = [];
@@ -372,9 +303,9 @@ export function topoOrder(out: readonly (readonly number[])[], n: number): numbe
  * point standing in for one long edge crossing this layer.
  */
 export interface LayerSlot {
-  /** Index into graph.nodes, or -1 for a dummy. */
+  /* */
   node: number;
-  /** Index into graph.edges for a dummy, -1 for a real node. */
+  /* */
   edge: number;
   layer: number;
 }
@@ -391,32 +322,16 @@ export interface ProperLayering {
   chains: Map<number, string[]>;
 }
 
-/**
- * A slot's identity: stable under any reordering of its layer.
- *
- * The obvious key for a slot is its position, `${layer}:${index}` — and
- * that key is wrong, because reordering a layer is exactly what the next
- * two stages do. Every adjacency here is keyed on WHAT a slot is (which
- * node, or which edge crossing which layer), never on where it currently
- * sits, so the ordering pass can permute freely and the graph structure
- * still resolves.
- */
+/** A slot's identity: stable under any reordering of its layer. */
 export function slotIdentity(s: LayerSlot): string {
   return s.node >= 0 ? `n${s.node}` : `d${s.edge}@${s.layer}`;
 }
 
-/**
- * Split every edge that spans more than one layer into a chain of
- * single-layer segments through dummy slots.
- *
- * This is what makes long edges behave. Without it, an edge from layer 0 to
- * layer 6 passes straight through five layers, crossing whatever happens to
- * be there and counting for nothing in the crossing-reduction pass -- so
- * the ordering step would optimize a picture nobody is looking at. With the
- * dummies, a long edge occupies real width in every layer it crosses, gets
- * ordered like anything else, and comes out as a routed polyline instead of
- * a chord across the drawing.
- */
+/** Split every edge that spans more than one layer into a chain of
+ * single-layer segments through dummy slots. This is what makes long edges
+ * behave. With the dummies, a long edge occupies real width in every layer
+ * it crosses, gets ordered like anything else, and comes out as a routed
+ * polyline instead of a chord across the drawing. */
 export function insertDummies(graph: DagGraph, acyclic: CycleResult, layout: LayerResult): ProperLayering {
   const layers: LayerSlot[][] = [];
   for (let l = 0; l <= layout.maxLayer; l++) layers.push([]);
@@ -480,12 +395,8 @@ export function orderLayers(proper: ProperLayering, sweeps = ORDER_SWEEPS): numb
   let best = layers.map((l) => l.slice());
   let bestCrossings = countCrossings(proper);
 
-  // Zero crossings is NOT a reason to skip the sweeps. insertDummies
-  // appends every bend point to the END of its layer, so a long edge in an
-  // already-planar graph would keep a column parked off to one side of the
-  // drawing, dragging the whole thing's bounding box out with it. The
-  // sweeps are what pull those bend points in under the edge they belong
-  // to, and they cost nothing at the sizes a person can read.
+  // Zero crossings is NOT a reason to skip the sweeps. insertDummies appends
+  // every bend point to the END of its layer.
 
   const positionsIn = (layer: number): Map<string, number> => {
     const m = new Map<string, number>();
@@ -501,9 +412,6 @@ export function orderLayers(proper: ProperLayering, sweeps = ORDER_SWEEPS): numb
     for (const l of range) {
       const fixedPos = positionsIn(down ? l - 1 : l + 1);
       const adj = down ? pred : succ;
-      // The median of a slot's neighbours in the fixed layer. -1 means "no
-      // neighbours there": those slots keep their current position rather
-      // than piling up at one end of the layer.
       const withIdx = layers[l].map((slot, i) => {
         const ps = (adj.get(slotIdentity(slot)) ?? [])
           .map((k) => fixedPos.get(k))
@@ -521,10 +429,7 @@ export function orderLayers(proper: ProperLayering, sweeps = ORDER_SWEEPS): numb
     }
     transpose(proper);
     const c = countCrossings(proper);
-    // A TIE is accepted, not just an improvement. The median sweep's other
-    // job is alignment, and refusing an arrangement that crosses no more
-    // than the last one throws that away -- which is exactly what left a
-    // planar graph's bend points where they were first appended.
+    // A TIE is accepted, not an improvement.
     if (c <= bestCrossings) {
       bestCrossings = c;
       best = layers.map((x) => x.slice());
@@ -534,13 +439,11 @@ export function orderLayers(proper: ProperLayering, sweeps = ORDER_SWEEPS): numb
   return bestCrossings;
 }
 
-/**
- * Adjacent-exchange pass: swap neighbouring slots whenever the swap strictly
- * reduces the crossings between this layer and its two neighbours. Runs
+/** Adjacent-exchange pass: swap neighbouring slots whenever the swap
+ * strictly reduces the crossings between this layer and its neighbours. Runs
  * until a full pass changes nothing, or the guard trips -- a heuristic that
  * cannot terminate would hang the layout, and the guard is what makes that
- * impossible rather than unlikely.
- */
+ * impossible rather than unlikely. */
 function transpose(proper: ProperLayering): void {
   let improved = true;
   let guard = 0;
@@ -582,13 +485,8 @@ export function countCrossings(proper: ProperLayering): number {
   return c;
 }
 
-/**
- * Crossings between layer `l` and `l + 1`, counted by the pair rule: two
- * edges cross exactly when their endpoints are in opposite order on the two
- * layers. O(E^2) in the edges between one pair of layers, which at the sizes
- * a person can actually read is nothing, and it is obviously correct --
- * worth more here than the accumulator-tree version.
- */
+/** Crossings between layer `l` and `l + 1`, counted by the pair rule: edges
+ * cross exactly when their endpoints are in opposite order on both layers. */
 export function crossingsBetween(proper: ProperLayering, l: number): number {
   const upper = proper.layers[l];
   const lower = proper.layers[l + 1];
@@ -624,7 +522,7 @@ export interface NodeSize {
 export interface CoordOptions {
   /** Gap between adjacent boxes within a layer. */
   gap?: number;
-  /** Gap between two adjacent edge routing slots. See DEFAULT_ROUTE_GAP. */
+  /** Gap between adjacent edge routing slots. See DEFAULT_ROUTE_GAP. */
   routeGap?: number;
   /** Gap between layers, measured between facing edges. */
   layerGap?: number;
@@ -637,43 +535,14 @@ export interface CoordOptions {
 export const DEFAULT_GAP = 24;
 export const DEFAULT_LAYER_GAP = 56;
 export const DEFAULT_DUMMY_WIDTH = 12;
-/**
- * Straightening passes. Each one is measured and only an improvement is
- * kept, so a higher number can no longer make the drawing worse -- it only
- * costs time.
- */
+/** Straightening passes. */
 export const DEFAULT_COORD_PASSES = 12;
 
-/**
- * Two edge routing slots side by side need enough room to read as two lines
- * and no more. Charging them the full box gap is what turns a row carrying
- * scores of long edges into thousands of units of empty space.
- */
+/** Edge routing slots side by side need enough room to read as a couple of lines and no more. */
 export const DEFAULT_ROUTE_GAP = 10;
 
-/**
- * Put each slot as close as it can get to where it WANTS to be, keeping the
- * row's order and a minimum gap between neighbours.
- *
- * This is the whole difference between a drawing that reads and the strip
- * this replaced. Pulling a slot to its neighbours' median and then shoving
- * overlaps apart enforces a minimum and nothing else, so every pass can only
- * add space: on a real fleet graph that stretched the drawing from 4688
- * units wide to 13882 and added 43% to the total edge length, and more
- * passes never recovered it.
- *
- * Minimizing the total distance from the desired positions cannot do that.
- * Where the desires already fit, they are used unchanged. Where they collide,
- * the block that forms sits at its members' median, which is the position
- * that minimizes the sum of absolute errors. So a row is never wider than
- * what its own nodes asked for.
- *
- * The constraint x[i] - x[i-1] >= gap[i] becomes a plain "not decreasing"
- * once each position is shifted by the gaps before it, which is the standard
- * isotonic regression that pool-adjacent-violators solves exactly.
- *
- * `gap[i]` is the minimum distance from slot i-1 to slot i. gap[0] is unused.
- */
+/** Put each slot as close as it can get to where it WANTS to be, keeping the row's order and a minimum gap between neighbours. This is the whole difference between a drawing that reads and the strip this replaced. Minimizing the total distance from the desired positions cannot do that. Where the desires already fit, they are used unchanged. Where they collide, the block that forms
+ *sits at its members' median, which is the position that minimizes the sum of absolute errors. So a row is never wider than what its own nodes asked for. The constraint x[i] - x[i-1] >= gap[i] becomes a plain "not decreasing" once each position is shifted by the gaps before it, which is the standard isotonic regression that pool-adjacent-violators solves exactly. */
 export function fitToDesired(desired: readonly number[], gap: readonly number[]): number[] {
   const n = desired.length;
   if (n === 0) return [];
@@ -745,23 +614,8 @@ export interface CoordResult {
   layerExtent: number;
 }
 
-/**
- * Give every slot a cross-axis center.
- *
- * The first pass packs each layer left to right at the minimum gap, which
- * is correct and ugly: a chain of single nodes comes out as a staircase.
- * The straightening passes then repeatedly pull each slot toward the median
- * of its neighbours in the adjacent layer and re-separate any overlap the
- * pull created, alternating direction. That is the priority method rather
- * than full Brandes-Kopf, and the property it buys is the one that matters
- * to a reader: a straight dependency chain draws as a straight line, and a
- * long edge's bend points line up with each other instead of zig-zagging.
- *
- * The separation step runs AFTER every pull, never as a final tidy-up: a
- * layout that resolves overlaps once at the end can still hand back
- * overlapping boxes, and two boxes drawn on top of each other is worse than
- * any amount of crookedness.
- */
+/** Give every slot a cross-axis center. The first pass packs each layer left to right at the minimum gap, which is correct and ugly: a chain of single nodes comes out as a staircase. The straightening passes then repeatedly pull each slot toward the median of its neighbours in the adjacent layer and re-separate any overlap the pull created, alternating direction. That is the priority method rather than full Brandes-Kopf, and the property it buys is the one that matters to a reader: a straight dependency chain draws as a straight line, and a long edge's bend points line up
+ *with each other instead of zig-zagging. The separation step runs AFTER every pull, never as a final tidy-up: a layout that resolves overlaps once at the end can still hand back overlapping boxes, and boxes drawn on top of each other is worse than any amount of crookedness. */
 export function assignCoordinates(
   proper: ProperLayering,
   sizes: readonly NodeSize[],
@@ -777,8 +631,7 @@ export function assignCoordinates(
   const cSizeOf = (s: LayerSlot): number => (s.node >= 0 ? sizes[s.node].w : dummyW);
   const lSizeOf = (s: LayerSlot): number => (s.node >= 0 ? sizes[s.node].h : 0);
 
-  // Two routing slots are two lines and need only room to read apart. A box
-  // against anything needs the full gap.
+  // A box against anything needs the full gap.
   const gapBetween = (a: LayerSlot, b: LayerSlot): number => (a.node < 0 && b.node < 0 ? routeGap : gap);
 
   // Minimum center-to-center distance for each slot from the one before it.
@@ -859,9 +712,7 @@ export function assignCoordinates(
       const min = centers[l][i - 1] + cSizeOf(row[i - 1]) / 2 + gapBetween(row[i - 1], row[i]) + cSizeOf(row[i]) / 2;
       if (centers[l][i] > min) centers[l][i] = min;
     }
-    // A row that OPENS with unanchored slots cannot close its gap by moving
-    // left -- there is nothing to its left. Those slots move right instead,
-    // up against the first slot that does have a reason to be where it is.
+    // A row that OPENS with unanchored slots cannot close its gap by moving left -- there is nothing to its left.
     let first = 0;
     while (first < row.length && !anchored(row[first])) first++;
     if (first === 0 || first >= row.length) return;
@@ -871,11 +722,9 @@ export function assignCoordinates(
     }
   };
 
-  /**
-   * Total cross-axis distance the edges travel, which is the thing a reader
-   * experiences as a tangle. Only the cross axis moves here, so this is the
-   * whole difference between two candidate placements.
-   */
+  /** Total cross-axis distance the edges travel, which is the thing a
+   * reader experiences as a tangle. Only the cross axis moves here, so this
+   * is the whole difference between candidate placements. */
   const wireLength = (): number => {
     let sum = 0;
     rows.forEach((row, l) => {
@@ -892,19 +741,7 @@ export function assignCoordinates(
     return sum;
   };
 
-  /**
-   * Every routing slot of one long edge is one block, and a block moves as a
-   * unit.
-   *
-   * This is the idea Brandes and Koepf's coordinate assignment is built on.
-   * A long edge is chopped into a slot per layer it crosses, and each slot
-   * is free to sit wherever its own row's median wants it. Left alone they
-   * disagree, and the edge draws as a staircase through the middle of the
-   * picture. Held together, it draws as one straight line.
-   *
-   * Real nodes are never in a block: a node has its own reasons to sit where
-   * it does, and a long edge passing nearby is not one of them.
-   */
+  /** Every routing slot of one long edge is one block, and a block moves as a unit. */
   const blockOf = new Map<string, number>();
   const blockMembers: string[][] = [];
   for (const chain of proper.chains.values()) {
@@ -939,11 +776,7 @@ export function assignCoordinates(
     }
   };
 
-  // A sweep is a guess, not an improvement: the up pass and the down pass
-  // want different things, and on a real graph the second one can undo what
-  // the first bought. So every pass is MEASURED and the best is what ships.
-  // Taking whatever the last pass produced is how a layout gets worse the
-  // harder it works.
+  // A sweep is a guess, not an improvement: the up pass.
   let best = centers.map((row) => row.slice());
   let bestScore = wireLength();
   for (let p = 0; p < passes; p++) {
@@ -952,8 +785,7 @@ export function assignCoordinates(
       ? Array.from({ length: rows.length }, (_, i) => i)
       : Array.from({ length: rows.length }, (_, i) => rows.length - 1 - i);
     // A slot with nothing in the swept direction still has a reason to sit
-    // somewhere: the other side. Leaving it where the packing put it is what
-    // makes a sink layer drift away from the graph that feeds it.
+    // somewhere: the other side.
     const desiredByRow = rows.map((row, l) =>
       row.map((_, i) => neighbourMedian(l, i, up) ?? neighbourMedian(l, i, !up) ?? centers[l][i]),
     );
@@ -967,14 +799,13 @@ export function assignCoordinates(
   }
   centers.splice(0, centers.length, ...best.map((row) => row.slice()));
 
-  // After the last pull, never between two of them: compacting mid-run would
-  // be undone by the next pass.
+  // After the last pull, never between some of them: compacting mid-run
+  // would be undone by the next pass.
   for (let l = 0; l < rows.length; l++) {
     compact(l);
     separate(l);
   }
 
-  // Normalize so the drawing starts at 0 on the cross axis.
   let minC = Infinity;
   let maxC = -Infinity;
   rows.forEach((row, l) => {
@@ -991,8 +822,7 @@ export function assignCoordinates(
   const placements: SlotPlacement[][] = rows.map((row, l) =>
     row.map((s, i) => ({
       c: centers[l][i] - minC,
-      // A dummy has no thickness, so it sits on the layer's mid-line and the
-      // routed polyline bends there rather than at the layer's top edge.
+      // A dummy has no thickness, so it sits on the layer's mid-line and the routed polyline bends there.
       l: s.node >= 0 ? layerStart[l] : layerStart[l] + layerThick[l] / 2,
       cSize: cSizeOf(s),
       lSize: lSizeOf(s),
@@ -1023,13 +853,9 @@ export interface PlacedEdge {
   index: number;
   from: number;
   to: number;
-  /** Source to target, including the bend points. At least two points. */
+  /** Source to target, including the bend points. At least points. */
   points: readonly { x: number; y: number }[];
-  /**
-   * True when cycle-breaking reversed this edge. The line is drawn from the
-   * lower node UP to the higher one and the component marks it, because a
-   * circular dependency is a finding, not a rendering detail.
-   */
+  /** True when cycle-breaking reversed this edge. */
   reversed: boolean;
 }
 
@@ -1059,7 +885,7 @@ export interface DagLayoutOptions extends CoordOptions, LayerOptions {
   sizeOf?: (node: DagNode, index: number) => NodeSize;
   /** Ordering sweeps (see ORDER_SWEEPS). */
   sweeps?: number;
-  /** Nodes per row before a layer wraps. See wrapWideLayers. 0 = never wrap. */
+  /** Nodes per row before a layer wraps. See wrapWideLayers. */
   maxLayerWidth?: number;
 }
 
@@ -1079,14 +905,7 @@ export function layoutDag(
     degree[e.from]++;
     degree[e.to]++;
   }
-  // A node with no edge is not part of the dependency structure, and putting
-  // it in a layer says it is. On a real fleet most repositories depend on
-  // nothing internal: 82 of 151 here. Layering them added five rows the
-  // connected graph then had to tunnel every long edge through, which is 130
-  // routing slots and their crossings bought for nothing.
-  //
-  // A pinned node keeps its layer. The caller asked for that position, and
-  // with no edge there is nothing to contradict it.
+  // A node with no edge is not part of the dependency structure, and putting it in a layer says it is.
   const parts = componentsOf(probe, degree);
   if (parts.wired.length > 1 || parts.loose.length > 0) return layoutBlocks(probe, parts, opts);
   return layoutConnected(nodes, edges, opts);
@@ -1098,13 +917,7 @@ interface GraphParts {
   loose: number[];
 }
 
-/**
- * Split into pieces that share no edge.
- *
- * Two components have nothing to say to each other, so laying them out in
- * shared rows is what stretches a two-node chain across the whole drawing to
- * sit beside a hub it has no connection to.
- */
+/** Split into pieces that share no edge. */
 function componentsOf(graph: DagGraph, degree: readonly number[]): GraphParts {
   const near = graph.nodes.map((): number[] => []);
   for (const e of graph.edges) {
@@ -1175,8 +988,7 @@ function layoutBlocks(probe: DagGraph, parts: GraphParts, opts: DagLayoutOptions
     return layoutConnected(sub, subEdges, opts);
   });
 
-  // The edgeless nodes are one block of their own, packed as a grid rather
-  // than a line: 82 boxes in a row is a drawing nobody can read.
+  // The edgeless nodes are one block of their own, packed as a grid rather than a line.
   const looseNodes = parts.loose.map((i) => probe.nodes[i]);
   const looseSizes = looseNodes.map((n, i) => sizeOf(n, i));
   const looseArea = looseSizes.reduce((s, z) => s + (z.w + gap) * (z.h + gap), 0);
@@ -1207,8 +1019,7 @@ function layoutBlocks(probe: DagGraph, parts: GraphParts, opts: DagLayoutOptions
   const looseW = looseBlock.reduce((m, p) => Math.max(m, p.x + p.w), 0);
   const looseH = looseBlock.reduce((m, p) => Math.max(m, p.y + p.h), 0);
 
-  // Shelf the wired blocks, then the edgeless block last so it reads as an
-  // appendix rather than as part of the structure.
+  // Shelf the wired blocks, then the edgeless block last so it reads as an appendix rather than as part.
   const shelved: DagLayout[] = [];
   let x = 0;
   let y = 0;
@@ -1235,8 +1046,7 @@ function layoutBlocks(probe: DagGraph, parts: GraphParts, opts: DagLayoutOptions
   const byEdge = new Map<DagEdge, number>();
   inputEdges.forEach((e, i) => byEdge.set(e, i));
 
-  // Each block numbered its own nodes from zero, so an edge's endpoints move
-  // by however many nodes the blocks before it contributed.
+  // Each block numbered its own nodes from zero.
   const cycleEdges: number[] = [];
   const edges: PlacedEdge[] = [];
   let nodeOffset = 0;
@@ -1276,9 +1086,7 @@ function layoutConnected(
   const crossings = orderLayers(proper, opts.sweeps);
   const sizeOf = opts.sizeOf ?? ((n: DagNode): NodeSize => measureNode(n));
   const sizes = graph.nodes.map((n, i) => sizeOf(n, i));
-  // In 'LR' the layer axis is x and the cross axis is y, so the two
-  // dimensions of a box swap before the layout sees them and swap back
-  // after. One layout implementation, two orientations.
+  // In 'LR' the layer axis is x and the cross axis is y.
   const layoutSizes: NodeSize[] = orientation === 'TB' ? sizes : sizes.map((s) => ({ w: s.h, h: s.w }));
   const coords = assignCoordinates(proper, layoutSizes, opts);
 
@@ -1310,10 +1118,7 @@ function layoutConnected(
   const routed: PlacedEdge[] = graph.edges.map((e, ei) => {
     const reversed = reversedSet.has(ei);
     if (reversed) cycleEdges.push(ei);
-    // The chain was built along the ACYCLIC direction. A reversed edge is
-    // therefore routed tail-first and flipped back here, so `points` always
-    // runs from the edge's real source to its real target and an arrowhead
-    // at the last point always means what it says.
+    // The chain was built along the ACYCLIC direction.
     const chain = (proper.chains.get(ei) ?? []).map((id) => slotPos.get(id));
     const bends = chain
       .filter((p): p is SlotPlacement => p !== undefined)
@@ -1364,7 +1169,7 @@ export interface MeasureOptions {
   padY?: number;
   /** Label line height. */
   lineH?: number;
-  /** Sublabel line height (0 when the node has no sublabel). */
+  /* */
   subLineH?: number;
   /** Clamp on the box width, so one long title cannot set the whole layout. */
   maxW?: number;
@@ -1402,9 +1207,9 @@ export function measureNode(node: DagNode, opts: MeasureOptions = {}): NodeSize 
 
 /** Pan and zoom: world (layout) coordinates to screen (CSS px). */
 export interface DagViewport {
-  /** Screen x of world x = 0. */
+  /* */
   x: number;
-  /** Screen y of world y = 0. */
+  /* */
   y: number;
   scale: number;
 }
@@ -1539,7 +1344,7 @@ export function visibleWorldRect(v: DagViewport, vw: number, vh: number): WorldR
   return { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y };
 }
 
-/** True when the two world rectangles overlap at all. */
+/** True when both world rectangles overlap at all. */
 export function rectsOverlap(a: WorldRect, b: WorldRect): boolean {
   return a.x <= b.x + b.w && b.x <= a.x + a.w && a.y <= b.y + b.h && b.y <= a.y + a.h;
 }
@@ -1572,7 +1377,7 @@ export function visibleEdges(layout: DagLayout, view: WorldRect): number[] {
   return out;
 }
 
-/** Index of the node containing a world point, or -1. Later nodes win. */
+/*Later nodes win. */
 export function hitTestNodes(layout: DagLayout, wx: number, wy: number): number {
   for (let i = layout.nodes.length - 1; i >= 0; i--) {
     const n = layout.nodes[i];
@@ -1581,11 +1386,8 @@ export function hitTestNodes(layout: DagLayout, wx: number, wy: number): number 
   return -1;
 }
 
-/**
- * Index of the edge within `tol` world units of a point, or -1. The nearest
- * edge wins, not the first: with several lines converging on one box, "the
- * one I am pointing at" is the closest one.
- */
+/*The nearest edge wins, not the first: with several lines converging on one
+ * box, "the one I am pointing at" is the closest one. */
 export function hitTestEdges(layout: DagLayout, wx: number, wy: number, tol: number): number {
   let best = -1;
   let bestD = tol * tol;
@@ -1618,17 +1420,13 @@ export interface Neighbourhood {
   edges: ReadonlySet<number>;
 }
 
-/**
- * Everything up-stream and down-stream of a node, plus the edges connecting
- * them. This is what the hover highlight paints: "what does this need, and
- * what breaks if it moves" is the question a dependency graph exists to
- * answer, and on a graph past a few dozen nodes it cannot be answered by
- * following lines with your eyes.
- *
- * Traversal follows the TRUE edge direction, including edges that
- * cycle-breaking reversed for layout -- the highlight has to reflect the
- * dependencies, not the drawing.
- */
+/** Everything up-stream and down-stream of a node, plus the edges
+ * connecting them. This is what the hover highlight paints: "what does this
+ * need, and what breaks if it moves" is the question a dependency graph
+ * exists to answer, and on a graph past a few nodes it cannot be answered
+ * by following lines with your eyes. Traversal follows the TRUE edge
+ * direction, including edges that cycle-breaking reversed for layout -- the
+ * highlight has to reflect the dependencies, not the drawing. */
 export function neighbourhood(layout: DagLayout, index: number): Neighbourhood {
   const n = layout.nodes.length;
   const outAdj: number[][] = Array.from({ length: n }, () => []);
@@ -1666,20 +1464,14 @@ export function neighbourhood(layout: DagLayout, index: number): Neighbourhood {
 /** Longest dependency chain in the layout, in nodes. */
 export function criticalPathLength(layout: DagLayout): number {
   let max = 0;
-  // An edgeless node is not in the layering and carries no layer, but it is
-  // still a chain of one. Reading its -1 as a length would answer zero for a
-  // graph that plainly holds nodes.
+  // An edgeless node is not in the layering and carries no layer, but it is still a chain of one.
   for (const n of layout.nodes) max = Math.max(max, n.layer < 0 ? 1 : n.layer + 1);
   return max;
 }
 
 // -- Grouping ---------------------------------------------------------------------------
 
-/**
- * Stable hue for a node: its `category`, else its own id. Falling back to
- * the id means an uncategorized graph is still readably multi-colored,
- * instead of one wall of the same blue.
- */
+/** Stable hue for a node: its `category`, else its own id. */
 export function nodeHue(node: DagNode): number {
   const key = node.category ?? node.id;
   return Math.floor(((hashString(key) * 0.61803398875) % 1) * 360);

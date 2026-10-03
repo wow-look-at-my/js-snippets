@@ -1,22 +1,4 @@
 // Markdown -> DOM renderer (CommonMark + GFM).
-//
-// The DOM half of ui/markdown-parse.ts, which parses (micromark) and holds
-// the safety argument. By the time a tree reaches this walker it has been
-// through sanitizeTree, so no node can express markup and no URL has an
-// unsafe scheme -- which makes this file mechanical: it maps node types to
-// elements and nothing else.
-//
-// It calls createElement/createTextNode and assigns textContent. There is NO
-// innerHTML path here, deliberately and permanently. Note what that buys:
-// there is no HTML string anywhere in the pipeline, so there is also no
-// sanitizer to configure correctly -- the usual "parse to HTML, then scrub
-// the HTML" round trip, and every mis-scrub bug that comes with it, simply
-// does not exist here.
-//
-// Re-exports the parse module so one import is enough. A consumer wanting
-// different output (real <img> tags, linked #123 references, a framework's
-// virtual DOM) should walk parseMarkdown()'s mdast tree directly rather than
-// post-processing this renderer's elements.
 
 import { parseMarkdown } from './markdown-parse.ts';
 import type { Nodes, Root } from 'mdast';
@@ -24,36 +6,15 @@ import type { Nodes, Root } from 'mdast';
 export * from './markdown-parse.ts';
 
 export interface RenderMarkdownOptions {
-  /**
-   * Prefix for every class name the renderer sets: the root gets `<prefix>`,
-   * and the parts needing styling hooks get `<prefix>-code`, `<prefix>-task`
-   * and `<prefix>-table`. Default 'md'.
-   */
+  /** Prefix for every class name the renderer sets. */
   classPrefix?: string;
-  /**
-   * Added to every heading level, clamped to h1..h6. Use a positive offset
-   * when the markdown is embedded in a page that owns its own headings -- a
-   * description's `# Title` is a section of that description, and should not
-   * outrank the page's real heading. Default 0 (faithful levels).
-   */
+  /** Added to every heading level, clamped to h1..h6. */
   headingOffset?: number;
-  /**
-   * `target` for generated links, or null for same-tab navigation. When set,
-   * `rel="noopener noreferrer"` is set with it -- never hand an untrusted
-   * link a live `window.opener`. Default '_blank'.
-   */
+  /** `target` for generated links, or null for same-tab navigation. */
   linkTarget?: string | null;
-  /**
-   * Render images as real `<img>` elements. Default false: an image renders
-   * as its alt text linked to the source instead, because loading a remote
-   * image named by untrusted markdown leaks the reader's IP and referrer to
-   * whoever wrote it. Turn it on only for markdown you trust.
-   */
+  /** Render images as real `<img>` elements. */
   renderImages?: boolean;
-  /**
-   * Document used to create nodes. Default `globalThis.document`; pass one
-   * explicitly to render into another document (an iframe, a template).
-   */
+  /** Document used to create nodes. */
   document?: Document;
 }
 
@@ -144,8 +105,6 @@ export function renderMarkdown(
         break;
 
       case 'list':
-        // `start` is meaningful only for ordered lists, and only when it is
-        // not the default 1.
         if (node.ordered) {
           const ol = el('ol') as HTMLOListElement;
           if (typeof node.start === 'number' && node.start !== 1) ol.start = node.start;
@@ -197,8 +156,7 @@ export function renderMarkdown(
       case 'tableRow': {
         const tr = el('tr');
         column = 0;
-        // A header row's cells are <th>; mdast does not mark them, so the
-        // parent element decides.
+        // A header row's cells are <th>; mdast does not mark them, so the parent element decides.
         const cellTag = (parent as Element).tagName === 'THEAD' ? 'th' : 'td';
         for (const cell of node.children) {
           const td = el(cellTag);
@@ -255,13 +213,11 @@ export function renderMarkdown(
       case 'footnoteReference':
       case 'definition':
       case 'footnoteDefinition':
-        // Nothing to draw: definitions are link targets, and footnotes are
-        // out of scope for an embedded description.
+        // Nothing to draw: definitions are link targets, and footnotes are out of scope for an embedded description.
         break;
 
       default:
-        // Any node type not handled above still contributes its content
-        // rather than vanishing.
+        // Any node type not handled above still contributes its content rather than vanishing.
         appendChildren(parent, node);
     }
   };

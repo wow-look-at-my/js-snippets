@@ -1,6 +1,4 @@
-// Tests for the least-squares cylinder fit. Each case generates points on a
-// KNOWN cylinder and checks that the recovered axis, centre and radius match.
-// The axis is only defined up to sign, so direction checks use |dot| == 1.
+// Tests for the least-squares cylinder fit.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -78,8 +76,7 @@ test('fitCylinderForAxis is exact when the axis is already known', () => {
   assert.ok(fit);
   assert.ok(Math.abs(fit.radius - 2) < 1e-9, `radius ${fit.radius}`);
   assert.ok(fit.rms < 1e-9);
-  // The centre is the axis point nearest the centroid, so x and y must match
-  // and the axis coordinate is free.
+  // The centre is the axis point nearest the centroid, so x and y must match and the axis coordinate is free.
   assert.ok(Math.abs(fit.center[0] - 1) < 1e-9);
   assert.ok(Math.abs(fit.center[1] + 2) < 1e-9);
   assert.ok(Math.abs(fit.height - 10) < 1e-9);
@@ -147,9 +144,7 @@ test('fitCylinder recovers an obliquely-oriented cylinder', () => {
 });
 
 test('fitCylinder finds the axis of a SHORT wide cylinder, where the cloud is flat', () => {
-  // The principal axis of this cloud is PERPENDICULAR to the true axis, which is
-  // the case a local-only search gets wrong. The hemisphere sweep is what makes
-  // it work.
+  // The principal axis of this cloud is PERPENDICULAR to the true axis.
   const axis: Vec3 = [0, 0, 1];
   const points = cylinderPoints([0, 0, 0], axis, 10, 0.4, 3, 40);
   const fit = fitCylinder(points);
@@ -166,15 +161,13 @@ test('fitCylinder stays near the generator under radial noise', () => {
   assert.ok(fit);
   assert.ok(Math.abs(Math.abs(dot(fit.axis, axis)) - 1) < 1e-3, `axis ${fit.axis}`);
   assert.ok(Math.abs(fit.radius - 4) < 0.05, `radius ${fit.radius}`);
-  // 2% radial jitter on radius 4 is a uniform band of +-0.08, whose rms is
-  // about 0.046. Anything far above that means the axis drifted.
   assert.ok(fit.rms < 0.08, `rms ${fit.rms}`);
 });
 
 test('fitCylinder accepts an initial direction and refines it', () => {
   const axis = normalize([1, 1, 1]);
   const points = cylinderPoints([0, 0, 0], axis, 2, 5, 8, 14);
-  // A hint 10 degrees off the truth, with the global sweep skipped.
+  // A hint several degrees off the truth, with the global sweep skipped.
   const hint = normalize([1, 1.3, 0.75]);
   const fit = fitCylinder(points, { direction: hint });
   assert.ok(fit);
@@ -211,7 +204,6 @@ test('distanceToCylinderSurface is signed and ignores the caps', () => {
   assert.ok(Math.abs(distanceToCylinderSurface(fit, [2, 0, 0])) < 1e-6);
   assert.ok(Math.abs(distanceToCylinderSurface(fit, [1, 0, 0]) + 1) < 1e-6);
   assert.ok(Math.abs(distanceToCylinderSurface(fit, [5, 0, 0]) - 3) < 1e-6);
-  // Far beyond the data's extent along the axis, the distance is unchanged: the
-  // fitted cylinder is infinite.
+  // Far beyond the data's extent along the axis, the distance is unchanged: the fitted cylinder is infinite.
   assert.ok(Math.abs(distanceToCylinderSurface(fit, [2, 0, 1000])) < 1e-6);
 });

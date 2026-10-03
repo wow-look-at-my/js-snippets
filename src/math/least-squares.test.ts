@@ -1,6 +1,4 @@
-// Tests for the least-squares fitting module. Every fit is checked against a
-// case with a known exact answer, plus a noisy case where the recovered model
-// must stay near the generator.
+// Tests for the least-squares fitting module.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -37,7 +35,6 @@ function mulberry32(seed: number): () => number {
 }
 
 test('solveLinear solves a square system exactly', () => {
-  // 2x + y = 5, x - y = 1 has the solution (2, 1).
   const x = solveLinear([[2, 1], [1, -1]], [5, 1]);
   assert.ok(x);
   assert.ok(Math.abs(x[0] - 2) < 1e-12);
@@ -67,7 +64,6 @@ test('transpose and matVec', () => {
 });
 
 test('solveLeastSquares reproduces an exactly-consistent overdetermined system', () => {
-  // Three points exactly on y = 2x + 1, fitted as [intercept, slope].
   const a = [[1, 0], [1, 1], [1, 2]];
   const b = [1, 3, 5];
   const x = solveLeastSquares(a, b);
@@ -78,8 +74,6 @@ test('solveLeastSquares reproduces an exactly-consistent overdetermined system',
 });
 
 test('solveLeastSquares minimises the residual on an inconsistent system', () => {
-  // A single unknown against three conflicting measurements: the least-squares
-  // answer is their mean.
   const a = [[1], [1], [1]];
   const x = solveLeastSquares(a, [1, 2, 6]);
   assert.ok(x);
@@ -93,7 +87,7 @@ test('solveLeastSquares returns null on a rank-deficient system, and a ridge res
   assert.equal(solveLeastSquares(a, b), null);
   const ridged = solveLeastSquares(a, b, 1e-6);
   assert.ok(ridged);
-  // The ridge splits the shared slope between the two identical columns.
+  // The ridge splits the shared slope between both identical columns.
   assert.ok(Math.abs(ridged[0] + ridged[1] - 1) < 1e-4);
 });
 
@@ -103,7 +97,6 @@ test('rms of an empty residual vector is 0', () => {
 });
 
 test('evalPolynomial uses ascending coefficient order', () => {
-  // 1 + 2x + 3x^2 at x = 2 is 1 + 4 + 12.
   assert.equal(evalPolynomial([1, 2, 3], 2), 17);
   assert.equal(evalPolynomial([], 5), 0);
   assert.equal(evalPolynomial([7], 5), 7);
@@ -121,8 +114,7 @@ test('fitPolynomial recovers an exact cubic', () => {
 });
 
 test('fitPolynomial stays accurate on x values far from the origin', () => {
-  // A raw Vandermonde matrix on x near 1e6 loses the quadratic term. The
-  // internal centring is what keeps this case solvable.
+  // A raw Vandermonde matrix on x near 1e6 loses the quadratic term.
   const truth = [5, -2, 0.25];
   const xs = [1e6, 1e6 + 1, 1e6 + 2, 1e6 + 3, 1e6 + 4];
   const ys = xs.map((x) => evalPolynomial(truth, x));
@@ -186,7 +178,6 @@ test('fitOrthoLine2 handles the vertical line that fitLine cannot', () => {
   const fit = fitOrthoLine2(points);
   assert.ok(fit);
   assert.ok(fit.rms < 1e-12);
-  // The direction is the y axis (either sign) and the point is on x = 2.
   assert.ok(Math.abs(Math.abs(fit.direction[1]) - 1) < 1e-12);
   assert.ok(Math.abs(fit.direction[0]) < 1e-12);
   assert.ok(Math.abs(fit.point[0] - 2) < 1e-12);
@@ -295,7 +286,6 @@ test('symmetricEigen3 rejects a matrix that is not 3x3', () => {
 });
 
 test('fitPlane recovers a tilted plane exactly', () => {
-  // The plane z = 2x - y + 3 has the normal (2, -1, -1) up to scale and sign.
   const points: Vec3[] = [];
   for (let i = 0; i < 5; i++) {
     for (let j = 0; j < 5; j++) {
@@ -358,7 +348,6 @@ test('fitOrthoLine3 recovers a 3D line exactly', () => {
 });
 
 test('fitOrthoLine3 rms is the orthogonal distance, not a vertical residual', () => {
-  // Two points off the x axis by exactly 1 in +y and -y, and two on it.
   const points: Vec3[] = [[0, 0, 0], [1, 1, 0], [2, 0, 0], [3, -1, 0]];
   const fit = fitOrthoLine3(points);
   assert.ok(fit);

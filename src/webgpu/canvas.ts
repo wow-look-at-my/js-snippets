@@ -1,12 +1,11 @@
 // Canvas backing-store sizing for HiDPI rendering. ~Every GPU scratchpad
-// reimplements this device-pixel-ratio resize; it is backend-agnostic (plain
-// WebGL or WebGPU).
+// reimplements this device-pixel-ratio resize.
 
 /** Options for `resizeCanvasToDisplay`. */
 export interface ResizeCanvasOptions {
-  /** Clamp the device pixel ratio (default 2) so 3x/4x screens don't over-allocate. */
+  /* */
   maxDpr?: number;
-  /** Round the backing-store dimensions to a multiple of this many pixels (default 1). */
+  /* */
   roundTo?: number;
 }
 

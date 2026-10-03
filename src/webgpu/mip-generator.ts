@@ -1,7 +1,4 @@
-// AMD Single Pass Downsampler — WebGPU mip chain generator
-//
-// Generates a full mip chain for a GPUTexture in two compute dispatches
-// instead of N blit passes. Works with any rgba32float texture.
+// AMD Single Pass Downsampler — WebGPU mip chain generator Generates a full mip chain for a GPUTexture in compute dispatches instead.
 
 import spdSource from './shaders/spd.wgsl';
 
@@ -26,19 +23,10 @@ function createGPUBuffer(device: GPUDevice, data: ArrayBufferView, usage: GPUBuf
   return buf;
 }
 
-/**
- * Generate the full mip chain for a texture using the AMD Single Pass
- * Downsampler algorithm.
- *
- * The texture must have been created with `COPY_DST` usage and the desired
- * `mipLevelCount`. Mip level 0 must already contain data. This function
- * fills levels 1 through mipLevelCount-1.
- *
- * @param device   The GPUDevice to use.
- * @param texture  The texture whose mip chain to generate. Must be rgba32float.
- * @param mipCount Number of mip levels (including level 0). If omitted,
- *                 uses `texture.mipLevelCount`.
- */
+/** Generate the full mip chain for a texture using the AMD Single Pass
+ * Downsampler algorithm. The texture must have been created with `COPY_DST`
+ * usage and the desired `mipLevelCount`. If omitted, uses
+ * `texture.mipLevelCount`. */
 export function generateMips(device: GPUDevice, texture: GPUTexture, mipCount?: number): void {
   const BUF = GPUBufferUsage;
   const srcW = texture.width;
@@ -54,7 +42,6 @@ export function generateMips(device: GPUDevice, texture: GPUTexture, mipCount?: 
   for (let i = 1; i < levels; i++) {
     w = Math.max(1, w >> 1);
     h = Math.max(1, h >> 1);
-    // bytesPerRow must be multiple of 256; rgba32float = 16 bytes/px → pad width to multiple of 16
     const padWidth = Math.max(Math.ceil(w / 16) * 16, 16);
     mipInfos.push({ bufOffset: totalVec4s, padWidth, width: w, height: h });
     totalVec4s += padWidth * h;
@@ -103,7 +90,6 @@ export function generateMips(device: GPUDevice, texture: GPUTexture, mipCount?: 
 
   const encoder = device.createCommandEncoder();
 
-  // Phase 1: mips 1-6 via shared memory
   {
     const pass = encoder.beginComputePass();
     pass.setPipeline(spdPL);
@@ -112,7 +98,6 @@ export function generateMips(device: GPUDevice, texture: GPUTexture, mipCount?: 
     pass.end();
   }
 
-  // Phase 2: mips 7+ (single workgroup)
   if (levels > 7) {
     const pass = encoder.beginComputePass();
     pass.setPipeline(tailPL);

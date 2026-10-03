@@ -1,14 +1,4 @@
 // Least-squares fitting. Pure, dependency-free, no DOM/GPU.
-//
-// Two families live here. The LINEAR solvers minimise the residual of A x = b
-// in the vertical sense: each row is one equation and the unknowns are linear.
-// The GEOMETRIC fits minimise the ORTHOGONAL distance to a line, a plane or a
-// circle, which is a different quantity and the one that makes sense when both
-// coordinates carry error. A y-on-x line fit tips over as the line turns
-// vertical. An orthogonal fit does not.
-//
-// A singular system returns null rather than a vector of NaN or Infinity: the
-// caller decides what an unconstrained fit means.
 
 import type { Vec2 } from './vec2.ts';
 import type { Vec3 } from './vec3.ts';
@@ -89,9 +79,7 @@ export function matVec(a: Matrix, x: readonly number[]): number[] {
   return out;
 }
 
-// Solve the normal equations (A^T A + ridge I) x = A^T b. The ridge term is
-// Tikhonov regularisation: it is 0 by default, and a small positive value makes
-// a rank-deficient or ill-conditioned system solvable at the cost of bias.
+// Solve the normal equations (A^T A + ridge I) x = A^T b.
 export function solveLeastSquares(a: Matrix, b: readonly number[], ridge = 0): number[] | null {
   const [rows, cols] = dims(a);
   if (b.length !== rows) throw new RangeError(`solveLeastSquares: b has ${b.length} entries, want ${rows}`);
@@ -123,7 +111,7 @@ export function residuals(a: Matrix, x: readonly number[], b: readonly number[])
   return predicted.map((p, i) => b[i] - p);
 }
 
-// Root mean square of a residual vector. An empty vector has no mean, so 0.
+// Root mean square of a residual vector.
 export function rms(values: readonly number[]): number {
   if (values.length === 0) return 0;
   let acc = 0;
@@ -235,7 +223,7 @@ function eigen2(xx: number, xy: number, yy: number): { values: [number, number];
 // Total-least-squares line through 2D points: minimises the PERPENDICULAR
 // distance, so it handles a vertical line and does not favour either axis. The
 // direction is the principal axis of the point cloud, and the point is its
-// centroid. Fewer than 2 points, or coincident points, is null.
+// centroid. A bounded number of points, or coincident points, is null.
 export function fitOrthoLine2(points: readonly Vec2[]): OrthoLineFit2 | null {
   if (points.length < 2) return null;
   const n = points.length;
@@ -267,10 +255,9 @@ export function fitOrthoLine2(points: readonly Vec2[]): OrthoLineFit2 | null {
   return { point: [mx, my], direction, rms: rms(errors) };
 }
 
-// Algebraic (Kasa) circle fit: x^2 + y^2 = 2 a x + 2 b y + c is LINEAR in
-// (a, b, c), so one least-squares solve gives the centre and radius. The
-// reported rms is the true geometric residual, |p - centre| - radius, not the
-// algebraic one the solve minimises. Collinear points have no circle: null.
+// The reported rms is the true geometric residual, |p - centre| - radius, not
+// the algebraic one the solve minimises. Collinear points have no circle:
+// null.
 export function fitCircle2(points: readonly Vec2[]): CircleFit2 | null {
   if (points.length < 3) return null;
   const rows = points.map((p) => [2 * p[0], 2 * p[1], 1]);
@@ -402,8 +389,7 @@ export function fitPlane(points: readonly Vec3[]): PlaneFit | null {
   if (points.length < 3) return null;
   const { mean, matrix } = covariance3(points);
   const { values, vectors } = symmetricEigen3(matrix);
-  // Two distinct directions must carry variance, or the cloud is a line/point
-  // and its normal is arbitrary.
+  // Distinct directions must carry variance, or the cloud is a line/point and its normal is arbitrary.
   if (values[1] <= Number.EPSILON * (values[2] || 1)) return null;
 
   const normal = vectors[0];

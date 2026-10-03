@@ -1,31 +1,6 @@
-/**
- * Gallery section: <dag-view>.
- *
- * The graph's layout is node-tested; the ELEMENT is not, because nothing
- * under `node --test` can paint a canvas. So this section exists to put the
- * treatments that are easy to get wrong on screen at once, rather than to
- * show a graph that happens to look tidy.
- *
- * Five instances, each carrying a case a happy-path graph hides:
- *
- *   - the build graph: categories, every node state in the style map, a
- *     long edge that must bend around two layers rather than cut through
- *     them, a label far too long for its box, and a wide fan-out layer.
- *   - the cyclic graph: three mutually-dependent services. A layered
- *     drawing has to break the cycle to draw anything at all, and the
- *     thing being verified here is that the broken edge is still DRAWN,
- *     still points the true way, and is announced in the notice strip.
- *   - the LR graph: the same data with the axes swapped, so an orientation
- *     bug shows up as a difference between two pictures on one page.
- *   - a retheme: the same graph under --dag-* custom properties.
- *   - the empty one: a graph with no data must say so, not look broken.
- */
+/** Gallery section: <dag-view>. */
 
 // SIDE-EFFECT IMPORT — this is what registers <dag-view>, and it must stay.
-// Every other use of the class below is a TYPE position, and a type-only
-// import is ELIDED at compile time: without this line nothing evaluates the
-// module, the element never upgrades, and the section sits on its light-DOM
-// "loading…" line forever, with the build green throughout.
 import '../src/ui/dag-view.ts';
 import type { DagViewElement, DagNode, DagEdge, DagStyleMap } from '../src/ui/dag-view.ts';
 
@@ -53,11 +28,9 @@ const BUILD_NODES: DagNode[] = [
   { id: 'sign', label: 'sign', sublabel: 'cosign', category: 'release', state: 'pending' },
   { id: 'publish', label: 'publish', sublabel: 'buildhost', category: 'release', state: 'pending' },
   { id: 'announce', label: 'announce', category: 'release', state: 'pending' },
-  // A state string no style rule mentions: it must still draw as a normal,
-  // readable node in its category color rather than a blank one.
+  // A state string no style rule mentions: it must still draw as a normal.
   { id: 'audit', label: 'audit', sublabel: 'unknown state', category: 'verify', state: 'nobody-defined-this' },
-  // No category at all: the hue falls back to the id, so the graph stays
-  // multi-colored instead of going one flat blue.
+  // No category at all: the hue falls back to the id, so the graph stays multi-colored instead of going one flat blue.
   { id: 'cache-warm', label: 'cache warm' },
 ];
 
@@ -77,17 +50,13 @@ const BUILD_EDGES: DagEdge[] = [
   { from: 'sign', to: 'publish' },
   { from: 'docs', to: 'publish' },
   { from: 'publish', to: 'announce' },
-  // THE LONG EDGE: checkout sits on layer 0 and publish four layers below,
-  // so this one has to bend around the layers between rather than cut a
-  // chord across the drawing.
   { from: 'checkout', to: 'publish', label: 'provenance' },
-  // Two edges the graph cannot use. Both must be REPORTED in the notice
-  // strip, never silently dropped.
+  // Edges the graph cannot use. Both must be REPORTED in the notice strip, never silently dropped.
   { from: 'deps', to: 'a-node-that-does-not-exist' },
   { from: 'lint', to: 'lint' },
 ];
 
-/** Three services that each wait on the next. Somebody has to give. */
+/** Services that each wait on the next. Somebody has to give. */
 const CYCLE_NODES: DagNode[] = [
   { id: 'api', label: 'api', sublabel: 'waits on auth', category: 'service' },
   { id: 'auth', label: 'auth', sublabel: 'waits on session', category: 'service' },

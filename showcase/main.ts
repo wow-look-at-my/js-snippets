@@ -1,25 +1,4 @@
-// Gallery wiring. This file owns the <timeline-view> section (the live,
-// clock-driven one) and mounts the rest from their own modules, so no
-// single file becomes the place every component's demo accretes.
-//
-// WHY THE GALLERY EXISTS: these components are DOM-bound and therefore NOT
-// node-tested — their pure halves are, but nothing under `node --test` ever
-// renders one. This page is where they are actually exercised, and it
-// publishes per branch, so a change is verifiable from a real URL before it
-// merges. A new component in src/ui/ gets a section here; that is the
-// contract, not a nicety (see CLAUDE.md, "Showcase").
-//
-// Four <timeline-view> instances fed by the deterministic fake generator in
-// ./fake-data.ts: two live, one live behind a minTime floor, one frozen
-// between both stops. The page adds NOTHING interactive of its own —
-// pan/zoom/hover/click/fullscreen are the component's — it only feeds data
-// on the real advancing clock and prunes so a day-long tab stays lean.
-//
-// Feature-detection: everything here targets the component API on THIS
-// branch's ../src/ui. Post-#39 extras (the legend's consumer rows, the
-// built-in 'cancelled' style) are detected at runtime, so the same page
-// builds and runs before and after that PR lands — the new visuals simply
-// light up once the bundled component has them.
+// Gallery wiring.
 
 import {
   DEFAULT_STYLES,
@@ -41,10 +20,7 @@ import { installTabs } from './tabs.ts';
 document.head.append(Object.assign(document.createElement('style'), { textContent: PAGE_CSS }));
 installTabs();
 
-// The static sections. Both take `now` so their fixtures are stamped once,
-// from one clock, instead of drifting between sections on a slow load.
-// Mounted BEFORE the timeline's live feed starts: they are one-shot, and a
-// component that never upgrades must not take the rest of the page with it.
+// The static sections.
 {
   const now = Date.now();
   mountDataTableDemo(now);
@@ -67,9 +43,7 @@ const PRUNE_EVERY_MS = 5 * MIN;
 
 const main = document.getElementById('main') as TimelineViewElement;
 const mini = document.getElementById('mini') as TimelineViewElement;
-// Back-limited but LIVE: minTime alone. It rides the same live feed as the
-// other two, so the two bounds are visibly independent — the left stop is
-// hard while the right edge keeps following the clock.
+// Back-limited but LIVE: minTime alone.
 const floorEl = document.getElementById('floor') as TimelineViewElement;
 // Frozen: both bounds, its own one-shot window, no live feed at all.
 const staticEl = document.getElementById('static') as TimelineViewElement;
@@ -80,13 +54,11 @@ const els: TimelineViewElement[] = [main, mini, floorEl];
 // -- Styles: consumer style-map keys on top of the built-ins ---------------------
 
 const styles: StyleMap = {
-  // A consumer-defined terminal treatment: like 'failed' but with a dashed
-  // emphasis border, used by the fan-out and retry lanes' timed-out runs.
+  // A consumer-defined terminal treatment: like 'failed' but with a dashed emphasis border, used by the fan-out.
   timeout: { pattern: 'stipple', border: { width: 2, emphasis: true, dash: [5, 3] }, glyph: 'bang' },
 };
 if (!('cancelled' in DEFAULT_STYLES)) {
-  // Pre-#39 components have no built-in 'cancelled' treatment — register a
-  // matching consumer style so the canary lane reads the same either way.
+  // Pre-#components have no built-in 'cancelled' treatment — register a matching consumer style.
   styles['cancelled'] = { pattern: 'outline', border: { width: 1.5, dash: [4, 3] } };
 }
 for (const el of els) el.styles = styles;
@@ -142,7 +114,7 @@ const boot = Date.now();
 const floor = boot - FLOOR_MS;
 let lastTick = boot;
 
-// -- Static bounds: the two stops, one each and then both together ---------------
+// -- Static bounds: both stops, one each and then both together ---------------
 
 /** How far back #floor may scroll — well inside the lazy-history floor. */
 const FLOOR_DEMO_MS = 10 * MIN;
@@ -203,9 +175,7 @@ for (const el of els) feed(el, boot - PREROLL_MS, boot, true);
   if (latest === null || !subEl.fitToInterval(latest, { pad: 0.08 })) subEl.setViewport(from, to);
 }
 
-// Live tick: re-snapshot every run overlapping the recent window. Plans are
-// pure functions of absolute time, so a throttled/late tick (hidden tab)
-// self-heals — the next merge re-emits every affected run in final form.
+// Live tick: re-snapshot every run overlapping the recent window.
 setInterval(() => {
   const now = Date.now();
   const t0 = Math.max(lastTick - 5 * SEC, now - KEEP_MS);
@@ -234,8 +204,7 @@ for (const el of els) {
 }
 
 // Prune: while following, periodically reset to the recent window so the
-// merged set can't grow without bound in a long-lived tab. History the user
-// pans back to simply re-loads through loadRange — same bytes, same ids.
+// merged set can't grow without bound in a long-lived tab.
 setInterval(() => {
   const now = Date.now();
   for (const el of els) {

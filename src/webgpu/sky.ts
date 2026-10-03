@@ -1,5 +1,4 @@
-// Equirectangular HDRI sky renderer.
-// Draws a fullscreen triangle with no vertex buffer — just bind and draw(3).
+// Equirectangular HDRI sky renderer. Draws a fullscreen triangle with no vertex buffer — bind and draw(3).
 
 import skySource from './shaders/sky.wgsl';
 
@@ -9,17 +8,12 @@ export interface Sky {
   bindGroup: GPUBindGroup;
 }
 
-/**
- * Create a sky rendering pipeline for an equirectangular HDRI texture.
- *
- * @param device      The GPUDevice.
- * @param format      Target color format (e.g. 'bgra8unorm' or 'rgba16float').
- * @param hdriView    Texture view of the HDRI.
- * @param hdriSampler Sampler for the HDRI (typically linear + mip filtering).
- * @param depthFormat Optional depth format. Defaults to 'depth24plus'.
- *                    The sky renders at z=1 with depthCompare='less-equal'
- *                    and no depth writes.
- */
+/** Create a sky rendering pipeline for an equirectangular HDRI texture. @param
+ * device The GPUDevice. @param format Target color format (e.g. 'bgra8unorm'
+ * or 'rgba16float'). @param hdriView Texture view of the HDRI. @param
+ * hdriSampler Sampler for the HDRI (typically linear + mip filtering). @param
+ * depthFormat Optional depth format. Defaults to 'depth24plus'. The sky
+ * renders at z=1 with depthCompare='less-equal' and no depth writes. */
 export function createSky(
   device: GPUDevice,
   format: GPUTextureFormat,
@@ -58,12 +52,7 @@ export function createSky(
   return { pipeline, uniformBuffer, bindGroup };
 }
 
-/**
- * Draw the sky into an active render pass.
- *
- * Write `invViewProj` to `sky.uniformBuffer` before calling this:
- *   device.queue.writeBuffer(sky.uniformBuffer, 0, invViewProj);
- */
+/** Draw the sky into an active render pass. */
 export function drawSky(pass: GPURenderPassEncoder, sky: Sky): void {
   pass.setPipeline(sky.pipeline);
   pass.setBindGroup(0, sky.bindGroup);

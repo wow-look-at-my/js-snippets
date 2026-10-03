@@ -66,7 +66,7 @@ Exports:
 - evalPolynomial(coeffs, x) -> number -- coefficients in ASCENDING power order.
 - fitPolynomial(xs, ys, degree) -> number[] | null -- ascending coefficients. The x values are centred and scaled internally, so x far from the origin still fits.
 - fitLine(xs, ys) -> LineFit2 | null -- ordinary y-on-x fit. Null on vertical data.
-- fitOrthoLine2(points) -> OrthoLineFit2 | null -- total least squares: minimises the perpendicular distance, so a vertical line is fine.
+- fitOrthoLine2(points) -> OrthoLineFit2 | null -- total least squares: minimises the perpendicular distance. As a result, a vertical line is fine.
 - fitCircle2(points) -> CircleFit2 | null -- algebraic (Kasa) fit through one linear solve. The rms reported is the TRUE geometric residual, not the algebraic one. Null for collinear points.
 - covariance3(points) -> Covariance3 -- mean and the 3x3 covariance (divided by the count).
 - symmetricEigen3(matrix) -> Eigen3 -- Jacobi rotations on a symmetric 3x3. Eigenvalues ASCENDING with matching orthonormal eigenvectors, each signed so its largest component is positive (deterministic, never an arbitrary flip).
@@ -84,7 +84,7 @@ CylinderFitOptions = { direction?: Vec3; directionSamples?: number; refineSteps?
 ```
 
 Exports:
-- fitCylinder(points, options?) -> CylinderFit | null -- sweep plus refinement. Null below five points, which is how many degrees of freedom a cylinder has. Options: direction (an initial axis guess, which SKIPS the sweep), directionSamples (default 256), refineSteps (default 64), tolerance (default 1e-9).
+- fitCylinder(points, options?) -> CylinderFit | null -- sweep plus refinement. Null a bounded number of points, which is how many degrees of freedom a cylinder has. Options: direction (an initial axis guess, which SKIPS the sweep), directionSamples (default 256), refineSteps (default 64), tolerance (default 1e-9).
 - fitCylinderForAxis(points, direction) -> CylinderFit | null -- the closed form for a KNOWN axis, plus the energy that axis achieves. The direction need not be a unit vector. Null when every point lies on the axis.
 - distanceToCylinderSurface(fit, p) -> number -- signed distance to the fitted surface, negative inside. The caps are not considered.
 

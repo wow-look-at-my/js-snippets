@@ -1,7 +1,4 @@
-// Tests for the column-major Float32Array(16) mat4 utilities. Covers the
-// existing API (identity / multiply / perspective / lookAt / invert /
-// normalMatrix) and the newer functions (perspectiveGL, normalMatrix3,
-// rotateZ, transpose).
+// Tests for the column-major Float32Array(16) mat4 utilities.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -58,11 +55,10 @@ test('multiply is associative', () => {
 test('perspective uses WebGPU clip-Z: -near -> 0, -far -> 1 after divide', () => {
   const near = 0.5, far = 100;
   const m = perspective(Math.PI / 3, 1.5, near, far);
-  // A point on the -Z axis at z = -near. Clip w = -z = near; clip z maps to 0.
+  // A point on the -Z axis at z = -near.
   const cn = apply(m, [0, 0, -near, 1]);
   assert.ok(close(cn[3], near, 1e-5), `w at near = ${cn[3]}`);
   assert.ok(close(cn[2] / cn[3], 0, 1e-5), `ndc-z at near = ${cn[2] / cn[3]}`);
-  // A point at z = -far maps to clip-z 1.
   const cf = apply(m, [0, 0, -far, 1]);
   assert.ok(close(cf[3], far, 1e-4), `w at far = ${cf[3]}`);
   assert.ok(close(cf[2] / cf[3], 1, 1e-5), `ndc-z at far = ${cf[2] / cf[3]}`);
@@ -79,10 +75,8 @@ test('perspectiveGL uses OpenGL clip-Z: -near -> -1, -far -> +1 after divide', (
 
 test('perspective sets the standard projection entries (aspect, fov, w = -z)', () => {
   const m = perspective(Math.PI / 2, 2, 1, 10);
-  // fovY = 90deg -> f = 1/tan(45) = 1; m[5] = f, m[0] = f/aspect.
   assert.ok(close(m[5], 1, 1e-6), `m[5] = ${m[5]}`);
   assert.ok(close(m[0], 0.5, 1e-6), `m[0] = ${m[0]}`);
-  // m[11] = -1 makes clip-w = -z (perspective divide).
   assert.equal(m[11], -1);
 });
 
@@ -159,8 +153,7 @@ test('normalMatrix returns identity on a singular matrix', () => {
 });
 
 test('normalMatrix3 equals the inverse-transpose of the upper 3x3 for a non-uniform scale', () => {
-  // For a pure non-uniform scale diag(sx,sy,sz), the inverse-transpose is
-  // diag(1/sx, 1/sy, 1/sz). normalMatrix3 returns a column-major mat3.
+  // For a pure non-uniform scale diag(sx,sy,sz).
   const sx = 2, sy = 4, sz = 0.5;
   const m = scale(identity(), [sx, sy, sz]);
   const n3 = normalMatrix3(m);
@@ -177,13 +170,11 @@ test('normalMatrix3 matches the 3x3 block of normalMatrix for a rigid+scale tran
   const m = scale(rotateZ(translate(identity(), [1, 2, 3]), 0.6), [1.5, 0.5, 2]);
   const n3 = normalMatrix3(m);
   const n4 = normalMatrix(m);
-  // Map the 4x4 3x3 block (cols 0..2, rows 0..2) to the mat3 layout.
   const block = [n4[0], n4[1], n4[2], n4[4], n4[5], n4[6], n4[8], n4[9], n4[10]];
   assertMatClose(n3, block, 1e-4, 'normalMatrix3 vs normalMatrix block');
 });
 
 test('normalMatrix3 returns the column-major identity 3x3 on a singular matrix', () => {
-  // Upper-left 3x3 with a zero column is singular (det 0).
   const m = scale(identity(), [1, 1, 0]);
   assertMatClose(
     normalMatrix3(m),

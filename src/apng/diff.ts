@@ -1,18 +1,5 @@
-// Inter-frame differencing for the APNG encoder: which pixels actually moved,
-// the smallest rectangle that covers them, and the two ways to encode it.
-// Pure — no DOM, no browser APIs.
-//
-// This is where an animated PNG's size is won or lost. A naive encoder stores
-// every frame whole; storing only the changed rectangle, and inside it only the
-// changed pixels, is usually an order of magnitude less data for screen capture
-// or UI animation.
-//
-// THE COMPARISON IS AGAINST THE CANVAS, NOT THE PREVIOUS SOURCE FRAME. The
-// caller keeps a canvas of what a decoder would be showing and diffs each new
-// frame against that. With a non-zero threshold the two are not the same thing:
-// sub-threshold differences are dropped, and comparing against the last source
-// frame would let a slow drift accumulate silently, one tolerated step at a
-// time, until the visible error is arbitrarily large.
+// Inter-frame differencing for the APNG encoder: which pixels moved, the
+// smallest rectangle that covers them, and the ways to encode it.
 
 /** A rectangle in pixels. `w`/`h` are always >= 1 on a returned diff. */
 export interface Rect {
@@ -28,24 +15,12 @@ export interface FrameDiff {
   rect: Rect;
   /** How many pixels inside `rect` are considered changed. */
   changed: number;
-  /**
-   * True when every changed pixel is fully opaque, which is what makes the
-   * `over` encoding legal: an APNG frame composited with blend_op=OVER only
-   * reproduces its source exactly where that source has alpha 255.
-   */
+  /** True when every changed pixel is fully opaque, which is what makes the `over` encoding legal. */
   opaque: boolean;
 }
 
-/**
- * A pixel counts as changed when any colour channel moves by more than
- * `threshold`, or alpha by more than `alphaThreshold`.
- *
- * Both default to 2 — small enough that no one sees the difference in 8-bit
- * colour, large enough to absorb the ±1 noise that video decoding, camera
- * sensors, and repeated resampling sprinkle over otherwise identical frames.
- * That noise is what stops a dirty-rect encoder from finding anything static.
- * 0 makes the comparison exact and lossless.
- */
+/** A pixel counts as changed when any colour channel moves by more than
+ * `threshold`, or alpha by more than `alphaThreshold`. */
 export interface DiffOptions {
   threshold?: number;
   alphaThreshold?: number;

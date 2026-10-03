@@ -1,15 +1,4 @@
-/**
- * Pointer hit-testing primitives for canvas-painted components.
- *
- * A canvas has no DOM to hit-test against, so every component that paints
- * its own surface must answer "what is under the pointer?" itself. These are
- * the shapes that answer it. `<timeline-view>` and `<dag-view>` both use
- * them, which is why they live here and not inside either one.
- *
- * Coordinates are CSS px in whatever space the caller works in. The
- * functions do no transformation: a component with a viewport transform maps
- * the pointer into its own space first.
- */
+/** Pointer hit-testing primitives for canvas-painted components. */
 
 /** An axis-aligned hit rectangle (CSS px). */
 export interface HitRect {
@@ -19,21 +8,15 @@ export interface HitRect {
   h: number;
 }
 
-/**
- * Widen a (possibly hairline) rect to at least `minW` px around its center —
- * instants get a hit target a few px larger than their visual so they stay
- * hoverable/clickable.
- */
+/** Widen a (possibly hairline) rect to at least `minW` px around its center
+ * — instants get a hit target a few px larger than their visual. */
 export function expandHitRect(r: HitRect, minW: number): HitRect {
   if (r.w >= minW) return r;
   const cx = r.x + r.w / 2;
   return { x: cx - minW / 2, y: r.y, w: minW, h: r.h };
 }
 
-/**
- * Index of the TOPMOST (= last, matching paint order) rect containing the
- * point, or -1. Edges are inclusive.
- */
+/*Edges are inclusive. */
 export function hitTestRects(x: number, y: number, rects: readonly HitRect[]): number {
   for (let i = rects.length - 1; i >= 0; i--) {
     const r = rects[i];

@@ -1,28 +1,4 @@
 // Fake, local, infinite run feed for the <timeline-view> showcase.
-//
-// Every run is a PURE FUNCTION OF ABSOLUTE TIME: each lane repeats a fixed
-// period, and the k-th cycle's shape (jitter, durations, outcome, labels)
-// comes from a PRNG seeded on (lane, k). The same (lane, k) always yields the
-// same run, so the live ticker, the lazy `loadRange` history loader, and a
-// post-hiccup resync all agree byte-for-byte — the feed can be regenerated
-// for any time range, at any time, forever. No network, no state.
-//
-// The lane roster is arranged so every visual treatment of the chart is on
-// screen somewhere at the default ~15-minute span:
-//   builds   — queued dim lead-ins, mid-run declared waits, successes+failures
-//   gateway  — concurrency-group waits: hatched ⧗ "group · Nth" queuers and a
-//              ⏳N holder label, overlapping bars (sub-track packing)
-//   canary   — cancelled runs with kill tails of cycling sizes (incl. sub-4px)
-//   nightly  — one ~40-minute ongoing span that crosses the viewport edges
-//   skips    — bursts of zero-duration instants (cluster → split on zoom)
-//              plus a lone probe pip on its own category hue
-//   fanout   — periodic 5-9-wide bursts exercising lane packing, with a
-//              'timeout' consumer style and the odd failure
-//   retry    — timeout → retry chains linked by connectors
-//   release  — SUB-SPANS: one release run per cycle whose stages nest under
-//              it (build, test with unit/e2e nested one level deeper, canary,
-//              an approval instant, promote); a failed e2e fails test and the
-//              release, one canary in seven is cancelled
 
 import type {
   TimelineConnector,
@@ -53,7 +29,7 @@ export function mulberry32(seed: number): Rand {
   };
 }
 
-/** Cycle index 0 anchor — keeps k small so integer hashing stays well mixed. */
+/* */
 const EPOCH0 = Date.UTC(2026, 0, 1);
 
 const SEC = 1_000;
@@ -201,8 +177,7 @@ const gateway: LaneSpec = {
   },
 };
 
-// Kill-tail sizes cycle so some tails are sub-4px at the default span
-// (scrim-only terminal cuts) and some are wide enough to read.
+// Kill-tail sizes cycle so some tails are sub-4px at the default span (scrim-only terminal cuts) and some are wide enough.
 const CANARY_TAILS = [1.2 * SEC, 3 * SEC, 10 * SEC, 26 * SEC];
 
 const canary: LaneSpec = {
@@ -275,8 +250,7 @@ const skips: LaneSpec = {
   seed: 0x5c1b5,
   cycle: (base, k, rnd) => {
     const plans: RunPlan[] = [];
-    // A burst of provably-ignorable deliveries, dropped before a container
-    // boots — several instants within a few seconds (clusters at wide zoom).
+    // A burst of provably-ignorable deliveries, dropped before a container boots — several instants within a few seconds.
     const n = 4 + Math.floor(rnd() * 9);
     let t = base + between(rnd, 0, 6 * SEC);
     for (let j = 0; j < n; j++) {
@@ -510,7 +484,7 @@ export function snapshotRun(run: RunPlan, now: number): TimelineInterval | null 
   if (run.phases?.length) {
     const segs: TimelineSegment[] = [];
     for (const p of run.phases) {
-      if (!done && p.start > now) break; // future phase — not yet
+      if (!done && p.start > now) break;
       if (!done && p.end > now) {
         segs.push({ start: p.start, end: null, kind: p.kind }); // active phase, open
         break;
@@ -572,7 +546,7 @@ export function batchForRange(t0: number, t1: number, now: number): FakeBatch {
   return { intervals, connectors, markers: markersForRange(t0, t1, now) };
 }
 
-/** Deterministic vertical markers: a deploy every 5 min, a drill every 15. */
+/* */
 export function markersForRange(t0: number, t1: number, now: number): TimelineMarker[] {
   const out: TimelineMarker[] = [];
   const step = 5 * MIN;

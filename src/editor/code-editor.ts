@@ -1,31 +1,4 @@
-/**
- * <code-editor> — a tiny, dependency-free syntax-highlighting code editor.
- *
- * The whole trick is that the highlighted token spans ARE the editable content
- * (a single `contenteditable` whose children are coloured `<span>`s and bare
- * whitespace text nodes). There is no textarea hidden under a highlight layer
- * and no transparent-text overlay to keep aligned — the native caret sits in
- * the real glyphs, so it can never drift. On every edit the text is
- * re-tokenized and the spans rebuilt, with the caret offset saved and restored
- * around the rebuild.
- *
- * It is a normal custom element rendered in the LIGHT DOM (so the proven
- * `window.getSelection()` caret math works identically across browsers) and it
- * injects its own scoped, themeable stylesheet once — drop the one module in
- * and you have a working editor, no CSS file to ship.
- *
- *   import { CodeEditor } from '.../editor/code-editor.js'; // registers <code-editor>
- *
- *   <code-editor language="glsl">float x = 1.0;</code-editor>
- *
- *   const ed = document.querySelector('code-editor');
- *   ed.value = 'vec3 n = normalize(p);';
- *   ed.addEventListener('input', () => console.log(ed.value));
- *
- * Theme by overriding the `--ce-*` custom properties (see CODE_EDITOR_CSS).
- * For read-only highlighting without an editor, use highlightToHTML() /
- * highlightToFragment().
- */
+/** <code-editor> — a tiny, dependency-free syntax-highlighting code editor. */
 
 import {
   tokenize,
@@ -205,8 +178,7 @@ export class CodeEditor extends HTMLElement {
     injectStyles();
     this.classList.add('ce-host');
 
-    // Seed initial text from the `value` attribute or the element's own text,
-    // captured before we replace the children with the editor.
+    // Seed initial text from the `value` attribute or the element's own text, captured before we replace the children.
     const initial = this.getAttribute('value') ?? this.textContent ?? '';
     this._value = initial;
     const langAttr = this.getAttribute('language');
@@ -347,11 +319,10 @@ export class CodeEditor extends HTMLElement {
 
   private insertText(text: string): void {
     // execCommand keeps the native undo stack intact and fires `input`, which
-    // drives the re-highlight. Fall back to a manual range edit if unavailable.
+    // drives the re-highlight.
     try {
       if (document.execCommand('insertText', false, text)) return;
     } catch {
-      /* fall through */
     }
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return;
@@ -414,8 +385,8 @@ export class CodeEditor extends HTMLElement {
   }
 }
 
-// Auto-register under the conventional tag name, but never clobber an existing
-// definition (a consumer may have registered their own, or loaded this twice).
+// Auto-register under the conventional tag name, but never clobber an
+// existing definition.
 if (typeof customElements !== 'undefined' && !customElements.get('code-editor')) {
   customElements.define('code-editor', CodeEditor);
 }

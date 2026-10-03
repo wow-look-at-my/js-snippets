@@ -1,49 +1,4 @@
-/**
- * <data-table> — a declarative, filterable, sortable table.
- *
- * One element = one tabular view. You declare the columns and hand over the
- * rows; it owns the header, the sort cycle, the free-text query, the facet
- * chips, the "showing N of M" readout and the two distinct empty states.
- * Dependency-free.
- *
- *   import 'https://…/js-snippets/ui/data-table.js'; // registers <data-table>
- *
- *   <data-table empty-text="No runs yet." storage-key="myapp.runs" searchable>
- *     <p>loading…</p>                <!-- light DOM: shown until upgrade -->
- *   </data-table>
- *
- *   const t = document.querySelector('data-table');
- *   t.columns = [
- *     { key: 'started', label: 'Queued', value: r => Date.parse(r.started),
- *       render: r => fmtTime(r.started) },
- *     { key: 'status', label: 'Status', render: r => statusBadge(r) },
- *     { key: 'duration', label: 'Duration', align: 'end',
- *       value: r => r.ms, render: r => fmtMs(r.ms) },
- *   ];
- *   t.facets = [{ key: 'status', label: 'status', of: r => r.status }];
- *   t.rows = runs;
- *
- * WHY THIS EXISTS: a dashboard grows one hand-rolled <table> per view, each
- * re-implementing rows, sorting, empty states and (worst) its own filter
- * chips with their own persistence. They drift: one sorts nullish to the
- * top, one forgets to say "N hidden by the filter" and reads as "nothing
- * happened", one loses the operator's choice on reload. This is that logic,
- * once.
- *
- * VALUE vs RENDER vs TEXT is the core of the column contract. `value`
- * sorts, `render` displays, `text` searches (defaulting to `value`'s
- * string). A duration column sorts by milliseconds, shows "1.2s", and is
- * searched as "1.2s" — collapse those and you get a table that sorts "10s"
- * before "9s".
- *
- * SAFETY: a `render` returning a string is appended as a TEXT NODE, never
- * innerHTML, so producer strings cannot inject markup. Returning a Node is
- * the opt-in for richer cells, and that DOM's safety is the consumer's.
- *
- * Theme via --table-* custom properties (see data-table.css). The pure
- * logic lives in ui/data-table-math.ts (node-tested) and is re-exported
- * here so one import serves both.
- */
+/** <data-table> — a declarative, filterable, sortable table. */
 
 import TABLE_CSS from './data-table.css';
 import {
@@ -90,28 +45,10 @@ export interface FacetGroup<Row extends DataRow = DataRow> {
   /** Hide the whole group's chip row. */
   hidden?: boolean;
 
-  /**
-   * Set false when the HOST does the filtering — typically server-side,
-   * before its own row cap. The chips still render, toggle and persist,
-   * and `table-filter-change` still fires, but the table does NOT drop
-   * rows locally: the host is expected to refetch.
-   *
-   * This exists because doing it the other way round is a real bug. A
-   * server that caps a page BEFORE excluding a status hands over a window
-   * that is entirely that status; filtering it again here empties the
-   * table, and it reports "nothing matches" while the rows the operator
-   * wants sit just past the cap, unreachable at any limit. If the data is
-   * a server-filtered window, say so here.
-   */
+  /** Set false when the HOST does the filtering — typically server-side, before its own row cap. */
   local?: boolean;
 
-  /**
-   * Chip counts to display instead of counting the supplied rows. A
-   * host-filtered group MUST supply these: the rows in hand no longer
-   * contain the hidden buckets at all, so a derived count would read ×0
-   * for precisely the chip you need a number on. Counts over the host's
-   * whole window ("skipped ×4213") are the useful figure anyway.
-   */
+  /** Chip counts to display instead of counting the supplied rows. */
   counts?: ReadonlyMap<string, number> | Readonly<Record<string, number>>;
 
   /** Buckets whose chip shows even at zero, so the control stays discoverable. */
@@ -148,9 +85,7 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
   private styleEl: HTMLStyleElement | null = null;
   private _interactiveRows = false;
   private _detailFor: ((row: Row) => Node | Promise<Node> | null) | null = null;
-  /** Row ids whose detail is open. Ids, not rows: the row OBJECTS are
-   * replaced wholesale on every data refresh, so identity would lose the
-   * operator's expansion on the next poll. */
+  /** Row ids whose detail is open. */
   private _expanded = new Set<string>();
   private restored = false;
 
@@ -185,9 +120,7 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
 
     this.countEl = document.createElement('span');
     this.countEl.className = 'count';
-    // Typing in the query box changes how many rows exist, and a sighted
-    // user sees that instantly. polite (not assertive) so it reports after
-    // the keystroke rather than interrupting it.
+    // Typing in the query box changes how many rows exist.
     this.countEl.setAttribute('aria-live', 'polite');
     this.countEl.setAttribute('aria-atomic', 'true');
 
@@ -275,14 +208,8 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     this.render();
   }
 
-  /**
-   * Extra CSS applied INSIDE this element's shadow root, after the built-in
-   * sheet. Shadow DOM is why this exists: a consumer whose `render` returns
-   * styled cells cannot reach them from an outer stylesheet, so without an
-   * escape hatch every richly-rendered cell has to carry inline styles.
-   * Wrappers around this element (see <activity-feed>) pass their whole
-   * sheet through here.
-   */
+  /** Extra CSS applied INSIDE this element's shadow root, after the built-in
+   * sheet. */
   get styleText(): string {
     return this._styleText;
   }
@@ -295,11 +222,8 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     this.styleEl.textContent = this._styleText;
   }
 
-  /**
-   * Overrides the "everything is filtered out" message, which by default
-   * names rows. A wrapper with its own noun ("entries") sets this so the
-   * empty state does not suddenly change vocabulary.
-   */
+  /** Overrides the "everything is filtered out" message, which by default
+   * names rows. */
   get filteredEmptyText(): ((total: number) => string) | null {
     return this._filteredEmptyText;
   }
@@ -349,15 +273,8 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     this.filterChanged();
   }
 
-  /**
-   * Per-row expandable detail. Return the content for a row, or null for a
-   * row that has none (its row then stays non-expandable). A Promise is
-   * awaited with a placeholder in place, so a detail that has to be fetched
-   * — a stored value, a drill-down — does not block the click.
-   *
-   * Requires `rowId`: expansion is tracked by id so it survives the row
-   * objects being replaced on every refresh.
-   */
+  /** Per-row expandable detail. Return the content for a row, or null for a
+   * row that has none (its row then stays non-expandable). */
   get detailFor(): ((row: Row) => Node | Promise<Node> | null) | null {
     return this._detailFor;
   }
@@ -410,8 +327,7 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     tr.classList.add('has-open-detail');
     this.bodyEl.append(detail);
     if (content instanceof Promise) {
-      // Placeholder first: an awaited detail that renders nothing until it
-      // resolves reads as a click that did not register.
+      // Placeholder first: an awaited detail that renders nothing until it resolves reads as a click.
       const pending = document.createElement('span');
       pending.className = 'detail-pending';
       pending.textContent = 'loading…';
@@ -419,8 +335,7 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
       const openFor = this._rowId(row);
       void content.then(
         (node) => {
-          // The table may have re-rendered (or the row collapsed) while the
-          // promise was in flight; only paint into a detail still on screen.
+          // The table may have re-rendered (or the row collapsed) while the promise was in flight.
           if (!td.isConnected || !this._expanded.has(openFor)) return;
           td.replaceChildren(node);
         },
@@ -441,13 +356,11 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     }
   }
 
-  /**
-   * Rows become keyboard-reachable exactly when someone is listening for
+  /** Rows become keyboard-reachable exactly when someone is listening for
    * `row-click`. Detecting it from the listener rather than exposing yet
-   * another flag keeps the two facts that must agree — "clicking a row does
+   * another flag keeps both facts that must agree — "clicking a row does
    * something" and "a keyboard can reach a row" — impossible to set
-   * inconsistently.
-   */
+   * inconsistently. */
   addEventListener(
     type: string,
     listener: EventListenerOrEventListenerObject | null,
@@ -501,7 +414,6 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     try {
       this.applyStored(parseStoredTableFilter(globalThis.localStorage?.getItem(key)));
     } catch {
-      /* storage unavailable (private mode, sandboxed iframe): no persistence */
     }
   }
 
@@ -511,7 +423,6 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     try {
       globalThis.localStorage?.setItem(key, JSON.stringify(this.filter));
     } catch {
-      /* storage unavailable: the choice just doesn't persist */
     }
   }
 
@@ -548,9 +459,7 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     for (const col of this._columns) {
       const th = document.createElement('th');
       th.textContent = col.label;
-      // Column headers are headers, not decoration: without scope a screen
-      // reader cannot say which column a cell belongs to, which is most of
-      // what makes a table readable non-visually.
+      // Column headers are headers, not decoration: without scope a screen reader cannot say which column a cell belongs to, which is most.
       th.scope = 'col';
       if (col.align === 'end') th.classList.add('end');
       if (col.className) th.classList.add(col.className);
@@ -597,19 +506,13 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     this.chipsWrapEl.replaceChildren();
     for (const group of this._facets) {
       if (group.hidden) continue;
-      // Supplied counts win: a host-filtered group's rows no longer contain
-      // its hidden buckets, so derived counts would read ×0 on exactly the
-      // chips that need a number.
       const counts = group.counts
         ? group.counts instanceof Map
           ? group.counts
           : new Map(Object.entries(group.counts))
         : (facetCounts.get(group.key) ?? new Map<string, number>());
       const hidden = this._hidden.get(group.key) ?? new Set<string>();
-      // Every bucket that occurs, PLUS every hidden one: a chip must stay
-      // visible while it is hiding rows, or the filter becomes unreachable.
-      // PLUS any the group pins, so a control with nothing to show yet is
-      // still discoverable.
+      // Every bucket that occurs, PLUS every hidden one: a chip must stay visible while it is hiding rows.
       const buckets = new Set([...counts.keys(), ...hidden, ...(group.always ?? [])]);
       if (buckets.size === 0) continue;
       const ordered = group.order
@@ -654,13 +557,9 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     this.renderChips(facetCounts);
 
     const filtering = isFiltering(filter);
-    // "showing N of M" describes what THIS element removed. A host-filtered
-    // group's exclusions never reached these rows, so counting them here
-    // would announce "showing 50 of 50" and mean nothing.
+    // "showing N of M" describes what THIS element removed.
     this.countEl.textContent = shown.length !== total ? `showing ${shown.length} of ${total}` : '';
-    // The clear affordance, though, covers every hidden bucket including a
-    // host-filtered group's — otherwise a chip could be toggled on and
-    // never cleared.
+    // The clear affordance, though, covers every hidden bucket including a host-filtered group's — otherwise a chip could be toggled.
     const anyHidden = isFiltering({ query: this._query, hidden: this._hidden });
     this.clearEl.hidden = !anyHidden;
     this.barEl.hidden = !this.searchable && this.chipsWrapEl.childElementCount === 0 && !anyHidden;
@@ -682,11 +581,7 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
           }),
         );
       };
-      // A row that HAS a detail toggles it on click, in addition to
-      // dispatching row-click. Expansion lives in the component, not the
-      // consumer: every hand-rolled version of this kept an "open id"
-      // variable and re-fetched the whole page to expand a row, which is
-      // both slower and a way to lose the operator's place.
+      // A row that HAS a detail toggles it on click, in addition to dispatching row-click.
       const expandable = this._detailFor !== null && this._rowId !== null;
       tr.addEventListener('click', () => {
         if (expandable) this.toggleDetail(row);
@@ -702,9 +597,7 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
         tr.setAttribute('role', 'button');
         tr.classList.add('interactive');
         if (expandable) {
-          // The row is a disclosure control, and must say so: a screen
-          // reader has no other way to learn that activating it reveals
-          // content, or whether that content is currently showing.
+          // The row is a disclosure control, and must say so.
           tr.setAttribute('aria-expanded', String(this._expanded.has(this._rowId!(row))));
         }
         tr.addEventListener('keydown', (e: KeyboardEvent) => {
@@ -734,9 +627,7 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     this.tableEl.hidden = nothing;
     this.emptyEl.hidden = !nothing;
     if (nothing) {
-      // Say WHICH emptiness this is. "Nothing yet" in front of a table
-      // holding rows the filter is hiding is the bug worth avoiding: it
-      // reads as "the system did nothing" when the truth is "you hid it".
+      // Say WHICH emptiness this is.
       this.emptyEl.textContent =
         total > 0 && filtering
           ? (this._filteredEmptyText?.(total) ?? `No rows match the filter (${total} hidden).`)
@@ -751,8 +642,8 @@ function textOfCell<Row extends DataRow>(row: Row, col: TableColumn<Row>): strin
   return v == null ? '' : String(v);
 }
 
-// Auto-register under the conventional tag name, but never clobber an existing
-// definition (a consumer may have registered their own, or loaded this twice).
+// Auto-register under the conventional tag name, but never clobber an
+// existing definition.
 if (typeof customElements !== 'undefined' && !customElements.get('data-table')) {
   customElements.define('data-table', DataTableElement);
 }
