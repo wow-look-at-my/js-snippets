@@ -178,6 +178,31 @@ if (parentRow && hits.some((r) => r.parentId === parentRow.id)) {
 	check(lum(px.kid) < lum(px.parent) - 8, `subspans: the sub-span is a darker shade than its parent (sub-span ${px.kid} vs parent ${px.parent})`);
 	check(hueGap <= 20, `subspans: the sub-span keeps its parent's hue (${Math.round(hueGap)} degrees apart)`);
 
+	// e2e overlaps its sibling unit, so it packs a row lower than its parent's first child row.
+	const e2e = hits.filter((r) => r.id.endsWith(':test:e2e'));
+	check(e2e.length > 0, 'subspans: the sweep finds the e2e sub-span, which sits below a sibling');
+	if (e2e.length > 0) {
+		const e2eY = e2e[Math.floor(e2e.length / 2)].y;
+		const e2eTop = Math.min(...e2e.map((r) => r.y));
+		let right = sx;
+		for (let xx = sx; xx < sbox.x + sbox.width - 4; xx += 4) {
+			const h = await hoverAt(xx, e2eY);
+			if (h?.id !== e2e[0].id) break;
+			right = xx;
+		}
+		const probeX = right - 6;
+		const above = await hoverAt(probeX, e2eTop - 6);
+		check(above === null, `subspans: the row above e2e is empty near its end (${above?.id ?? 'empty'})`);
+		const over = await page.evaluate(([x, y]) => {
+			const el = document.getElementById('subspans');
+			const canvas = el.shadowRoot.querySelector('canvas');
+			const r = canvas.getBoundingClientRect();
+			const dpr = canvas.width / r.width;
+			return Array.from(canvas.getContext('2d').getImageData(Math.round((x - r.left) * dpr), Math.round((y - r.top) * dpr), 1, 1).data).slice(0, 3);
+		}, [probeX, e2eTop - 3]);
+		check(lum(over) < 30, `subspans: a sub-span with nothing above it casts no shadow from nowhere (pixel above e2e ${over})`);
+	}
+
 	// Hover a sub-span: the gallery's tooltip names the parent from hit.parent.
 	await page.mouse.move(sx, firstKid.y);
 	await page.waitForTimeout(120);

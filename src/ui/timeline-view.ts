@@ -3888,8 +3888,8 @@ export class TimelineViewElement extends HTMLElement {
       return;
     }
 
-    // A sub-span is ATTACHED: it reaches up through the track gap to the row above, square-cornered on that edge.
-    const attached = n.parent !== null;
+    // A sub-span is ATTACHED only on the row directly under its parent.
+    const attached = n.parent !== null && n.track === n.parent.track + 1;
     if (attached) {
       const gap = this.metrics().trackGap;
       r.y -= gap;
@@ -3907,7 +3907,7 @@ export class TimelineViewElement extends HTMLElement {
     const radius = Math.min(3, bh / 3, bw / 2);
     // Square the edges where a family joins: the top of a sub-span, the bottom of a span that has sub-spans.
     const top = attached ? 0 : radius;
-    const bottom = n.children !== null ? 0 : radius;
+    const bottom = n.children !== null && n.children.some((c) => c.track === n.track + 1) ? 0 : radius;
     const path = new Path2D();
     path.roundRect(x0, y, bw, bh, [top, top, bottom, bottom]);
 
