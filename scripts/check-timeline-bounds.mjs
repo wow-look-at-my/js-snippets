@@ -190,37 +190,27 @@ if (parentRow && hits.some((r) => r.parentId === parentRow.id)) {
 			if (h?.id !== e2e[0].id) break;
 			right = xx;
 		}
-		const probeX = right - 6;
-		const above = await hoverAt(probeX, e2eTop - 6);
-		check(above === null, `subspans: the row above e2e is empty near its end (${above?.id ?? 'empty'})`);
-		const over = await page.evaluate(([x, y]) => {
-			const el = document.getElementById('subspans');
-			const canvas = el.shadowRoot.querySelector('canvas');
-			const r = canvas.getBoundingClientRect();
-			const dpr = canvas.width / r.width;
-			return Array.from(canvas.getContext('2d').getImageData(Math.round((x - r.left) * dpr), Math.round((y - r.top) * dpr), 1, 1).data).slice(0, 3);
-		}, [probeX, e2eTop - 3]);
-		check(lum(over) < 30, `subspans: a sub-span with nothing above it casts no shadow from nowhere (pixel above e2e ${over})`);
-
-		// Still connected: a stem in e2e's shade crosses the empty row between it and test. It is paint only, so the hit test sees nothing there.
-		const rowY = e2eTop - 8;
-		const line = await page.evaluate(([x0, x1, y]) => {
-			const el = document.getElementById('subspans');
-			const canvas = el.shadowRoot.querySelector('canvas');
-			const r = canvas.getBoundingClientRect();
-			const dpr = canvas.width / r.width;
-			const out = [];
-			const ctx = canvas.getContext('2d');
-			for (let x = x0; x <= x1; x += 1) out.push([x, Array.from(ctx.getImageData(Math.round((x - r.left) * dpr), Math.round((y - r.top) * dpr), 1, 1).data).slice(0, 3)]);
-			return out;
-		}, [Math.round(sbox.x + 4), Math.round(right), rowY]);
-		let stem = null;
-		for (const [x, c] of line) {
-			const cHue = Math.min(Math.abs(hue(c) - hue(px.kid)), 360 - Math.abs(hue(c) - hue(px.kid)));
-			if (lum(c) < 30 || cHue > 20) continue;
-			if ((await hoverAt(x, rowY)) === null) { stem = { x, c }; break; }
+		// e2e attaches to unit, the bar on the row directly above it: its color fills the gap, and unit's shadow darkens it.
+		let underUnit = null;
+		for (let xx = right; xx > sbox.x + 4; xx -= 4) {
+			if ((await hoverAt(xx, e2eTop - 6))?.id?.endsWith(':test:unit')) { underUnit = xx; break; }
 		}
-		check(stem !== null, `subspans: a stem connects e2e to test across the empty row (${stem ? `at x ${stem.x}, ${stem.c}` : 'none found'})`);
+		check(underUnit !== null, 'subspans: unit sits directly above part of e2e');
+		if (underUnit !== null) {
+			const e2eBottom = Math.max(...e2e.map((r) => r.y));
+			const pair = await page.evaluate(([x, gy, by]) => {
+				const el = document.getElementById('subspans');
+				const canvas = el.shadowRoot.querySelector('canvas');
+				const r = canvas.getBoundingClientRect();
+				const dpr = canvas.width / r.width;
+				const ctx = canvas.getContext('2d');
+				const read = (yy) => Array.from(ctx.getImageData(Math.round((x - r.left) * dpr), Math.round((yy - r.top) * dpr), 1, 1).data).slice(0, 3);
+				return { gap: read(gy), body: read(by) };
+			}, [underUnit, e2eTop - 1, e2eBottom - 2]);
+			const pairHue = Math.min(Math.abs(hue(pair.gap) - hue(pair.body)), 360 - Math.abs(hue(pair.gap) - hue(pair.body)));
+			check(pairHue <= 20 && lum(pair.gap) > 30, `subspans: e2e is attached to unit, its color fills the gap (gap ${pair.gap} vs e2e ${pair.body})`);
+			check(lum(pair.gap) < lum(pair.body) - 15, `subspans: unit casts a shadow onto e2e (gap ${pair.gap} vs e2e ${pair.body})`);
+		}
 	}
 
 	// Hover a sub-span: the gallery's tooltip names the parent from hit.parent.

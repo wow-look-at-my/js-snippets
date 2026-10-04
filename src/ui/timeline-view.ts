@@ -281,8 +281,6 @@ const SUB_SPAN_SHADE_STEP = 0.11;
 /** Depth (CSS px) and strength of the shadow the bar above casts onto an attached sub-span. */
 const SUB_SPAN_SHADOW_PX = 6;
 const SUB_SPAN_SHADOW_ALPHA = 0.55;
-/** Width (CSS px) of the stem that joins a sub-span packed below a sibling to its parent. */
-const SUB_SPAN_STEM_PX = 6;
 const EMPTY_ROOTS: NInterval[] = [];
 // Fraction of the span the window START may drift before track assignment re-runs (the visible-layout memo's quantum).
 const ASSIGN_QUANTUM_FRAC = 0.02;
@@ -3873,58 +3871,23 @@ export class TimelineViewElement extends HTMLElement {
     }
   }
 
-  /**
-   * A sub-span packed below a sibling still connects to its parent: a stem in its shade runs up to the parent's bar.
-   * The stem stands at the first point in the sub-span's span where every row in between is empty, so it never crosses another bar.
-   */
-  private drawSubSpanStem(ctx: CanvasRenderingContext2D, n: NInterval, style: ResolvedStyle, x0: number, x1: number, y: number, now: number): void {
-    const parent = n.parent;
-    if (parent === null) return;
+  /** The x ranges, clipped to [x0, x1], where a bar of n's family sits on the given row. */
+  private familyOverlaps(n: NInterval, track: number, x0: number, x1: number, now: number): [number, number][] {
+    const out: [number, number][] = [];
+    if (n.parent === null && n.children === null) return out;
     const rv = this.renderView();
     const plotW = this.plotWidth();
-    const span = rv.end - rv.start;
-    if (!(span > 0) || !(plotW > 0)) return;
-    const msPerPx = span / plotW;
-    const stemMs = SUB_SPAN_STEM_PX * msPerPx;
-    const lo = Math.max(n.start, parent.start);
-    const hi = Math.min(n.end ?? now, parent.end ?? now);
-    // The family members on the rows between the parent and this sub-span.
-    const blockers: [number, number][] = [];
     const walk = (m: NInterval): void => {
-      if (m !== n && m.track > parent.track && m.track < n.track) blockers.push([m.start, Math.max(m.end ?? now, m.start + msPerPx)]);
+      if (m !== n && m.track === track && !isInstantWidth(durationWidthPx(m.start, m.end ?? now, rv, plotW))) {
+        const mr = this.rectForInto(m, now, { x: 0, y: 0, w: 0, h: 0 });
+        const a = Math.max(x0, mr.x);
+        const b = Math.min(x1, mr.x + Math.max(mr.w, MIN_BAR_PX));
+        if (b > a) out.push([a, b]);
+      }
       if (m.children) for (const c of m.children) walk(c);
     };
     walk(n.root);
-    blockers.sort((a, b) => a[0] - b[0]);
-    let t = lo;
-    for (const [bs, be] of blockers) {
-      if (be <= t) continue;
-      if (bs >= t + stemMs) break;
-      t = be;
-    }
-    if (t + stemMs > hi) return;
-    const sx = Math.max(x0, Math.min(x1 - SUB_SPAN_STEM_PX, this.gutterW + timeToX(t, rv, plotW) + 1));
-    const pr = this.rectForInto(parent, now, { x: 0, y: 0, w: 0, h: 0 });
-    const top = pr.y + pr.h;
-    // One pixel into the bar, so the stem covers the border where it joins.
-    const h = y + 1 - top;
-    if (h <= 0) return;
-    ctx.fillStyle = style.fill;
-    ctx.fillRect(sx, top, SUB_SPAN_STEM_PX, h);
-    ctx.strokeStyle = style.border;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(sx + 0.5, top);
-    ctx.lineTo(sx + 0.5, y);
-    ctx.moveTo(sx + SUB_SPAN_STEM_PX - 0.5, top);
-    ctx.lineTo(sx + SUB_SPAN_STEM_PX - 0.5, y);
-    ctx.stroke();
-    const sh = Math.min(SUB_SPAN_SHADOW_PX, h);
-    const grad = ctx.createLinearGradient(0, top, 0, top + sh);
-    grad.addColorStop(0, withAlpha('#000000', SUB_SPAN_SHADOW_ALPHA));
-    grad.addColorStop(1, withAlpha('#000000', 0));
-    ctx.fillStyle = grad;
-    ctx.fillRect(sx, top, SUB_SPAN_STEM_PX, sh);
+    return out;
   }
 
   private drawInterval(ctx: CanvasRenderingContext2D, n: NInterval, now: number): void {
@@ -3944,8 +3907,10 @@ export class TimelineViewElement extends HTMLElement {
       return;
     }
 
-    // A sub-span is ATTACHED only on the row directly under its parent.
-    const attached = n.parent !== null && n.track === n.parent.track + 1;
+    // A sub-span attaches to whatever bar of its family sits on the row directly above it.
+    const xEnd = r.x + Math.max(r.w, MIN_BAR_PX);
+    const above = n.parent !== null ? this.familyOverlaps(n, n.track - 1, r.x, xEnd, now) : [];
+    const attached = above.length > 0;
     if (attached) {
       const gap = this.metrics().trackGap;
       r.y -= gap;
@@ -3963,7 +3928,7 @@ export class TimelineViewElement extends HTMLElement {
     const radius = Math.min(3, bh / 3, bw / 2);
     // Square the edges where a family joins: the top of a sub-span, the bottom of a span that has sub-spans.
     const top = attached ? 0 : radius;
-    const bottom = n.children !== null && n.children.some((c) => c.track === n.track + 1) ? 0 : radius;
+    const bottom = this.familyOverlaps(n, n.track + 1, x0, x1, now).length > 0 ? 0 : radius;
     const path = new Path2D();
     path.roundRect(x0, y, bw, bh, [top, top, bottom, bottom]);
 
@@ -4042,7 +4007,7 @@ export class TimelineViewElement extends HTMLElement {
       ctx.save();
       ctx.clip(path);
       ctx.fillStyle = grad;
-      ctx.fillRect(x0, y, bw, sh);
+      for (const [a, b] of above) ctx.fillRect(a, y, b - a, sh);
       ctx.restore();
     }
 
@@ -4083,8 +4048,6 @@ export class TimelineViewElement extends HTMLElement {
     if (dash) ctx.setLineDash(dash);
     ctx.stroke(path);
     if (dash) ctx.setLineDash(EMPTY_DASH);
-
-    if (n.parent !== null && !attached) this.drawSubSpanStem(ctx, n, style, x0, x1, y, now);
 
     // Corner glyph (emphasis): a filled notch triangle, top-right.
     if (style.glyph === 'bang' && bw >= 8) {
