@@ -201,6 +201,26 @@ if (parentRow && hits.some((r) => r.parentId === parentRow.id)) {
 			return Array.from(canvas.getContext('2d').getImageData(Math.round((x - r.left) * dpr), Math.round((y - r.top) * dpr), 1, 1).data).slice(0, 3);
 		}, [probeX, e2eTop - 3]);
 		check(lum(over) < 30, `subspans: a sub-span with nothing above it casts no shadow from nowhere (pixel above e2e ${over})`);
+
+		// Still connected: a stem in e2e's shade crosses the empty row between it and test. It is paint only, so the hit test sees nothing there.
+		const rowY = e2eTop - 8;
+		const line = await page.evaluate(([x0, x1, y]) => {
+			const el = document.getElementById('subspans');
+			const canvas = el.shadowRoot.querySelector('canvas');
+			const r = canvas.getBoundingClientRect();
+			const dpr = canvas.width / r.width;
+			const out = [];
+			const ctx = canvas.getContext('2d');
+			for (let x = x0; x <= x1; x += 1) out.push([x, Array.from(ctx.getImageData(Math.round((x - r.left) * dpr), Math.round((y - r.top) * dpr), 1, 1).data).slice(0, 3)]);
+			return out;
+		}, [Math.round(sbox.x + 4), Math.round(right), rowY]);
+		let stem = null;
+		for (const [x, c] of line) {
+			const cHue = Math.min(Math.abs(hue(c) - hue(px.kid)), 360 - Math.abs(hue(c) - hue(px.kid)));
+			if (lum(c) < 30 || cHue > 20) continue;
+			if ((await hoverAt(x, rowY)) === null) { stem = { x, c }; break; }
+		}
+		check(stem !== null, `subspans: a stem connects e2e to test across the empty row (${stem ? `at x ${stem.x}, ${stem.c}` : 'none found'})`);
 	}
 
 	// Hover a sub-span: the gallery's tooltip names the parent from hit.parent.
