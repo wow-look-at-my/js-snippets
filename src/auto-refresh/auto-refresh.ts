@@ -1,14 +1,4 @@
-/**
- * Auto-Refresh Detection
- *
- * Detects server-side changes and reloads the page automatically.
- *
- * Primary method: fetches a `version.txt` file (e.g. containing a commit SHA)
- * relative to the site root. If the file is missing or empty, falls back to
- * HEAD-polling the current page and comparing ETag / Last-Modified headers.
- *
- * Usage: <script type="module" src="https://sites.pazer.build/js-snippets/branch/library/auto-refresh/auto-refresh.js"></script>
- */
+/** Auto-Refresh Detection Detects server-side changes and reloads the page automatically. Primary method. */
 
 // -- Configuration -----------------------------------------------------------
 
@@ -30,9 +20,9 @@ const VERSION_PATH = 'version.txt';
 // -- Types -------------------------------------------------------------------
 
 export interface AutoRefreshOptions {
-  /** Milliseconds between HEAD checks (default 30 000). */
+  /* */
   interval?: number;
-  /** Milliseconds before reload after a change is detected (default 2 000). */
+  /* */
   refreshDelay?: number;
 }
 
@@ -60,7 +50,7 @@ export function createAutoRefresh(
 
   let baselineVersion: string | null = null;
   let baselineHeaders: { etag: string | null; lastModified: string | null; contentLength: string | null } | null = null;
-  let useVersionFile = true; // try version.txt first, disable on 404
+  let useVersionFile = true;
   let notified = false;
   let timerId: ReturnType<typeof setInterval> | null = null;
 
@@ -227,9 +217,7 @@ export function createAutoRefresh(
   return { start, stop };
 }
 
-// -- Auto-start when loaded as a standalone script ---------------------------
-// Pages can import { createAutoRefresh } for manual control, or simply load
-// the module to get the default behaviour with no extra code.
+// -- Auto-start when loaded as a standalone script --------------------------- Pages can import { createAutoRefresh } for manual control.
 
 const instance = createAutoRefresh();
 

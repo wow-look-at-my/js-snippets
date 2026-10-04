@@ -11,32 +11,7 @@ import (
 )
 
 // Rows: encode and decode a slice of TAGGED STRUCTS, so a producer declares
-// its columns once on the type it already has and writes no mapping code.
-//
-// Page/Schema stay exported for a producer whose rows are not structs (columns
-// straight out of a database, say). Every producer that DOES have a row type
-// should use these instead: the map-building, the name switch, and their
-// inverse for reading a payload back are identical in every consumer, and
-// hand-writing them is how a column silently goes missing from one of the two
-// directions.
-//
-//	type Event struct {
-//	    ID    uint64    `wire:"id,deltau"`
-//	    Start time.Time `wire:"start,deltaz"`
-//	    DurMs int64     `wire:"dur,plain"`
-//	    Lane  string    `wire:"lane,string"`
-//	    Final bool      `wire:"final,bits"`
-//	}
-//
-//	b, err := timelinewire.EncodeRows(events, hdr, "TLC1")
-//
-// WIRE ORDER is struct field order within each kind, so the layout is a
-// property of the declaration and cannot drift from it. Reordering fields of
-// one kind reorders the wire — that is a format change, so it needs a new
-// magic like any other.
-//
-// Untagged fields are ignored, which is what lets a row type carry things the
-// wire has no use for.
+// its columns once on the type it already has.
 
 // Header is a page's preamble — everything in a payload that is not a column.
 type Header struct {
@@ -68,10 +43,7 @@ func EncodeRows(rows any, h Header, magic string) ([]byte, error) {
 		return nil, err
 	}
 
-	// Column storage is allocated ONCE and addressed through local slices in
-	// the row loop. Indexing page.U[c.name] per row would be a string-keyed
-	// map lookup per column per row -- ~2M of them on a full page, which is
-	// most of what this path could cost over a hand-written mapping.
+	// Column storage is allocated ONCE and addressed through local slices in the row loop.
 	n := rv.Len()
 	us := make([][]uint64, len(p.deltaU))
 	zs := make([][]int64, len(p.deltaZ))
@@ -174,7 +146,7 @@ func DecodeRows(b []byte, out any, magic string) (Header, error) {
 // SchemaOf derives the Schema a row type declares. A producer needs it to
 // state its column names somewhere a test can compare them against the
 // consumer's — the library never sees the names as anything but strings, so
-// nothing else can catch the two disagreeing.
+// nothing else can catch both disagreeing.
 func SchemaOf(rowType any, magic string) (Schema, error) {
 	t := reflect.TypeOf(rowType)
 	if t == nil {
@@ -215,10 +187,8 @@ type column struct {
 
 func (c column) readMs(v reflect.Value) int64 {
 	if c.isTime {
-		// Through the ADDRESS: a time.Time is three words, so boxing the value
-		// into an interface heap-allocates once per row. A *time.Time is one
-		// word and boxes for free. Slice elements are addressable; a value
-		// that somehow is not falls back to the copy.
+		// Through the ADDRESS: a time.Time is a few words, so boxing the value into
+		// an interface heap-allocates once per row.
 		if v.CanAddr() {
 			return v.Addr().Interface().(*time.Time).UnixMilli()
 		}
@@ -272,9 +242,7 @@ func (p *plan) schema(magic string) Schema {
 	}
 }
 
-// Plans are derived once per type: reflecting over the struct on every row of
-// a 100k-row page is the one place this could cost more than the hand-written
-// mapping it replaces.
+// Plans are derived once per type: reflecting over the struct on every row of a 100k-row page is the place this could cost more.
 var plans sync.Map // reflect.Type -> *plan (or error)
 
 type planErr struct{ err error }
@@ -319,11 +287,8 @@ func buildPlan(t reflect.Type) (*plan, error) {
 		if !found || name == "" || kind == "" {
 			return nil, fmt.Errorf(`timelinewire: %s.%s has tag %q, want "name,kind"`, t.Name(), f.Name, tag)
 		}
-		// Add reports whether the name was new, so the duplicate check and the
-		// insert are one hash rather than two.
 		if !seen.Add(name) {
-			// Two fields under one name would encode twice and decode into
-			// whichever won, silently dropping the other.
+			// Fields under one name would encode twice and decode into whichever won, silently dropping the other.
 			return nil, fmt.Errorf("timelinewire: %s declares column %q twice", t.Name(), name)
 		}
 

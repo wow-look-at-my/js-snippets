@@ -1,136 +1,4 @@
-/**
- * <timeline-view> — a canvas-rendered, realtime swimlane timeline.
- *
- * A shared horizontal time axis across the full width; stacked labeled
- * lanes, each a band of interval bars (left = start, right = end; a lane
- * grows extra sub-tracks when its intervals overlap). Everything is data:
- * lanes {id, label, group?}, intervals {id, laneId, start, end, label?,
- * category?, state?, segments?, data?}, plus optional connectors between
- * intervals, and vertical time markers. Color encodes CATEGORY (stable hue
- * per category string); rendering STYLE encodes state/phase via a named
- * style map (hatching, desaturation, stipple, emphasis borders + glyphs —
- * never hue). Zero/near-zero-width intervals render as instant diamond
- * pips (still colored, styled, hoverable, clickable — never an invisible
- * sliver). Not a Gantt (many bars per row), not a flame chart (no nesting).
- *
- *   import 'https://…/js-snippets/ui/timeline-view.js'; // registers <timeline-view>
- *
- *   const tl = document.querySelector('timeline-view');
- *   tl.setData({
- *     lanes: [{ id: 'ci', label: 'ci pipeline' }],
- *     intervals: [{ id: 'r1', laneId: 'ci', start: Date.now() - 60_000, end: null,
- *                   label: 'build #42', category: 'build' }],
- *   });
- *
- * Follow-now mode (default) pins the right edge to a live "now"; scroll or
- * drag into the past and a jump-to-now pill appears (panning backward
- * disengages follow immediately; panning forward re-docks magnetically at
- * the live edge). Every follow transition is CONTINUOUS: engaging eases
- * the small follow lead in over ~200ms from where the gesture parked,
- * disengaging lets the backward deltas consume the lead (any residual
- * glides out), and the pill glides to the followed position — the view
- * never teleports in a single frame (reduced motion snaps instead).
- * Interaction is trackpad-first, and wheel routing is by DOMINANT axis
- * with a GESTURE-LEVEL AXIS LOCK (WheelGestureRouter): the first decisive
- * unmodified event locks its stream's axis for as long as events keep
- * arriving within WHEEL_GESTURE_GAP_MS. A horizontal-locked gesture is
- * consumed WHOLE — dx pans time, the minor vertical component nudges the
- * lane stack when it overflows and never leaks into page scroll (a real
- * swipe's jittery minority events are individually vertical-dominant); a
- * vertical-locked gesture (ties included) follows the NESTED-SCROLLER
- * contract, latching its target from the lane stack's scrollability at
- * lock time: while the stack can move in the wheel's direction the
- * gesture SCROLLS THE STACK in place (consumed, clamped at its edges —
- * browser-style scroll latching, so an edge hit mid-swipe never janks
- * into page scroll; drag and arrow keys still scroll it too), and when
- * it cannot — already at that edge, or no overflow — nothing is
- * consumed, its horizontal jitter never pans the chart, and the page
- * scrolls normally, so the page is always reachable past a tall
- * chart; a DECISIVE opposite-axis event (>2x
- * dominance, ≥24px) re-locks mid-gesture, so a genuine direction change
- * never waits out the gap; ctrl/meta+wheel = smooth zoom anchored
- * under the cursor (discrete wheel steps glide; trackpad pinch arrives
- * as ctrl+wheel), shift+wheel = time pan, drag = pan, pinch = zoom,
- * arrows/±/Home/End when focused. `loadRange` turns scrolling into
- * the past into async history requests — for BACKWARD gaps only; the live
- * forward edge always belongs to the consumer's own setData/mergeData
- * `coverage` — with uncovered regions visibly distinct from empty-but-known
- * ones and an explicit end-of-history boundary. Browser navigation
- * gestures never fire over the component: the wheel listener lives on the
- * HOST (horizontal deltas over the DOM chrome are consumed like over the
- * canvas) and the host carries overscroll-behavior-x: none, so panning
- * hard into exhausted history can't turn into a history-back swipe —
- * horizontal ONLY, so vertical scroll chaining (and vertical touch pans,
- * via the plot canvas' touch-action: pan-y) stays the page's. A corner
- * ⤢ toggle (always visible; `no-fullscreen-button` hides it) flips the
- * reflected `fullscreen` attribute: viewport-fill via position:fixed —
- * deliberately NOT the Fullscreen API — with the page scroll locked while
- * active, Escape to exit, and a 'fullscreenchange' event. A minimap strip
- * along the bottom (own canvas; hidden with no data, on short hosts, or
- * via `no-minimap`) shows the full loaded extent as per-lane density
- * marks with the viewport as a draggable window: edge handles resize it,
- * grabbing the middle pans it, clicking outside centers it — all through
- * the same follow/park/loadRange semantics as canvas gestures.
- *
- * FEED STALENESS: every setData/mergeData (or an explicit markFresh())
- * stamps the feed fresh; when `staleAfterMs` (default 10s) passes without
- * a stamp the chart STOPS trusting the clock — the live edge (ongoing
- * bars, the now line, the follow pin, the forward clamp) freezes at the
- * last vouched timestamp instead of extrapolating a dead feed (a finished
- * run must never render as "running forever"), ongoing bars restyle as
- * unknown (dim + hatch), a "live data stale (Ns) — reconnecting…" note
- * counts up forever, and 'stalechange' fires. The next stamp recovers,
- * gliding the edge back to the live clock — no teleports in either
- * direction (reduced motion snaps). Consumers should resync with one full
- * setData on recovery.
- *
- * Rendering is stability-first: the viewport origin is snapped to WHOLE
- * device pixels once per frame (bars keep exact relative offsets while
- * scrolling — no per-element rounding jiggle; TEXT origins are the one
- * per-element exception — they snap to the device grid for crisp glyph
- * rasterization, stepping in whole pixels while things move), bar-vs-pip
- * shapes are decided from data-space durations (never from rounded screen
- * coords, so shapes don't flicker during pans), rows are VERTICALLY
- * STICKY (a stateful per-lane TrackAllocator: a visible interval keeps
- * its sub-track while on screen — panning and live updates never
- * reshuffle the rows being watched — a returning interval remembers its
- * old row, new arrivals fill from the bottom), and lane heights derive
- * from the parallelism visible in the CURRENT window (a historical burst
- * stops padding its lane once off-screen; height changes tween ~150ms,
- * honoring prefers-reduced-motion).
- *
- * Cheap by construction: draws only when dirty (one rAF at a time), and
- * data ingest coalesces the same way — mergeData/setData/setLanes/
- * setIntervals mark the layout dirty and re-lay-out ONCE on the next rAF
- * (scheduleRebuild), so a consumer hammering mergeData in a loop, or a
- * backlog of deltas flushed on tab wake, pays one O(N) rebuild per frame
- * instead of one per call. A rAF loop runs only while something on screen
- * actually moves — follow-now
- * scroll, visible ongoing bars, tweens/gestures — and the element is
- * visible; a parked static chart schedules nothing and draws nothing.
- * While animating, frames are paced adaptively — full rate while
- * interacting (plus a short grace window), ~30fps idle, ~10fps idle on
- * battery (feature-detected via navigator.getBattery), paused while the
- * document is hidden. Those tier rates are the CEILING; when the only
- * motion is clock-driven (the follow scroll, ongoing-bar growth) the
- * effective rate is min(tier fps, device px per second) — the loop keeps
- * running and skips frames that would be pixel-identical, on an even
- * frame-aligned cadence (clockDrawBudgetMs; never timer wakes, so motion
- * stays smooth at every zoom); culled to the viewport (per-lane
- * lower-bound binary search — a drawn frame costs O(visible), never
- * O(all data)); clustering/track-assignment memoized (position-
- * independent clustering re-derives only on data/zoom/width changes;
- * assignment additionally on window-start quanta); the minimap's density
- * marks served from a pixel-shifted offscreen texture (one blit per
- * frame; merges paint only their sliver; full rebuilds run async in
- * slices); DPR-aware (capped
- * at 3), on
- * an OPAQUE canvas (subpixel text AA; keep --timeline-bg opaque).
- * Theme via --timeline-* custom properties (see THEME_DEFAULTS); the DOM
- * chrome (tooltip, live pill, empty hint) is styled by timeline-view.css.
- * The pure math lives in ui/timeline-view-math.ts (node-tested) and is
- * re-exported here so one import serves both.
- */
+// <timeline-view>: the canvas swimlane timeline. Color is category, style is state, never hue.
 
 import {
   toMs,
@@ -214,6 +82,9 @@ import {
   type LaneLayout,
   type HitRect,
   type PackItem,
+  type PackNode,
+  resolveParents,
+  packFamily,
 } from './timeline-view-math.ts';
 import type { LaneScrollable } from './timeline-view-math.ts';
 
@@ -250,19 +121,15 @@ export const THEME_DEFAULTS = {
   font: "'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Fira Code', monospace",
   /** --timeline-font-size — base font size in px. */
   fontSize: 11,
-  /** --timeline-cat-lightness — oklch lightness for category fills (0..1). */
+  /* */
   catLightness: 0.62,
   /** --timeline-cat-chroma — oklch chroma for category fills. */
   catChroma: 0.11,
-  /** --timeline-track-height — sub-track bar height in px (clamped 10..40). */
+  /* */
   trackHeight: 18,
-  /**
-   * --timeline-track-height-compact — sub-track height in CSS px for lanes
-   * auto-fit demotes (clamped 2..track-height; the canvas' DPR scaling
-   * already multiplies to device pixels, so 4 here is 8 device px at dpr 2).
-   */
+  /** --timeline-track-height-compact — sub-track height in CSS px for lanes auto-fit demotes. */
   trackHeightCompact: 4,
-  /** --timeline-gutter-width — lane-label gutter in px (0 = auto-size). */
+  /* */
   gutterWidth: 0,
 };
 
@@ -280,25 +147,16 @@ export interface TimelineData {
   coverage?: TimeRange;
 }
 
-/**
- * Async history loader: invoked when the viewport reaches uncovered past.
- * Supply the data via mergeData() before resolving; resolve
- * `{ exhausted: true }` when nothing exists before this range.
- */
+/** Async history loader: invoked when the viewport reaches uncovered past. */
 export type LoadRangeFn = (start: number, end: number) => Promise<{ exhausted?: boolean } | void>;
 
-/**
- * What the pointer is over — handed to tooltipFor and hover/click events.
+/** What the pointer is over — handed to tooltipFor and hover/click events.
  * 'cluster' (a stacked group of visually-overlapping instant markers) is the
- * one hit type NEVER handed to tooltipFor: its summary tooltip is
+ * hit type NEVER handed to tooltipFor: its summary tooltip is
  * component-built, and clicking it zooms to the member extent instead of
- * dispatching intervalclick. An interval hit's `segment` names the phase
- * segment under the pointer (null over the base bar) — ADDITIVE, so
- * existing tooltipFor callbacks keep working unchanged and opt in by
- * reading it.
- */
+ * dispatching intervalclick. */
 export type TimelineHit =
-  | { type: 'interval'; interval: TimelineInterval; lane: TimelineLane; segment?: SegmentHit | null }
+  | { type: 'interval'; interval: TimelineInterval; lane: TimelineLane; segment?: SegmentHit | null; parent?: TimelineInterval | null }
   | { type: 'cluster'; intervals: TimelineInterval[]; lane: TimelineLane }
   | { type: 'connector'; connector: TimelineConnector; missingEndpoint?: 'from' | 'to' }
   | { type: 'marker'; marker: TimelineMarker }
@@ -333,19 +191,24 @@ interface NInterval {
   track: number;
   /** True while a cluster marker represents this instant (it is not drawn/hit itself). */
   clustered: boolean;
+  /** The same-lane interval this one nests under (resolveParents), null for a root. */
+  parent: NInterval | null;
+  /** Sub-spans nested under this one, in (start, id) order; null when none. */
+  children: NInterval[] | null;
+  rows: number;
+  /*Sets the sub-span's shade. */
+  depth: number;
+  /** The family's root: its category is the hue every member is shaded from. */
+  root: NInterval;
+  /** The family block's extent: own start/end for a leaf, the union for a parent. */
+  famStart: number;
+  famEnd: number | null;
+  /** Root only: each descendant's row offset from the root's row (packFamily tops). */
+  famTops: Map<string, number> | null;
 }
 
-/**
- * A cluster of instant markers, re-derived per layout pass at the current
- * scale (clusterInstants). Occupies ONE packing slot spanning its member
- * extent — coincident instants can never blow up the lane height.
- *
- * It draws one of two ways. A POINT cluster (`point`) is narrower than a
- * pip, so it is the 3-stack glyph at one anchor. A SPREAD cluster covers
- * real time and draws its `marks` — separated ticks at true timestamps,
- * thinned as you zoom out, never merged (see
- * docs/timeline/zoom-out-never-merges.md).
- */
+/** A cluster of instant markers, re-derived per layout pass at the current
+ * scale (clusterInstants). */
 interface NCluster {
   /** 'cluster:' + the FIRST member's id — the sticky packing identity (stable while membership is; see packLane). */
   id: string;
@@ -373,117 +236,76 @@ interface ResolvedStyle {
   pattern: 'solid' | 'hatch' | 'stipple' | 'outline';
   glyph: 'none' | 'bang' | 'dot';
 }
-// Deliberately NO label color here: a dimmed style dims its GEOMETRY
-// (fill, border, hatching) only, while label text always renders at the
-// full-contrast theme foreground through labelText()'s halo — deriving
-// the text color from the span's style is exactly what made labels go
-// grey (unreadable) over dimmed/hatched sections, flipping with zoom as
-// the anchor crossed segment boundaries.
+// Deliberately NO label color here: a dimmed style dims its GEOMETRY (fill, border, hatching) only.
 
 const LAYOUT_TWEEN_MS = 150; // lane-height ease on visible-track-count AND fit-height change
 const AXIS_H = 22;
 const LANE_LABEL_MIN_PX = 10; // below this lane height the gutter label is tooltip-only
-// Floor for the compact-lane label font. Also the bottom of the range the
-// cold surface warms, so keep the two together.
+// Floor for the compact-lane label font. Also the bottom of the range the cold surface warms, so keep both together.
 const LANE_LABEL_MIN_FONT_PX = 7;
 const HIT_MIN_W = 9; // widened hit target for instants (px)
 const CONNECTOR_TOL = 4;
 const CLICK_SLOP = 4;
 const EMPTY_DASH: number[] = [];
 const MARKER_DASH = [4, 3];
-// Label-halo stroke width (CSS px): centered on the glyph outline, so the
-// visible rim is half this — thin enough to read as edge contrast, not a box.
+// Label-halo stroke width (CSS px): centered on the glyph outline.
 const LABEL_HALO_PX = 3;
-// A terminal-cut ('outline'-kind) segment never renders narrower than this
-// many DEVICE pixels — a kill tail is typically sub-second (docker-kill
-// latency), which at a 10-min window maps under half a CSS px and used to
-// vanish entirely, leaving a cancelled bar pixel-identical to a success.
+// A terminal-cut ('outline'-kind) segment never renders narrower than this many DEVICE pixels — a kill tail is typically sub-second.
 const TERMINAL_SEG_MIN_DEVICE_PX = 3;
-// The kill-point cut line draws only when the terminal-cut tail is at
-// least this wide (CSS px). Narrower tails render scrim-only: their cut
-// point is within a couple of pixels of the span's end border, where a
-// lone vertical line reads as a stray rendering artifact — and the scrim
-// + the dashed cancelled border already carry the state at that size.
+// The kill-point cut line draws only when the terminal-cut tail is at least this wide (CSS px).
 const CUT_LINE_MIN_TAIL_PX = 4;
-// A dashed border needs room to read as dashes; narrower bars draw it
-// solid (the hollow body still carries the state on a tiny bar).
+// A dashed border needs room to read as dashes.
 const BORDER_DASH_MIN_PX = 12;
-// Width (CSS px) of the edge-continuation shadow on a span the viewport
-// clips: the clipped end darkens toward the edge — the span reads as
-// sliding UNDER the window edge, which casts a shadow on it (see
-// edgeContinuation for the exemptions).
+// Width (CSS px) of the edge-continuation shadow on a span the viewport clips.
 const EDGE_FADE_PX = 12;
-// Shadow strength at the window edge itself: black at this alpha over
-// any span body (or background sliver) lands clearly DARKER than the
-// page background, so the end reads covered-up, never dissolved.
+// Shadow strength at the window edge itself: black at this alpha over any span body (or background sliver) lands DARKER.
 const EDGE_SHADOW_ALPHA = 0.85;
-// Backing-store cap: 3 keeps >2-DPR displays (150% 4K scaling, many
-// laptops/mobiles) sharp instead of compositor-upscaled soft, without the
-// fully-uncapped perf cliff on 4k+ screens.
 const MAX_DPR = 3;
-// Cluster 3-stack ghost alphas (front draws at 1).
 const LANE_FIT_CACHE_MAX = 512;
-// Baked pip glyphs kept alive (see pipSprite). Generous enough to hold every
-// (style, radius, dpr) a chart cycles through, bounded so a lane-height tween
-// walking radii cannot grow it forever.
+// Baked pip glyphs kept alive (see pipSprite).
 const PIP_SPRITE_CACHE_MAX = 96;
 const CLUSTER_MID_ALPHA = 0.65;
 const CLUSTER_BACK_ALPHA = 0.35;
-// The minimap strip's height (CSS px) — the plot canvas cedes this band
-// at the bottom while the strip is visible. One source of truth: the
-// element sets the strip canvas' CSS height from it too.
+// The minimap strip's height (CSS px) — the plot canvas cedes this band at the bottom while the strip is visible.
 const MINIMAP_H = 32;
-// Hosts shorter than this hide the strip: below ~140px the band would eat
-// a third of an already-cramped plot.
+// Hosts shorter than this hide the strip: below ~140px the band would eat a third of an already-cramped plot.
 const MINIMAP_MIN_HOST_PX = 140;
-// Accumulated minimap-texture placement error (css px) that forces the
-// async full rebuild.
+// Accumulated minimap-texture placement error (css px) that forces the async full rebuild.
 const MM_DRIFT_REBUILD_PX = 1.75;
-// An extent step needing more than this fraction of the strip repainted
-// defers to the async rebuild instead.
+// An extent step needing more than this fraction of the strip repainted defers to the async rebuild instead.
 const MM_STEP_MAX_FRAC = 0.25;
-// Side length (CSS px) of the repeating hatch/stipple pattern tile —
-// shared by tile generation (patternFor) and phase anchoring
-// (anchorPattern), where translating by whole tiles must be identity.
+// Side length (CSS px) of the repeating hatch/stipple pattern tile — shared by tile generation (patternFor) and phase anchoring.
 const PATTERN_TILE_PX = 7;
-// Fraction of the span the window START may drift before track assignment
-// re-runs (the visible-layout memo's quantum). Small enough that an item
-// entering the window rides a stale row only for a blink; large enough
-// that follow-mode's per-device-pixel drift amortizes ~dozens of frames
-// per assignment.
+/** Oklch lightness a sub-span loses per nesting level, against its root's color. */
+const SUB_SPAN_SHADE_STEP = 0.11;
+/** Depth (CSS px) and strength of the shadow the bar above casts onto an attached sub-span. */
+const SUB_SPAN_SHADOW_PX = 6;
+const SUB_SPAN_SHADOW_ALPHA = 0.55;
+const EMPTY_ROOTS: NInterval[] = [];
+// Fraction of the span the window START may drift before track assignment re-runs (the visible-layout memo's quantum).
 const ASSIGN_QUANTUM_FRAC = 0.02;
-// Span buckets for the clustering memo: ~0.14% span change per bucket —
-// float noise from the follow pin's per-frame end±span arithmetic (sub-µs
-// on epoch-ms magnitudes) can never re-bucket, while any real zoom step
-// crosses buckets immediately (scale-aware clustering stays "re-clusters
-// as you zoom").
 function spanBucket(span: number): number {
   return Math.round(Math.log2(span) * 512);
 }
 
 // -- Legend ------------------------------------------------------------------------
 
-/**
- * A consumer-supplied legend row (`legendEntries`): a short glyph sample —
- * rendered verbatim in the swatch column — plus its plain-language
- * meaning. This is how a consumer teaches the glyphs IT composes into
- * labels (e.g. an adapter's '⧗ group · 3rd' queue badge or '⏳N' holder
- * count) alongside the component's own vocabulary.
- */
+/** A consumer-supplied legend row (`legendEntries`): a short glyph sample —
+ * rendered verbatim in the swatch column. */
 export interface TimelineLegendEntry {
-  /** The glyph/badge sample (e.g. '⧗', '⏳3'). */
+  /* */
   glyph: string;
   /** What it means. */
   text: string;
 }
 
-// The component-OWNED glyph vocabulary shown by the "?" legend pill: each
-// row pairs a CSS-drawn swatch (timeline-view.css .lg-*) with its meaning.
+// The component-OWNED glyph vocabulary shown by the "?" legend pill: each row
+// pairs a CSS-drawn swatch (timeline-view.css .lg-*) with its meaning.
 // Swatches use a neutral hue on purpose — they teach shape and pattern,
-// never a specific category color. Consumer rows append after these.
-// Entries name a GLYPH and what it means — nothing meta, no styling-policy
-// notes — and only glyphs that are actually cryptic: self-explanatory
-// chrome (the minimap strip, edge treatments) stays out.
+// never a specific category color. Consumer rows append after these. Entries
+// name a GLYPH and what it means — nothing meta, no styling-policy notes
+// — and only glyphs that are cryptic: self-explanatory chrome (the minimap
+// strip, edge treatments) stays out.
 const LEGEND_ROWS: readonly { swatch: string; text: string }[] = [
   { swatch: 'lg-instant', text: 'instant — a zero-duration event (filled pip)' },
   { swatch: 'lg-cancelled-pip', text: 'cancelled instant (hollow, dashed pip)' },
@@ -492,44 +314,14 @@ const LEGEND_ROWS: readonly { swatch: string; text: string }[] = [
   { swatch: 'lg-bar lg-hatch', text: 'hatched phase — a declared wait (lock, group slot, sleep) or queued time' },
   { swatch: 'lg-bar lg-dim', text: 'dim — queued / de-emphasized' },
   { swatch: 'lg-bar lg-killed', text: 'cancelled span — hollow, dashed; the darkened tail marks the kill point' },
+  { swatch: 'lg-family', text: 'sub-span — attached under the span it belongs to, in a darker shade of its color' },
 ];
 
 // -- The custom element ----------------------------------------------------------------
 
-/**
- * The timeline element. Auto-registered as `<timeline-view>` when this
- * module loads (unless the name is taken). Data arrives via properties and
- * methods — setData / mergeData / setLanes / setIntervals / setConnectors /
- * setMarkers — never attributes; the only attributes are scalar toggles:
- * `no-live-pill` (hide the jump-to-now pill), `no-auto-fit` (disable
- * compact-lane auto-fit), `history-end-text` (boundary label), `empty-text`
- * (empty-state hint), `fullscreen` (reflected viewport-fill mode — see the
- * `fullscreen` property), `no-fullscreen-button` (hide the corner toggle;
- * the property/attribute still work programmatically), `no-minimap` (hide
- * the bottom overview strip), `no-legend` (hide the "?" legend pill —
- * the in-place glyph dictionary; consumers append their own rows via the
- * `legendEntries` property).
- *
- * STATIC BOUNDS (`minTime` / `maxTime`, both null by default) limit the
- * scrollable range. They are INDEPENDENT: `minTime` alone caps how far
- * back a live chart scrolls, `maxTime` alone freezes the right edge over
- * an unlimited past, and both together bound a finished window. Setting
- * `maxTime` is what makes a chart STATIC — it replaces the clock as the
- * live edge, so follow mode, the now line, the jump-to-now pill and feed
- * staleness switch off and nothing moves without a gesture.
- *
- * Auto-fit (default ON): each layout pass compares the natural lane stack
- * (every lane at --timeline-track-height) against the host's plot height;
- * while it overflows, whole lanes are demoted to the compact track height
- * (--timeline-track-height-compact, default 4px) one at a time — tallest
- * (most parallel) lane first, ties demoting the LOWER lane first so
- * top-of-chart lanes keep detail longest — until it fits or every lane is
- * compact (then the vertical lane scroll takes over as before). Demotion
- * is immediate; promotion is hysteretic (~10% headroom required) so
- * heights never flap at the boundary, and changes ease through the same
- * ~150ms layout tween as track-count changes. Read `fitState` / listen
- * for 'fitchange' to observe the demotion set.
- */
+/** The timeline element. Auto-registered as `<timeline-view>` when this module loads (unless the name is taken). Data arrives via properties and methods — setData / mergeData / setLanes / setIntervals / setConnectors / setMarkers — never attributes; the only attributes are scalar toggles: `no-live-pill` (hide the jump-to-now pill), `no-auto-fit` (disable compact-lane auto-fit), `history-end-text` (boundary label), `empty-text` (empty-state hint), `fullscreen` (reflected viewport-fill mode — see the `fullscreen` property), `no-fullscreen-button` (hide the corner toggle; the property/attribute still work programmatically), `no-minimap` (hide the bottom overview strip), `no-legend` (hide the "?" legend pill — the in-place glyph dictionary; consumers append their own rows via the `legendEntries` property).
+ *STATIC BOUNDS (`minTime` / `maxTime`, both null by default) limit the scrollable range. They are INDEPENDENT: `minTime` alone caps how far back a live chart scrolls, `maxTime` alone freezes the right edge over an unlimited past, and both together bound a finished window. Setting `maxTime` is what makes a chart STATIC — it replaces the clock as the live edge, so follow mode, the now line, the jump-to-now pill and feed staleness switch off and nothing moves without a gesture. Auto-fit (default ON): each layout pass compares the natural lane stack (every lane at --timeline-track-height) against the host's plot height; while it overflows, whole lanes are demoted to the compact track height (--timeline-track-height-compact, default 4px) one at a time — tallest (most parallel) lane first, ties demoting the
+ *LOWER lane first so top-of-chart lanes keep detail longest — until it fits or every lane is compact (then the vertical lane scroll takes over as before). Read `fitState` / listen for 'fitchange' to observe the demotion set. */
 export class TimelineViewElement extends HTMLElement {
   static get observedAttributes(): string[] {
     return ['no-live-pill', 'no-auto-fit', 'history-end-text', 'empty-text', 'fullscreen', 'no-fullscreen-button', 'no-minimap', 'no-legend'];
@@ -556,31 +348,16 @@ export class TimelineViewElement extends HTMLElement {
   private mmDrag: { mode: 'left' | 'right' | 'middle'; lastX: number } | null = null;
   private hadData = false; // data-emptiness edge → re-evaluate strip visibility
 
-  // -- Data extent / cull metadata (recomputed exactly in rebuild(); grown
-  // incrementally in ingestInterval so it is never stale-small between) --
   /** Max terminated end across ALL intervals (-Infinity with none) — the minimap extent's data end, O(1) per frame. */
   private mmLatestEnd = -Infinity;
   /** Ongoing (end = null) intervals, flat — live-drawn on the minimap every frame, never baked into the density texture. */
   private mmOngoing: NInterval[] = [];
-  /** Per lane: max TERMINATED duration (ms; 0 when none) — the drawIntervals lower-bound cull radius. */
+  /* */
   private laneMaxDur: number[] = [];
   /** Per lane: earliest ONGOING start (Infinity when none) — ongoing bars block the cull down to here. */
   private laneOngoingStart: number[] = [];
 
-  // -- Minimap density texture (the pixel-shifted offscreen cache) --
-  // The strip's per-lane density marks live in an offscreen texture,
-  // ALWAYS allocated 1:1 with the strip's device-pixel size and only
-  // ever blitted same-size — never scaled. The time→x mapping is FROZEN
-  // at mmTexExtent and steps once the live extent has drifted a whole
-  // strip pixel: content SHIFTS by the whole-pixel delta (a same-size
-  // copy), only newly-exposed/invalidated columns repaint from data, and
-  // the residual (shift rounding + the compression a shift cannot
-  // express) accumulates in mmTexDriftPx until an ASYNC sliced rebuild
-  // into a second texture trues it up (also the path for geometry/theme/
-  // lane-count changes; the old texture keeps serving 1:1 meanwhile —
-  // skipped entirely on a size mismatch). Merges paint only their new
-  // right-edge marks. The now tick and the viewport window rect are live
-  // overdraws every frame — never baked in.
+  // -- Minimap density texture (the pixel-shifted offscreen cache) -- The strip's per-lane density marks live in an offscreen texture.
   private mmTex: HTMLCanvasElement | null = null;
   private mmTexCtx: CanvasRenderingContext2D | null = null;
   /** Double-buffer partner for extent steps (self-blit needs snapshot semantics). */
@@ -615,19 +392,10 @@ export class TimelineViewElement extends HTMLElement {
   /** catKey → the 0.55-alpha density fill (cleared with the theme). */
   private mmDimCache = new Map<string, string>();
 
-  // -- Fullscreen (viewport-fill) --
-  // While the host carries the `fullscreen` attribute it is position:fixed
-  // over the whole viewport and the PAGE scroll is locked (html overflow
-  // hidden, previous inline value restored on exit) — so the page behind
-  // can neither scroll nor scroll-chain, and the page's scroll offset is
-  // exactly where the user left it when fullscreen exits.
+  // -- Fullscreen (viewport-fill) -- While the host carries the `fullscreen` attribute it is position:fixed over the whole viewport.
   private fsLocked = false;
   private fsPrevOverflow = '';
-  // The page scroll offset as last seen BEFORE the lock. Snapshotted by a
-  // passive window scroll listener (frozen while locked) because reading
-  // scrollY inside the attribute callback is too late: the fixed host has
-  // already left the flow, the page shrank, and the browser clamped the
-  // offset — the direct read would save the clamped 0, not the user's spot.
+  // The page scroll offset as last seen BEFORE the lock.
   private fsSeenScrollX = 0;
   private fsSeenScrollY = 0;
 
@@ -644,38 +412,17 @@ export class TimelineViewElement extends HTMLElement {
   // -- Viewport --
   private view: TimeView = { start: 0, end: 1 }; // seeded in the constructor; aspect-derived on first layout
   private following = true;
-  // Latched by the FIRST user gesture or programmatic setViewport (every
-  // window-changing path funnels through applyUserView; setViewport latches
-  // explicitly too). While false, resizeBackingStore keeps (re)deriving the
-  // DEFAULT span from the host's aspect ratio (defaultSpanForAspect) — a
-  // chosen window must always beat the default. followNow / jumpToNow /
-  // the per-frame pin move POSITION only and deliberately do NOT latch:
-  // the default governs the SPAN alone.
+  // Latched by the FIRST user gesture or programmatic setViewport.
   private viewTouched = false;
   private laneScroll = 0;
-  // -- Static bounds (null = unbounded; the two sides are independent) --
-  // minTimeMs is the hard LEFT stop: no gesture, jump or default-span
-  // re-derivation may start the view before it, and history loads are
-  // never probed past it. maxTimeMs REPLACES the clock as the live edge:
-  // the right stop, ongoing-bar ends and the follow pin all read it, so
-  // the chart holds still — follow mode, the now line, the jump-to-now
-  // pill and feed staleness are all off while it is set.
+  // -- Static bounds (null = unbounded; both sides are independent) -- minTimeMs is the hard LEFT stop: no gesture.
   private minTimeMs: number | null = null;
   private maxTimeMs: number | null = null;
-  // The ONE scalar behind every follow transition: the current lead of the
-  // view's end over "now", as a fraction of the span. Steady follow pins
-  // end = now + span * leadFrac with leadFrac == FOLLOW_LEAD_FRAC; steady
-  // parked is 0; transitions tween it (glideLead) so engage/disengage/jump
-  // GLIDE instead of teleporting the view by the full lead in one frame.
+  // The scalar behind every follow transition: the current lead of the view's end over "now".
   private leadFrac = FOLLOW_LEAD_FRAC;
   private leadAnim: { from: number; target: number; start: number; dur: number } | null = null;
 
-  // -- Feed staleness --
-  // The last time the live feed vouched for the data (setData/mergeData/
-  // markFresh); null until data ever arrives. When more than `staleAfter`
-  // ms pass without a stamp the chart goes STALE: the live edge — ongoing
-  // bar ends, the now line, the follow pin, the forward clamp — freezes at
-  // lastFreshMs instead of extrapolating dead data toward now.
+  // -- Feed staleness -- The last time the live feed vouched for the data (setData/mergeData/ markFresh); null.
   private lastFreshMs: number | null = null;
   private staleAfter = STALE_AFTER_DEFAULT_MS;
   private feedStale = false;
@@ -710,28 +457,10 @@ export class TimelineViewElement extends HTMLElement {
   private batteryDischarging = false;
   private batteryOff: (() => void) | null = null;
 
-  // -- Visible-window lane layout + auto-fit --
-  // The old single memo keyed (epoch, rv.start, rv.end, plotW) re-ran the
-  // WHOLE pack pipeline every frame in follow mode (the pin moves rv.start
-  // each drawn frame). Decomposed: CLUSTERING is position-independent
-  // (clusterInstants reads the view only as span — pinned by the "pure
-  // pans never change membership" test), so it memoizes on
-  // (epoch, span bucket, plotW); TRACK ASSIGNMENT additionally re-runs
-  // when the window START has moved a quantum (ASSIGN_QUANTUM_FRAC of the
-  // span) since the last pass — items only ENTER the data via merges
-  // (epoch bump), and an item sliding in over a stale row for under a
-  // quantum is invisible in practice. layoutLanes/auto-fit stay per-frame
-  // (O(lanes), the tweens need them).
-  // Memoized lane-label fitting (drawLanes). Bounded, and keyed by
-  // everything the answer depends on, so it self-invalidates.
+  // -- Visible-window lane layout + auto-fit -- The memo keyed (epoch, rv.start, rv.end, plotW) re-ran the WHOLE pack pipeline every frame.
   private laneFitCache = new Map<string, { text: string; width: number; faded: boolean } | null>();
   private packEpoch = 0; // bumped on data changes; forces a re-pack
-  // INCREMENTAL REBUILD. A data change used to cost O(all lanes) — re-sort
-  // check, metadata scan, re-cluster and re-assign, for every lane whether or
-  // not it changed. A consumer that streams its history in batches (so each
-  // batch stays inside a frame budget) therefore paid that whole-chart cost
-  // once PER BATCH. These track which lanes an ingest actually touched, so the
-  // rebuild visits those and leaves the rest exactly as they were.
+  // INCREMENTAL REBUILD.
   private dirtyLanes = new Set<number>();
   private rebuildAll = true; // first rebuild, and any wholesale replace
   private laneMaxEnd: number[] = []; // per-lane latest terminated end
@@ -745,19 +474,15 @@ export class TimelineViewElement extends HTMLElement {
   private assignedStart = NaN;
   // Per-lane clusters for the current window (rebuilt with the clustering pass).
   private laneClusters: NCluster[][] = [];
-  // Per-lane pack inputs (unclustered items + one slot per cluster), cached
-  // between clustering passes and re-fed to the allocator on assignment.
+  // Per-lane pack inputs (unclustered items + one slot per cluster).
   private lanePackItems: PackItem[][] = [];
   private lanePackTargets: { track: number }[][] = [];
-  // The unclustered items alone, per lane, in (start, id) order — the draw
-  // loop iterates THIS instead of skipping clustered members one by one
-  // (at busy zooms most visible instants are clustered: iterating the full
-  // lane burned thousands of skip-checks per frame).
+  // The unclustered items alone, per lane, in (start, id) order — the draw loop iterates THIS instead of skipping clustered members one by one.
   private laneUnclustered: NInterval[][] = [];
-  // Sticky row state, one allocator per lane ID (not index — lane
-  // insertions must never hand one lane's row memory to another). The
-  // state deliberately survives setData: a full resync must not reshuffle
-  // the rows on screen.
+  // Per lane: the intervals with no same-lane parent, in (start, id) order.
+  private laneRoots: NInterval[][] = [];
+  private reportedOverlaps = new Set<string>();
+  // Sticky row state, one allocator per lane ID.
   private allocators = new Map<string, TrackAllocator>();
   private targetCounts: number[] = []; // visible track count per lane
   private displayCounts: number[] = []; // animated (float) counts driving layout
@@ -779,9 +504,7 @@ export class TimelineViewElement extends HTMLElement {
   private labelHalo = labelHaloColor(THEME_DEFAULTS.fg);
   private charW = 6;
   private labelPainter = new FadeTextPainter();
-  // Width model for label fitting: char-count arithmetic on the mutable
-  // measureCharW (set per call site — bar labels use charW, compact gutter
-  // labels a downscaled one), so no closure is allocated per frame.
+  // Width model for label fitting: char-count arithmetic on the mutable measureCharW.
   private measureCharW = 6;
   private measureLabel = (s: string): number => s.length * this.measureCharW;
   private gutterW = 90;
@@ -791,22 +514,13 @@ export class TimelineViewElement extends HTMLElement {
   private patternCache = new Map<string, CanvasPattern>();
 
   private raf = 0;
-  // Coalesced rebuild: data-ingest marks layout dirty and schedules ONE
-  // rebuild() per animation frame rather than re-laying-out synchronously per
-  // call (0 = none scheduled). See scheduleRebuild.
+  // Coalesced rebuild: data-ingest marks layout dirty and schedules ONE rebuild() per animation frame.
   private rebuildRaf = 0;
-  // Frame bookkeeping for the rebuild/paint split (see rebuild()): a paint may
-  // be pushed one frame past its rebuild, but never so far that the chart
-  // stops painting — the test is "did a paint happen in the last frame", not
-  // a one-shot flag, so a stream of merges alternates layout/paint instead of
-  // stalling after the first deferral.
+  // Frame bookkeeping for the rebuild/paint split (see rebuild()): a paint may be pushed one frame past its rebuild.
   private frameNo = 0;
   private lastDrawFrame = -1;
   private dirty = false;
-  // Due timestamp of the next clock-paced draw — the even-spacing grid
-  // used while the only motion is clock-driven and slower than the tier
-  // rate (0 = grid unarmed). See onFrame: advanced by whole budgets from
-  // its own previous value, never re-anchored to the actual draw time.
+  // Due timestamp of the next clock-paced draw — the even-spacing grid used while the only motion is clock-driven and slower than the tier rate.
   private clockDrawDue = 0;
   private connected = false;
   private inView = true;
@@ -839,19 +553,14 @@ export class TimelineViewElement extends HTMLElement {
     this.pillEl.textContent = '▸ now';
     this.pillEl.hidden = true;
     this.pillEl.addEventListener('click', () => this.jumpToNow());
-    // The fullscreen toggle sits in the corner the pill slides in next to,
-    // and — unlike the pill — is visible in BOTH follow and parked modes.
+    // The fullscreen toggle sits in the corner the pill slides in next to, and — unlike the pill — is visible in BOTH follow.
     this.fsEl = document.createElement('button');
     this.fsEl.className = 'fs-pill';
     this.fsEl.type = 'button';
     this.fsEl.addEventListener('click', () => {
       this.fullscreen = !this.fullscreen;
     });
-    // The "?" legend pill — stacked above the fullscreen toggle, visible in
-    // both follow and parked modes (and in fullscreen: shadow chrome rides
-    // the host wherever it goes) — opens the glyph-vocabulary panel. Pure
-    // DOM chrome: nothing legend-related runs on the canvas hot path; the
-    // panel's rows are (re)built only when it opens.
+    // The "?" legend pill — stacked above the fullscreen toggle.
     this.legendEl = document.createElement('button');
     this.legendEl.className = 'legend-pill';
     this.legendEl.type = 'button';
@@ -869,14 +578,10 @@ export class TimelineViewElement extends HTMLElement {
     this.staleEl = document.createElement('div');
     this.staleEl.className = 'stale-note';
     this.staleEl.hidden = true;
-    // fsEl precedes pillEl so `.fs-pill[hidden] ~ .live-pill` can reclaim
-    // the corner when the toggle is opted out.
+    // fsEl precedes pillEl so `.fs-pill[hidden] ~ .live-pill` can reclaim the corner when the toggle is opted out.
     shadow.append(this.canvas, this.mmCanvas, this.tooltipEl, this.fsEl, this.pillEl, this.emptyEl, this.staleEl, this.legendEl, this.legendPanelEl);
 
-    // Seed end = now with the 3-min reference span as the never-sized
-    // fallback; the first resizeBackingStore with a real host box
-    // re-derives the span from the container's aspect ratio (end stays
-    // anchored) while the view is still untouched.
+    // Seed end = now with the 3-min reference span as the never-sized fallback; the first resizeBackingStore.
     const now = this.nowMs();
     this.view = { start: now - DEFAULT_SPAN_REF_MS, end: now };
   }
@@ -905,27 +610,16 @@ export class TimelineViewElement extends HTMLElement {
       this.motionMq.addEventListener?.('change', this.onMotionPref);
     }
     document.addEventListener('visibilitychange', this.onVisibility);
-    // Escape exits fullscreen from anywhere (focus may sit on the toggle
-    // button, the page body, …). Document-level on purpose; the handler
-    // acts ONLY while fullscreen — Escape is never swallowed otherwise.
+    // Escape exits fullscreen from anywhere (focus may sit on the toggle button, the page body, …).
     document.addEventListener('keydown', this.onDocKeyDown);
     this.fsSeenScrollX = window.scrollX;
     this.fsSeenScrollY = window.scrollY;
     window.addEventListener('scroll', this.onWinScroll, { passive: true });
     this.watchBattery();
-    // Staleness watchdog: rAF stops when nothing animates, so a dead feed
-    // on a parked chart would never be NOTICED without an independent
-    // fixed-cadence check. It also drives the stale note's live seconds
-    // counter — forever; a stale chart never gives up announcing itself.
+    // Staleness watchdog: rAF stops when nothing animates.
     this.staleTimer = setInterval(() => this.updateStale(), 500);
 
-    // {passive: false} so preventDefault stays AVAILABLE — onWheel calls it
-    // only for consumed gestures (an unconsumed vertical wheel must reach
-    // the page). On the HOST, not the canvas: horizontal trackpad deltas
-    // over the DOM chrome floating above the plot (live pill, fullscreen
-    // toggle, stale note) must be consumed too, or a back-swipe at the pan
-    // boundary leaks to the browser as history navigation the moment the
-    // cursor crosses a button.
+    // {passive: false} so preventDefault stays AVAILABLE — onWheel calls it only for consumed gestures.
     this.addEventListener('wheel', this.onWheel, { passive: false });
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.canvas.addEventListener('pointermove', this.onPointerMove);
@@ -942,9 +636,7 @@ export class TimelineViewElement extends HTMLElement {
     this.syncScrollLock(); // an already-fullscreen element locks on (re)connect
     this.resizeBackingStore();
     this.syncChrome();
-    // A rebuild coalesced-but-pending at disconnect was parked; if we hold
-    // data, re-lay-out on reconnect so a moved element never shows stale
-    // layout (a fresh connect with no data is a cheap no-op).
+    // A rebuild coalesced-but-pending at disconnect was parked.
     if (this.byId.size > 0) this.scheduleRebuild();
     this.invalidate();
   }
@@ -1000,11 +692,7 @@ export class TimelineViewElement extends HTMLElement {
     if (name === 'fullscreen' && oldValue !== newValue) this.applyFullscreen(newValue !== null);
     if (name === 'no-minimap' && oldValue !== newValue) this.resizeBackingStore(); // strip visibility re-evaluates there
     this.syncChrome();
-    // A rebuild has already spent this frame on layout; stacking the paint on
-    // top of it is what makes a single frame cost layout PLUS draw (measured
-    // 8-10 ms together, either alone comfortably under). Hand the draw the
-    // next frame instead — but never twice running, so a stream of merges
-    // still animates: drawDeferred clears as soon as a draw actually renders.
+    // A rebuild has already spent this frame on layout.
     this.dirty = true;
     if (this.raf !== 0 && this.lastDrawFrame >= this.frameNo - 1) {
       cancelAnimationFrame(this.raf);
@@ -1016,17 +704,8 @@ export class TimelineViewElement extends HTMLElement {
 
   // -- Fullscreen (viewport-fill) ---------------------------------------------------
 
-  /**
-   * Viewport-fill mode (NOT the Fullscreen API — deliberately: no
-   * permission prompt, no browser chrome transition, plain CSS): the host
-   * gets the reflected boolean `fullscreen` attribute and
-   * :host([fullscreen]) pins it position:fixed over the whole viewport;
-   * the existing ResizeObserver → resizeBackingStore path re-derives
-   * everything (layout, clustering, DPR backing store — which stays
-   * capped at MAX_DPR: fullscreen must not step off the perf cliff the
-   * cap exists for). Toggled by the corner button, this property, or the
-   * attribute; Escape exits; 'fullscreenchange' fires on every change.
-   */
+  /** Viewport-fill mode (NOT the Fullscreen API — deliberately: no
+   * permission prompt, no browser chrome transition, plain CSS). */
   get fullscreen(): boolean {
     return this.hasAttribute('fullscreen');
   }
@@ -1038,9 +717,7 @@ export class TimelineViewElement extends HTMLElement {
   private applyFullscreen(on: boolean): void {
     this.syncScrollLock();
     if (this.connected) {
-      // Synchronous re-back: the fixed/inset styles apply on the next
-      // layout read, so resizing here avoids a one-frame stale-size flash
-      // (the ResizeObserver still confirms asynchronously).
+      // Synchronous re-back: the fixed/inset styles apply on the next layout read.
       this.resizeBackingStore();
       this.focus({ preventScroll: true }); // keyboard nav (arrows, Esc) works immediately
     }
@@ -1096,13 +773,8 @@ export class TimelineViewElement extends HTMLElement {
 
   // -- Legend ------------------------------------------------------------------------
 
-  /**
-   * Consumer-supplied legend rows, appended under the component-owned
-   * vocabulary in the "?" panel — the additive hook for glyphs a consumer
-   * composes into its LABELS (queue-position badges, holder counts, …),
-   * which the component draws but cannot explain. Entries are copied on
-   * set; malformed values are dropped; an open panel re-renders at once.
-   */
+  /** Consumer-supplied legend rows, appended under the component-owned
+   * vocabulary in the "?" panel. */
   get legendEntries(): TimelineLegendEntry[] {
     return this.userLegend.map((e) => ({ ...e }));
   }
@@ -1174,13 +846,11 @@ export class TimelineViewElement extends HTMLElement {
     this.connectors = [];
     this.markers = [];
     this.coverage = new CoverageTracker();
-    // Lane indices are about to be renumbered from scratch — any dirt
-    // recorded against the old numbering is meaningless.
+    // Lane indices are about to be renumbered from scratch — any dirt recorded against the numbering is meaningless.
     this.dirtyLanes.clear();
     this.rebuildAll = true;
     this.loadTick++;
-    // A full replace invalidates every mark the minimap density texture
-    // baked — the incremental queue only covers additions.
+    // A full replace invalidates every mark the minimap density texture baked.
     this.mmTexDirty = true;
     this.mmPendingNew.length = 0;
     this.mergeData(data);
@@ -1227,39 +897,19 @@ export class TimelineViewElement extends HTMLElement {
     }
     if (data.coverage) this.coverage.addCovered(toMs(data.coverage.start), toMs(data.coverage.end));
     this.scheduleRebuild();
-    // Every delivery proves the feed is alive — stamp freshness (and exit
-    // stale mode; a full setData mid-stale is the documented resync path).
+    // Every delivery proves the feed is alive — stamp freshness.
     this.markFresh();
   }
 
-  /**
-   * Stamp the live feed FRESH as of `ts` (default: the current clock).
-   * setData/mergeData stamp automatically; call this from polls that
-   * returned "no changes" so a quiet-but-healthy feed never reads as
-   * stale. When more than `staleAfterMs` passes without a stamp the chart
-   * enters stale mode: the live edge (ongoing bars, the now line, the
-   * follow pin) FREEZES at the last stamped time — never extrapolating
-   * state the data no longer vouches for — ongoing bars restyle as
-   * unknown, and a "live data stale — reconnecting" note appears until
-   * the next stamp. On recovery, do ONE full resync (setData) before
-   * resuming incremental merges — runs that ended during the outage
-   * otherwise stay unknown.
-   */
+  /** Stamp the live feed FRESH as of `ts` (default: the current clock). */
   markFresh(ts?: number | Date): void {
-    // Capture where the live edge renders BEFORE the stamp moves
-    // lastFreshMs: the recovery glide must start from the FROZEN edge (the
-    // old stamp), not from the new one — else recovery teleports.
+    // Capture where the live edge renders BEFORE the stamp moves lastFreshMs: the recovery glide must start from the FROZEN edge (the stamp).
     const edgeBefore = this.liveEdge();
     this.lastFreshMs = ts == null ? this.nowMs() : toMs(ts);
     this.updateStale(edgeBefore);
   }
 
-  /**
-   * ms without a freshness stamp before the chart declares its feed stale
-   * (default STALE_AFTER_DEFAULT_MS = 10s; tune to ~2 poll intervals).
-   * Zero or a non-finite value disables staleness — for static datasets
-   * that are loaded once and never fed.
-   */
+  /** ms without a freshness stamp before the chart declares its feed stale. */
   get staleAfterMs(): number {
     return this.staleAfter;
   }
@@ -1286,8 +936,7 @@ export class TimelineViewElement extends HTMLElement {
     this.perLane = [];
     this.connectors = [];
     this.markers = markers;
-    // Lane indices are about to be renumbered from scratch — any dirt
-    // recorded against the old numbering is meaningless.
+    // Lane indices are about to be renumbered from scratch — any dirt recorded against the numbering is meaningless.
     this.dirtyLanes.clear();
     this.rebuildAll = true;
     // Lane replacement can renumber every row — the baked marks are stale.
@@ -1299,8 +948,7 @@ export class TimelineViewElement extends HTMLElement {
   setIntervals(intervals: TimelineInterval[]): void {
     this.byId.clear();
     this.perLane = this.lanes.map(() => []);
-    // Lane indices are about to be renumbered from scratch — any dirt
-    // recorded against the old numbering is meaningless.
+    // Lane indices are about to be renumbered from scratch — any dirt recorded against the numbering is meaningless.
     this.dirtyLanes.clear();
     this.rebuildAll = true;
     // Full interval replace — the baked density marks are all stale.
@@ -1372,12 +1020,8 @@ export class TimelineViewElement extends HTMLElement {
     this.invalidate();
   }
 
-  /**
-   * Current auto-fit state (read-only): whether auto-fit is enabled (no
-   * `no-auto-fit` attribute) and which lanes are demoted to the compact
-   * track height right now, as lane ids in display order. Mirrors the
-   * latest 'fitchange' event — cheap to poll, handy for debugging.
-   */
+  /** Current auto-fit state (read-only): whether auto-fit is enabled (no
+   * `no-auto-fit` attribute) and which lanes are demoted. */
   get fitState(): { enabled: boolean; demoted: string[] } {
     return { enabled: !this.hasAttribute('no-auto-fit'), demoted: this.demotedIds.slice() };
   }
@@ -1397,39 +1041,24 @@ export class TimelineViewElement extends HTMLElement {
     const s = toMs(start);
     const e = toMs(end);
     if (!Number.isFinite(s) || !Number.isFinite(e) || !(e > s)) return;
-    // A consumer-chosen window beats the aspect default from here on
-    // (applyUserView latches too — this is the explicit belt for the one
-    // programmatic path consumers call directly).
+    // A consumer-chosen window beats the aspect default from here.
     this.viewTouched = true;
     const span = Math.min(Math.max(e - s, MIN_SPAN_MS), this.maxZoomSpan());
     this.applyUserView({ start: s, end: s + span }, { jump: true });
   }
 
-  /**
-   * Fit the viewport to ONE interval: its span full-width plus
-   * `pad` fraction of it each side (default 0.05) — the run-detail-dialog
-   * convenience (an embedded instance shows just the clicked span, no
-   * viewport math). A thin wrapper over setViewport, so it counts as a
-   * consumer-chosen window (latches viewTouched; span clamps + the now
-   * stop apply; instants center in the ~2s minimum window). False when
-   * the id is unknown — viewport untouched.
-   */
+  /* */
   fitToInterval(id: string, opts?: { pad?: number }): boolean {
     const n = this.byId.get(id);
     if (!n) return false;
-    const v = fitSpanView(n.start, n.end ?? this.liveEdge(), opts?.pad);
+    // A parent fits its whole family block, sub-spans included.
+    const v = fitSpanView(n.famStart, n.famEnd ?? this.liveEdge(), opts?.pad);
     this.setViewport(v.start, v.end);
     return true;
   }
 
-  /**
-   * The earliest time the view may scroll back to (ms since epoch; null =
-   * unbounded, the default). Every gesture, jump and default-span
-   * re-derivation stops here, and `loadRange` is never probed for a range
-   * before it — set it to the first timestamp the consumer can serve.
-   * Independent of `maxTime`: the right edge keeps following the live
-   * clock unless that one is set too.
-   */
+  /** The earliest time the view may scroll back to (ms since epoch; null =
+   * unbounded, the default). */
   get minTime(): number | null {
     return this.minTimeMs;
   }
@@ -1441,15 +1070,8 @@ export class TimelineViewElement extends HTMLElement {
     this.applyBounds();
   }
 
-  /**
-   * The latest time the view may reach (ms since epoch; null = unbounded,
-   * the default). Setting it STOPS the forward scroll: this instant
-   * becomes the live edge, so the right stop, ongoing (end = null) bar
-   * ends and hit tests read it instead of the clock, and follow mode, the
-   * now line, the jump-to-now pill and feed staleness all switch off —
-   * a chart of finished content instead of a live feed. Independent of
-   * `minTime`: the past stays unlimited unless that one is set too.
-   */
+  /** The latest time the view may reach (ms since epoch; null = unbounded, the
+   * default). */
   get maxTime(): number | null {
     return this.maxTimeMs;
   }
@@ -1459,9 +1081,7 @@ export class TimelineViewElement extends HTMLElement {
     if (next === this.maxTimeMs) return;
     this.maxTimeMs = next;
     if (next !== null && this.following) {
-      // Same continuous exit as followNow = false: the view keeps its
-      // position and whatever lead it holds glides out (decayLead), so
-      // freezing a live chart never teleports it.
+      // Same continuous exit as followNow = false: the view keeps its position and whatever lead it holds glides out (decayLead).
       this.following = false;
       const span = this.view.end - this.view.start;
       this.glideLead(Math.max(0, gestureLeadFrac(this.view.end, next, span, this.currentLead())), 0, FOLLOW_LEAD_TWEEN_MS);
@@ -1478,12 +1098,7 @@ export class TimelineViewElement extends HTMLElement {
     this.invalidate();
   }
 
-  /**
-   * Clamp a view into the configured bounds. `max` overrides the right
-   * stop with the caller's own ceiling — the follow lead's decaying one
-   * on the gesture paths, which is never past maxTime once the lead has
-   * glided out.
-   */
+  /** Clamp a view into the configured bounds. */
   private clampBounds(v: TimeView, max?: number): TimeView {
     return clampViewToBounds(v, { min: this.minTimeMs, max: max ?? this.maxTimeMs });
   }
@@ -1509,8 +1124,7 @@ export class TimelineViewElement extends HTMLElement {
       this.engageFollowGlide(JUMP_TO_NOW_TWEEN_MS);
     } else {
       this.following = false;
-      // Same continuous exit as a backward-pan disengage: whatever lead the
-      // view holds glides out instead of parking a future-showing view.
+      // Same continuous exit as a backward-pan disengage: whatever lead the view holds glides out instead.
       const span = this.view.end - this.view.start;
       this.glideLead(Math.max(0, gestureLeadFrac(this.view.end, this.nowMs(), span, this.currentLead())), 0, FOLLOW_LEAD_TWEEN_MS);
     }
@@ -1519,13 +1133,8 @@ export class TimelineViewElement extends HTMLElement {
     this.invalidate();
   }
 
-  /**
-   * Re-engage follow mode, keeping the current span: a fast
-   * JUMP_TO_NOW_TWEEN_MS glide from wherever the view is to the followed
-   * position — never a single-frame teleport (reduced motion snaps).
-   * Under `maxTime` there is nothing to follow, so it parks the view at
-   * that stop instead: the same "take me to the end" gesture.
-   */
+  /** Re-engage follow mode, keeping the current span: a fast JUMP_TO_NOW_TWEEN_MS glide from wherever the view is to the followed position — never a single-frame teleport (reduced motion snaps). Under `maxTime` there is nothing to follow, so it parks the view at that
+   * stop instead: the same "take me to the end" gesture. */
   jumpToNow(): void {
     if (this.maxTimeMs !== null) {
       const span = this.view.end - this.view.start;
@@ -1575,18 +1184,23 @@ export class TimelineViewElement extends HTMLElement {
         : null,
       track: 0,
       clustered: false,
+      parent: null,
+      children: null,
+      rows: 1,
+      depth: 0,
+      root: undefined as unknown as NInterval,
+      famStart: start,
+      famEnd: end,
+      famTops: null,
     };
+    n.root = n;
     const prev = this.byId.get(iv.id);
     if (prev) {
       // A replace can MOVE an interval between lanes: both ends changed.
       this.dirtyLanes.add(prev.laneIdx);
       const arr = this.perLane[prev.laneIdx];
       arr.splice(arr.indexOf(prev), 1);
-      // Replacing an already-TERMINATED interval can rewrite a mark the
-      // minimap density texture already baked — stale pixels only a full
-      // repaint can clear. (An ongoing→terminated transition is the
-      // normal live flow and is NOT dirtying: the ongoing version was
-      // never baked, the terminated one queues below.)
+      // Replacing an already-TERMINATED interval can rewrite a mark the minimap density texture already baked.
       if (prev.end !== null) this.mmTexDirty = true;
     }
     this.byId.set(iv.id, n);
@@ -1599,9 +1213,7 @@ export class TimelineViewElement extends HTMLElement {
       if (n.end > this.mmLatestEnd) this.mmLatestEnd = n.end;
       const dur = n.end - n.start;
       if (!(this.laneMaxDur[laneIdx] >= dur)) this.laneMaxDur[laneIdx] = dur;
-      // Right-edge sliver for the density texture. Bounded: past the cap
-      // (a hidden strip never drains the queue, or a giant setData) the
-      // queue folds into one full-rebuild flag instead of growing.
+      // Right-edge sliver for the density texture.
       if (this.mmPendingNew.length >= 4096) {
         this.mmPendingNew.length = 0;
         this.mmTexDirty = true;
@@ -1613,25 +1225,7 @@ export class TimelineViewElement extends HTMLElement {
     }
   }
 
-  /**
-   * Re-sort and re-layout after any data change. Track assignment and lane
-   * heights come from the VISIBLE window (updateVisibleLayout), so a
-   * historical parallelism burst stops padding its lane once off-screen.
-   */
-  /**
-   * Coalesce rebuild() to ONE run per animation frame. Every data-ingest
-   * path (mergeData / setData / setLanes / setIntervals) marks the layout
-   * dirty via this instead of re-laying-out synchronously — so a consumer
-   * feeding a BURST of merges pays a single O(N) rebuild on the next frame,
-   * not one per call (the per-merge rebuild is the historical "5s merge
-   * spike"; 6k merges in one task froze a real dashboard for 15s). rAF is
-   * parked while the tab is backgrounded, so a backlog buffered while hidden
-   * collapses into a single rebuild on foreground instead of freezing the
-   * main thread when it flushes. The draw is already coalesced the same way
-   * (invalidate → dirty → one rAF); this gives the layout the same treatment.
-   * No caller reads layout synchronously after ingest — the draw, hit-tests,
-   * and minimap all read it on the frame, after this runs.
-   */
+  /** Coalesce rebuild() to ONE run per animation frame. */
   private scheduleRebuild(): void {
     if (this.rebuildRaf !== 0) return;
     this.rebuildRaf = requestAnimationFrame(() => {
@@ -1641,10 +1235,7 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   private rebuild(): void {
-    // The lanes this pass has to look at: everything on a wholesale replace,
-    // otherwise exactly the ones an ingest touched. Streaming a window in
-    // batches used to re-scan, re-cluster and re-assign the WHOLE chart per
-    // batch; now each batch costs its own lanes.
+    // The lanes this pass has to look at: everything on a wholesale replace.
     const visit: number[] = [];
     if (this.rebuildAll) {
       for (let i = 0; i < this.perLane.length; i++) visit.push(i);
@@ -1652,10 +1243,10 @@ export class TimelineViewElement extends HTMLElement {
       for (const i of this.dirtyLanes) if (i < this.perLane.length) visit.push(i);
     }
 
-    // Re-sort only lanes that actually fell out of (start, id) order: a
-    // live merge APPENDS near-now intervals, leaving most lanes already
-    // sorted — the O(n) plain-compare check replaces an O(n log n)
-    // comparator sort per lane per merge (the 5s merge spike).
+    // Re-sort only lanes that fell out of (start, id) order: a live merge
+    // APPENDS near-now intervals, leaving most lanes already sorted — the
+    // O(n) plain-compare check replaces an O(n log n) comparator sort per
+    // lane per merge (the 5s merge spike).
     for (const li of visit) {
       const per = this.perLane[li];
       let sorted = true;
@@ -1668,6 +1259,7 @@ export class TimelineViewElement extends HTMLElement {
         }
       }
       if (!sorted) per.sort((a, b) => a.start - b.start || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      this.resolveFamilies(li);
     }
     // Exact recompute of the cull/extent metadata the ingest path grew
     // incrementally (this pass also SHRINKS after replaces): per-lane max
@@ -1683,6 +1275,7 @@ export class TimelineViewElement extends HTMLElement {
       this.laneOngoingStart.length = laneN;
       this.laneMaxEnd.length = laneN;
       this.laneOngoing.length = laneN;
+      this.laneRoots.length = laneN;
       for (const li of visit) {
         const per = this.perLane[li];
         let maxDur = 0;
@@ -1699,14 +1292,22 @@ export class TimelineViewElement extends HTMLElement {
             if (dur > maxDur) maxDur = dur;
             if (n.end > maxEnd) maxEnd = n.end;
           }
+          // A root draws its whole family block, so the cull must see the
+          // block's extent, not the root's own.
+          if (n.children !== null) {
+            if (n.famEnd === null) {
+              if (n.start < ongoing) ongoing = n.start;
+            } else if (n.famEnd - n.start > maxDur) {
+              maxDur = n.famEnd - n.start;
+            }
+          }
         }
         this.laneMaxDur[li] = maxDur;
         this.laneOngoingStart[li] = ongoing;
         this.laneMaxEnd[li] = maxEnd;
         this.laneOngoing[li] = ongoingList;
       }
-      // The two GLOBAL aggregates fold from the per-lane ones, so an
-      // unchanged lane is never re-scanned to compute them.
+      // The GLOBAL aggregates fold from the per-lane ones.
       this.mmOngoing.length = 0;
       let latest = -Infinity;
       for (let li = 0; li < laneN; li++) {
@@ -1717,9 +1318,8 @@ export class TimelineViewElement extends HTMLElement {
       }
       this.mmLatestEnd = latest;
     }
-    // Row memory follows its lane's lifetime: allocators for lanes that
-    // no longer exist are dropped; surviving lanes keep theirs (so a full
-    // setData resync leaves on-screen rows exactly where they were).
+    // Row memory follows its lane's lifetime: allocators for lanes that no
+    // longer exist are dropped.
     for (const key of [...this.allocators.keys()]) {
       if (!this.laneIdxById.has(key)) this.allocators.delete(key);
     }
@@ -1729,19 +1329,14 @@ export class TimelineViewElement extends HTMLElement {
     this.rebuildAll = false;
     this.autoGutter();
     this.clampLaneScroll();
-    // The minimap shows iff data exists; only the emptiness EDGE re-runs
-    // the (layout-forcing) resize — steady-state merges never touch it.
+    // The minimap shows iff data exists.
     const hasData = this.byId.size > 0;
     if (hasData !== this.hadData) {
       this.hadData = hasData;
       this.resizeBackingStore();
     }
     this.syncChrome();
-    // A rebuild has already spent this frame on layout; stacking the paint on
-    // top of it is what makes a single frame cost layout PLUS draw (measured
-    // 8-10 ms together, either alone comfortably under). Hand the draw the
-    // next frame instead — but never twice running, so a stream of merges
-    // still animates: drawDeferred clears as soon as a draw actually renders.
+    // A rebuild has already spent this frame on layout.
     this.dirty = true;
     if (this.raf !== 0 && this.lastDrawFrame >= this.frameNo - 1) {
       cancelAnimationFrame(this.raf);
@@ -1751,23 +1346,7 @@ export class TimelineViewElement extends HTMLElement {
     }
   }
 
-  /**
-   * Track assignment + lane heights from the intervals intersecting the
-   * CURRENT viewport (partial overlap counts; a lane with nothing visible
-   * collapses to one track). Rows are STICKY (TrackAllocator, one per
-   * lane): a visible interval keeps its track while it stays on screen —
-   * visible-membership churn during pans/live updates never reflows the
-   * rows being watched — a returning interval remembers its old track,
-   * and new arrivals take the lowest conflict-free one, so lane height
-   * recovers from the bottom once a tall burst scrolls away. Auto-fit
-   * then demotes lanes to the compact track height until the stack fits
-   * the host (computeAutoFit — tallest lanes first, hysteretic promotion,
-   * a pure function of the visible counts + host height). Count AND
-   * height CHANGES ease over LAYOUT_TWEEN_MS (snapped under
-   * prefers-reduced-motion). this.layout always reflects the CURRENT
-   * (possibly animating) heights, and hit-testing shares it (rectFor
-   * reads displayHeights), so hovers stay aligned mid-tween.
-   */
+  /** Track assignment + lane heights from the intervals intersecting the CURRENT viewport (partial overlap counts; a lane with nothing visible collapses to one track). Rows are STICKY (TrackAllocator, one per lane): a visible interval keeps its track while it stays on screen — visible-membership churn during pans/live updates never reflows the rows being watched — a returning interval remembers its old track, and new arrivals take the lowest conflict-free one, so lane height recovers from the bottom once a tall burst scrolls away. Auto-fit then demotes lanes to the compact track height until the stack fits the host (computeAutoFit — tallest lanes first, hysteretic promotion, a pure function of the visible counts + host height). Count AND height CHANGES ease over LAYOUT_TWEEN_MS (snapped under prefers-reduced-motion). this.layout always reflects the CURRENT (possibly animating) heights, and hit-testing shares it (rectFor reads displayHeights), so hovers stay aligned mid-tween. */
   private updateVisibleLayout(): void {
     const rv = this.renderView();
     const m = this.metrics();
@@ -1777,21 +1356,15 @@ export class TimelineViewElement extends HTMLElement {
     const structure = this.targetCounts.length !== this.perLane.length;
     let changed = false;
     // CLUSTERING — position-independent (proven: membership is a function
-    // of (data, span, plotW) only), so pure pans and the follow pin never
-    // re-cluster. Zooming crosses span buckets and re-clusters at once.
+    // of (data, span, plotW) only).
     const needCluster =
       this.clusteredEpoch !== this.packEpoch || this.clusteredSpanKey !== spanKey || this.clusteredPlotW !== plotW || structure;
     // A DATA-ONLY pass (the epoch moved; span, width and lane set did not)
-    // can only have changed the lanes the ingest touched — every other lane's
-    // clusters are still exactly right, because membership is a function of
-    // (that lane's data, span, plotW). Re-clustering them was the whole-chart
-    // cost a batched history load paid once per batch.
+    // can only have changed the lanes the ingest touched.
     const dataOnly =
       !structure && !this.rebuildAll && this.clusteredSpanKey === spanKey && this.clusteredPlotW === plotW;
     if (needCluster) {
-      // A pure zoom/resize re-cluster sees the exact objects of the last
-      // pass — clusterLane's membership-identical fast path may reuse its
-      // derived structures. A data change (epoch moved) always rebuilds.
+      // A pure zoom/resize re-cluster sees the exact objects of the last pass.
       const sameData = this.clusteredEpoch === this.packEpoch && !structure;
       this.clusteredEpoch = this.packEpoch;
       this.clusteredSpanKey = spanKey;
@@ -1801,7 +1374,7 @@ export class TimelineViewElement extends HTMLElement {
       this.lanePackTargets.length = this.perLane.length;
       this.laneUnclustered.length = this.perLane.length;
       if (dataOnly) {
-        // sameData is false for these by definition: their data just changed.
+        // sameData is false for these by definition: their data changed.
         for (const i of this.dirtyLanes) if (i < this.perLane.length) this.clusterLane(i, rv, plotW, false);
       } else {
         for (let i = 0; i < this.perLane.length; i++) this.clusterLane(i, rv, plotW, sameData);
@@ -1816,10 +1389,8 @@ export class TimelineViewElement extends HTMLElement {
       this.assignedPlotW !== plotW ||
       !(Math.abs(rv.start - this.assignedStart) < span * ASSIGN_QUANTUM_FRAC);
     if (needAssign) {
-      // The same argument as the clustering above, one step further: when the
-      // ONLY thing that moved is the data (window, width and lane set all
-      // unchanged), an untouched lane's visible count cannot have changed, so
-      // its previous count stands.
+      // The same argument as the clustering above, one step further: when the ONLY thing that moved is the data (window, width and lane set all unchanged), an untouched lane's visible count cannot
+      // have changed, so its previous count stands.
       const assignDataOnly =
         dataOnly &&
         this.assignedSpanKey === spanKey &&
@@ -1847,9 +1418,7 @@ export class TimelineViewElement extends HTMLElement {
       }
       this.targetCounts = next;
     }
-    // Auto-fit runs every pass (cheap, pure): it must also react to host
-    // resizes and theme changes, not just data/window changes. Disabled —
-    // or the host still unsized — means every lane stays at full height.
+    // Auto-fit runs every pass (cheap, pure): it must also react to host resizes and theme changes.
     const compact = this.compactTrackH();
     const fitOn = !this.hasAttribute('no-auto-fit') && this.cssH > AXIS_H + 4;
     const fit = fitOn
@@ -1906,6 +1475,73 @@ export class TimelineViewElement extends HTMLElement {
     this.layout = layoutLanes(this.displayCounts, m, this.displayHeights);
   }
 
+  /**
+   * Resolve one lane's sub-span forest from each interval's parentId
+   * (resolveParents: same lane only, cycles cut) and pack every family
+   * into its block (packFamily). Writes parent/children/rows/famStart/
+   * famEnd on each node and the root's famTops, and rebuilds laneRoots.
+   */
+  /** Sub-spans that overlap a sibling break the flame-chart contract. Each one is reported once, by id. */
+  private reportOverlaps(ids: readonly string[]): void {
+    for (const id of ids) {
+      if (this.reportedOverlaps.has(id)) continue;
+      this.reportedOverlaps.add(id);
+      const n = this.byId.get(id);
+      const parent = n?.parent?.id ?? '?';
+      console.error(`<timeline-view>: sub-span "${id}" overlaps a sibling under "${parent}". Siblings must run one after another. The chart draws them on one row.`);
+    }
+  }
+
+  private resolveFamilies(laneIdx: number): void {
+    const per = this.perLane[laneIdx];
+    const parentOf = resolveParents(per.map((n) => ({ id: n.id, parentId: n.src.parentId })));
+    for (let i = 0; i < per.length; i++) {
+      const n = per[i];
+      n.parent = null;
+      n.children = null;
+      n.rows = 1;
+      n.depth = 0;
+      n.root = n;
+      n.famStart = n.start;
+      n.famEnd = n.end;
+      n.famTops = null;
+    }
+    const roots: NInterval[] = [];
+    for (let i = 0; i < per.length; i++) {
+      const p = parentOf[i];
+      if (p < 0) {
+        roots.push(per[i]);
+        continue;
+      }
+      const parent = per[p];
+      per[i].parent = parent;
+      (parent.children ??= []).push(per[i]);
+    }
+    for (const n of per) {
+      if (n.children === null) continue;
+      const fam = packFamily(familyNode(n));
+      n.rows = fam.rows;
+      n.famStart = fam.start;
+      n.famEnd = fam.end;
+      if (n.parent === null) {
+        n.famTops = fam.tops;
+        this.reportOverlaps(fam.overlaps);
+      }
+    }
+    // Depth and root by walking up: the forest is acyclic (resolveParents).
+    for (const n of per) {
+      let r = n;
+      let d = 0;
+      while (r.parent !== null) {
+        r = r.parent;
+        d++;
+      }
+      n.root = r;
+      n.depth = d;
+    }
+    this.laneRoots[laneIdx] = roots;
+  }
+
   /** The lane's sticky row allocator (created on first use; pruned with its lane in rebuild). */
   private allocatorFor(laneId: string): TrackAllocator {
     let alloc = this.allocators.get(laneId);
@@ -1927,23 +1563,20 @@ export class TimelineViewElement extends HTMLElement {
    * passes that run between re-clusterings.
    */
   private clusterLane(laneIdx: number, rv: TimeView, plotW: number, sameData: boolean): void {
-    const per = this.perLane[laneIdx];
+    const per = this.laneRoots[laneIdx] ?? EMPTY_ROOTS;
     const lane = this.lanes[laneIdx];
-    // The pitch is a fraction of THIS lane's pip width — pips overlap, and
-    // a compact lane's dots pack tighter still. Read at cluster time, so a
-    // lane-height tween runs on the previous pitch until the next
-    // re-cluster: a sub-pixel drift for the length of the tween.
+    // The pitch is a fraction of THIS lane's pip width — pips overlap, and a compact lane's dots pack tighter still.
     const pitch = Math.max(CLUSTER_MIN_PITCH_PX, this.pipWidth(laneIdx) * CLUSTER_OVERLAP_FRAC);
     const { clusters, memberOf } = clusterInstants(per, rv, plotW, pitch);
     // Membership-identical fast path — pure ZOOM/RESIZE re-clusters only
     // (`sameData`: the pack epoch is unchanged, so `per` holds exactly the
-    // objects the previous pass saw; a data change always rebuilds). Most
-    // zoom bucket steps change NO lane's membership, and a cluster is a
-    // CONTIGUOUS run of the sorted instant order, so (count, first, last)
-    // member-reference identity proves the whole membership matches — then
-    // every derived structure (NCluster objects, pack items/targets, the
-    // unclustered list, per-item clustered flags) is already exactly
-    // right and the rebuild below is skipped wholesale.
+    // objects the pass saw; a data change always rebuilds). Most zoom bucket
+    // steps change NO lane's membership, and a cluster is a CONTIGUOUS run of
+    // the sorted instant order, so (count, first, last) member-reference
+    // identity proves the whole membership matches — then every derived
+    // structure (NCluster objects, pack items/targets, the unclustered list,
+    // per-item clustered flags) is already exactly right and the rebuild
+    // below is skipped wholesale.
     if (sameData) {
       const prev = this.laneClusters[laneIdx];
       if (prev !== undefined && prev.length === clusters.length && this.lanePackItems[laneIdx] !== undefined && this.laneUnclustered[laneIdx] !== undefined) {
@@ -1958,7 +1591,7 @@ export class TimelineViewElement extends HTMLElement {
         }
         if (same) {
           // Membership survives, but the marks and point-ness are functions
-          // of the SCALE this pass ran at — the one thing that changed.
+          // of the SCALE this pass ran at — the thing that changed.
           for (let k = 0; k < clusters.length; k++) {
             prev[k].marks = clusters[k].marks;
             prev[k].point = this.isPointCluster(clusters[k].extent, rv, plotW);
@@ -1989,11 +1622,13 @@ export class TimelineViewElement extends HTMLElement {
     const targets: { track: number }[] = [];
     const unclustered: NInterval[] = [];
     for (let j = 0; j < per.length; j++) {
-      per[j].clustered = memberOf[j] >= 0;
+      const n = per[j];
+      n.clustered = memberOf[j] >= 0;
       if (memberOf[j] >= 0) continue;
-      items.push(per[j]);
-      targets.push(per[j]);
-      unclustered.push(per[j]);
+      // A family packs as ONE block over its whole extent, `rows` tall.
+      items.push(n.children === null ? n : { id: n.id, start: n.famStart, end: n.famEnd, rows: n.rows });
+      targets.push(n);
+      unclustered.push(n);
     }
     for (let k = 0; k < ncs.length; k++) {
       const nc = ncs[k];
@@ -2011,18 +1646,7 @@ export class TimelineViewElement extends HTMLElement {
     return durationWidthPx(extent.start, extent.end, rv, plotW) <= CLUSTER_STACK_MAX_PX;
   }
 
-  /**
-   * Baked pip glyphs, keyed by style + radius + dpr + variant. EVERY pip
-   * comes off a sprite, including a plain solid one. Sustained-throughput
-   * measurement on an M1, markers per frame holding 30fps (bench/bench-gl.html):
-   *
-   *   sprite blit 29977  |  batched path 4571  |  one path each 5100
-   *
-   * A bake is ~82 us, once per (style, radius, dpr), and repays inside the
-   * first frame that draws a few hundred of them. Do not reintroduce a
-   * minimum-markers gate or a solid-pip carve-out: both came from a
-   * software-rasterizer micro-benchmark that the sustained numbers reverse.
-   */
+  /** Baked pip glyphs, keyed by style + radius + dpr + variant. */
   private pipSprites = new Map<string, { img: HTMLCanvasElement; w: number; h: number; ax: number; ay: number }>();
   private styleIds = new WeakMap<ResolvedStyle, string>();
   private styleSeq = 0;
@@ -2100,9 +1724,7 @@ export class TimelineViewElement extends HTMLElement {
     ctx.fill();
     ctx.strokeStyle = style.border;
     ctx.lineWidth = style.glyph === 'bang' || style.border === this.theme.emphasis ? 2 : 1;
-    // A dashed state reads dashed at pip size too: the declared pattern is
-    // rescaled so a whole number of dash+gap cycles (3-5) closes around the
-    // diamond's perimeter.
+    // A dashed state reads dashed at pip size too.
     const dashSum = style.dash ? style.dash.reduce((a, b) => a + b, 0) : 0;
     if (style.dash && dashSum > 0) {
       const perim = Math.hypot(rx, r) * 4;
@@ -2132,7 +1754,7 @@ export class TimelineViewElement extends HTMLElement {
     ctx.restore();
   }
 
-  /** A lane's drawn pip width — pipRadius x 2 x the diamond's 0.78 aspect (drawInstant). */
+  /* */
   private pipWidth(laneIdx: number): number {
     return this.pipRadius(this.laneTrackHeight(laneIdx)) * 0.78 * 2;
   }
@@ -2157,7 +1779,17 @@ export class TimelineViewElement extends HTMLElement {
     const targets = this.lanePackTargets[laneIdx];
     const { tracks, trackCount } = this.allocatorFor(lane.id).assign(items, rv);
     for (let k = 0; k < tracks.length; k++) {
-      if (tracks[k] >= 0) targets[k].track = tracks[k];
+      if (tracks[k] < 0) continue;
+      const target = targets[k];
+      target.track = tracks[k];
+      // A root's descendants row at their packFamily offsets under it.
+      const tops = (target as NInterval).famTops;
+      if (tops) {
+        for (const [id, off] of tops) {
+          const d = this.byId.get(id);
+          if (d && d.laneIdx === laneIdx) d.track = tracks[k] + off;
+        }
+      }
     }
     const ncs = this.laneClusters[laneIdx];
     for (let k = 0; k < ncs.length; k++) {
@@ -2188,9 +1820,7 @@ export class TimelineViewElement extends HTMLElement {
     return { catKey, state };
   }
 
-  // Cached — theme-derived constants, refreshed by readTheme(). metrics()
-  // sits inside rectForInto on the per-bar draw path: allocating a fresh
-  // object per call was ~thousands of allocations per drawn frame.
+  // Cached — theme-derived constants, refreshed by readTheme(). metrics() sits inside rectForInto on the per-bar draw path.
   private metricsCache = { trackHeight: THEME_DEFAULTS.trackHeight, trackGap: 2, lanePad: 3 };
 
   private metrics(): { trackHeight: number; trackGap: number; lanePad: number } {
@@ -2266,7 +1896,6 @@ export class TimelineViewElement extends HTMLElement {
         };
       })
       .catch(() => {
-        /* API present but denied: stay on the AC tier */
       });
   }
 
@@ -2291,20 +1920,12 @@ export class TimelineViewElement extends HTMLElement {
 
   // -- Feed staleness ---------------------------------------------------------------
 
-  /**
-   * The LIVE EDGE every live semantic uses — ongoing (end = null) bar
-   * ends, the now line, the follow pin, and the forward clamp on user
-   * views: the real clock while the feed is fresh, FROZEN at lastFreshMs
-   * while it is stale (liveEdgeTarget). The stale <-> fresh transition is
-   * EASED (followLeadAt over JUMP_TO_NOW_TWEEN_MS): entering stale mode
-   * retracts the edge from wherever it had extrapolated back to the last
-   * vouched timestamp as a glide, and recovery advances it to the live
-   * clock the same way — composing with the follow pin, so neither
-   * transition teleports the view. Reduced motion snaps.
-   */
+  /** The LIVE EDGE every live semantic uses — ongoing (end = null) bar ends,
+   * the now line, the follow pin, and the forward clamp on user views: the
+   * real clock while the feed is fresh, FROZEN at lastFreshMs while it is
+   * stale (liveEdgeTarget). */
   private liveEdge(): number {
-    // A configured maxTime IS the edge: nothing about it is live, so it
-    // neither eases nor goes stale.
+    // A configured maxTime IS the edge: nothing about it is live, so it neither eases nor goes stale.
     if (this.maxTimeMs !== null) return this.maxTimeMs;
     const target = this.feedStale && this.lastFreshMs !== null ? this.lastFreshMs : this.nowMs();
     const a = this.edgeAnim;
@@ -2363,12 +1984,9 @@ export class TimelineViewElement extends HTMLElement {
 
   // -- Viewport internals -----------------------------------------------------------
 
-  /**
-   * Advance + read the animated follow lead (fraction of span). Time-based
-   * (followLeadAt), so multiple reads within a frame agree; the tween
-   * clears itself the moment it lands on its target. A reduced-motion
-   * preference snaps any in-flight glide to its target.
-   */
+  /** Advance + read the animated follow lead (fraction of span). Time-based
+   * (followLeadAt), so multiple reads within a frame agree; the tween clears
+   * itself the moment it lands on its target. */
   private currentLead(): number {
     const a = this.leadAnim;
     if (a) {
@@ -2389,14 +2007,11 @@ export class TimelineViewElement extends HTMLElement {
     this.leadAnim = { from, target, start: this.perfNow(), dur };
   }
 
-  /**
-   * following := true, easing from the CURRENT view position to the
-   * followed lead over `dur` — jumpToNow's glide (and the followNow
-   * setter's). The seed lead may be deeply negative (a parked view far in
-   * the past): the glide crosses the whole gap, decelerating into the
-   * pin — never a teleport. This frame's pin lands exactly where the view
-   * already is.
-   */
+  /** following := true, easing from the CURRENT view position to the followed
+   * lead over `dur` — jumpToNow's glide (and the followNow setter's). The
+   * seed lead may be deeply negative (a parked view far in the past): the
+   * glide crosses the whole gap, decelerating into the pin — never a
+   * teleport. */
   private engageFollowGlide(dur: number): void {
     if (this.maxTimeMs !== null) return; // nothing to follow — see jumpToNow
     this.following = true;
@@ -2411,14 +2026,12 @@ export class TimelineViewElement extends HTMLElement {
     this.view = this.clampBounds({ start: end - span, end }, end);
   }
 
-  /**
-   * The disengaged counterpart of the per-tick pin: while residual follow
-   * lead is still gliding out after a backward-pan disengage, the view's
-   * end tracks the DECAYING ceiling now + span * lead — moving backward by
-   * at most the easing step per frame — until the lead is gone or "now"
-   * overtakes the parked end first. Once settled this is a no-op and the
-   * view is an ordinary parked view (end <= now).
-   */
+  /** The disengaged counterpart of the per-tick pin: while residual follow lead
+   * is still gliding out after a backward-pan disengage, the view's end tracks
+   * the DECAYING ceiling now + span * lead — moving backward by at most the
+   * easing step per frame — until the lead is gone or "now" overtakes the
+   * parked end first. Once settled this is a no-op and the view is an ordinary
+   * parked view. */
   private decayLead(): void {
     if (this.leadAnim === null && this.leadFrac === 0) return;
     const now = this.liveEdge();
@@ -2433,66 +2046,37 @@ export class TimelineViewElement extends HTMLElement {
     if (this.view.end > ceil) this.view = this.clampBounds({ start: ceil - span, end: ceil }, ceil);
   }
 
-  /**
-   * Apply a user-driven viewport. Backward PANS disengage follow outright;
+  /** Apply a user-driven viewport. Backward PANS disengage follow outright;
    * everything else re-engages only within FOLLOW_SNAP_DEVICE_PX device
-   * pixels of the `now` end stop (followAfterGesture — the pan carve-out
-   * is load-bearing: without it, small trackpad pan steps were re-pinned
-   * to "now" one by one and horizontal panning never escaped follow mode).
-   * The follow rule reads the RAW gesture (an overshoot past now must
-   * count as "at the stop"); the view actually applied hard-stops at now
-   * and at the configured bounds (clampBounds), so every input path —
-   * wheel, drag, pinch, keyboard, setViewport — parks exactly at the end
-   * stop, which is what makes the tiny re-engage zone reliably hittable.
-   * A set `maxTime` replaces that clock stop with a fixed instant, and a
-   * gesture that docks there stays parked: static content never follows. Non-zoom interactive gestures
+   * pixels of the `now` end stop (followAfterGesture — the pan carve-out is
+   * load-bearing: without it, small trackpad pan steps were re-pinned to
+   * "now" one by one and horizontal panning never escaped follow mode). The
+   * follow rule reads the RAW gesture (an overshoot past now must count as
+   * "at the stop"); the view applied hard-stops at now and at the configured
+   * bounds (clampBounds), so every input path — wheel, drag, pinch,
+   * keyboard, setViewport — parks exactly at the end stop, which is what
+   * makes the tiny re-engage zone reliably hittable. A set `maxTime` replaces
+   * that clock stop with a fixed instant, and a gesture that docks there
+   * stays parked: static content never follows. Non-zoom interactive gestures
    * keep the pin while following (a forward pan at the stop stays live);
-   * ZOOMS (`zoom`) and programmatic setViewport (`jump`) are exempt.
-   * Zooms because the ANCHOR must win during the gesture: while pinned,
-   * the pin used to rebuild the view from `now` keeping only the zoomed
-   * SPAN, so wheel/pinch zoom anchored at the now marker instead of the
-   * cursor — a zoom instead re-earns follow like a fresh gesture (it
-   * keeps following only when its right edge stays inside the snap zone,
-   * so zooming AT the live edge stays live; anywhere else it parks with
-   * the timestamp under the cursor still under the cursor, and follow
-   * may re-dock magnetically on a later gesture). One asymmetry is
-   * deliberate: a zoom-OUT at the live edge still can't show the future —
-   * the end stop caps it right-anchored, exactly like a parked zoom-out
-   * at the stop.
-   *
-   * The FOLLOW LEAD is eased, never assigned: engaging keeps the view
-   * exactly where the gesture parked it and the per-tick pin glides end
-   * out to now + span * FOLLOW_LEAD_FRAC over FOLLOW_LEAD_TWEEN_MS;
-   * disengaging (a backward pan) lets the gesture's own delta consume the
-   * lead and glides any residual back down (decayLead) instead of slamming
-   * end to now in the same frame — the two single-frame ~2%-of-plot-width
-   * teleports this replaced. Reduced motion snaps both.
-   */
+   * ZOOMS (`zoom`) and programmatic setViewport (`jump`) are exempt. */
   private applyUserView(next: TimeView, opts?: { pan?: boolean; jump?: boolean; zoom?: boolean }): void {
-    // Every user gesture (wheel, glide, drag, pinch, keyboard, minimap)
-    // and programmatic setViewport funnels through here — the window is
-    // now CHOSEN, so the aspect-derived default span stops applying.
+    // Every user gesture (wheel, glide, drag, pinch, keyboard, minimap) and programmatic setViewport funnels through here.
     this.viewTouched = true;
     const span = next.end - next.start;
     const now = this.liveEdge(); // stale mode: gestures clamp/dock at the FROZEN edge
     const wasFollowing = this.following;
     const msPerDevPx = span / (this.plotWidth() * this.dpr);
     const stayPinned = wasFollowing && opts?.jump !== true && opts?.zoom !== true;
-    // A gesture that parks at the stop re-docks into follow — but only
-    // when the stop is the live clock. Under maxTime it is a fixed
-    // instant, so docking there must stay parked.
+    // A gesture that parks at the stop re-docks into follow — but only when the stop is the live clock.
     this.following = this.maxTimeMs === null && followAfterGesture(stayPinned, this.view.end, next, now, opts?.pan === true, msPerDevPx);
     if (this.following) {
-      // ENGAGE (or a jump landing in the snap zone) seeds the lead ease
-      // from where the gesture parked; while ALREADY pinned the current
-      // (possibly still easing) lead simply carries over.
+      // ENGAGE (or a jump landing in the snap zone) seeds the lead ease from where the gesture parked.
       if (!stayPinned) this.glideLead(gestureLeadFrac(next.end, now, span, this.currentLead()), FOLLOW_LEAD_FRAC, FOLLOW_LEAD_TWEEN_MS);
       const end = now + span * this.currentLead();
       this.view = this.clampBounds({ start: end - span, end }, end);
     } else {
-      // DISENGAGE by a backward pan: the delta consumed lead; the residual
-      // glides out. The hard forward bound is the (decaying) ceiling —
-      // plain "now" once the residual is gone, i.e. for every parked view.
+      // DISENGAGE by a backward pan: the delta consumed lead; the residual glides out.
       if (wasFollowing) this.glideLead(Math.max(0, gestureLeadFrac(next.end, now, span, this.currentLead())), 0, FOLLOW_LEAD_TWEEN_MS);
       this.view = this.clampBounds(next, now + span * this.currentLead());
     }
@@ -2526,13 +2110,8 @@ export class TimelineViewElement extends HTMLElement {
     return Math.max(0, this.layout.totalHeight - this.plotHeight());
   }
 
-  /**
-   * Direction-aware lane-stack scrollability for wheel routing: which way
-   * the stack can actually move right now. Feeding this (rather than the
-   * old bare overflow bit) is what lets a plain vertical wheel scroll an
-   * overflowing stack in place while still handing the page every wheel
-   * the stack cannot use — routeWheel's nested-scroller contract.
-   */
+  /** Direction-aware lane-stack scrollability for wheel routing: which way the
+   * stack can move right now. */
   private laneScrollability(): LaneScrollable {
     return { up: this.laneScroll > 0, down: this.laneScroll < this.maxLaneScroll() };
   }
@@ -2591,27 +2170,16 @@ export class TimelineViewElement extends HTMLElement {
     this.schedule();
   }
 
-  /**
-   * True while something time-based needs frames at all (tween- or
-   * clock-driven). ALL motion renders on the ONE rAF loop — while this
-   * holds, the loop stays armed; when it returns false the loop disarms
-   * and the chart draws nothing until the next invalidate().
-   */
+  /** True while something time-based needs frames at all (tween- or
+   * clock-driven). */
   private animating(): boolean {
     return this.tweening() || this.clockAnimating();
   }
 
-  /**
-   * Short-lived eased transitions (zoom glide, layout/lead/edge tweens)
-   * plus async-history churn — rendered at the plain tier rate, exactly
-   * the pre-existing pacing.
-   */
+  /** Short-lived eased transitions (zoom glide, layout/lead/edge tweens) plus async-history churn — rendered at the plain tier rate, exactly the pre-existing pacing. */
   private tweening(): boolean {
     if (this.glidePx !== 0 || this.layoutAnim !== null || this.leadAnim !== null || this.edgeAnim !== null) return true;
-    // In-flight history loads AND failed ones waiting out the fixed retry
-    // cadence both need frames — without the latter, a rejected loadRange in
-    // a paused historical view would park silently until the next input
-    // instead of retrying every ~2s.
+    // In-flight history loads AND failed ones waiting out the fixed retry cadence both need frames — without the latter.
     return this.loadRangeFn !== null && Boolean(this.coverage.pending() || this.coverage.waitingRetry(this.nowMs()));
   }
 
@@ -2624,9 +2192,7 @@ export class TimelineViewElement extends HTMLElement {
    * rAF frames (see onFrame's clockDrawDue grid), never timer wakes.
    */
   private clockAnimating(): boolean {
-    // While STALE the followed view is frozen at the dead feed's edge —
-    // nothing moves, so no frames (the watchdog interval keeps the note's
-    // counter alive and notices recovery).
+    // While STALE the followed view is frozen at the dead feed's edge — nothing moves.
     if (this.following && !this.feedStale) return true;
     // Frozen content: ongoing bars end at maxTime, so nothing grows.
     if (this.maxTimeMs !== null) return false;
@@ -2656,25 +2222,19 @@ export class TimelineViewElement extends HTMLElement {
     // Adaptive pacing: a pure animation frame (nothing dirty) renders only
     // when its draw budget has elapsed. The budget is the tier's — full
     // rate while interacting, ~30fps idle, ~10fps idle on battery — and,
-    // while the ONLY motion is clock-driven (follow scroll, ongoing
-    // bars), it widens to the view's per-device-pixel period
-    // (clockDrawBudgetMs): effective fps = min(tier fps, device px/sec),
-    // skipping only frames that would be pixel-identical. All delivery is
-    // ON the rAF loop by skipping ticks — never a timer, so motion stays
-    // frame-aligned and smooth. Dirty frames (fresh data, hover changes)
-    // always render immediately.
+    // while the ONLY motion is clock-driven (follow scroll, ongoing bars), it
+    // widens to the view's per-device-pixel period (clockDrawBudgetMs):
+    // effective fps = min(tier fps, device px/sec), skipping only frames that
+    // would be pixel-identical. All delivery is ON the rAF loop by skipping
+    // ticks — never a timer, so motion stays frame-aligned and smooth.
+    // Dirty frames (fresh data, hover changes) always render immediately.
     if (!this.dirty) {
       const tierBudget = frameBudgetMs(this.renderTier());
       const budget = this.tweening() ? tierBudget : clockDrawBudgetMs(this.view, this.plotWidth(), this.dpr, tierBudget);
       if (budget > tierBudget) {
-        // Clock-only motion slower than the tier rate: gate on the even
-        // due-time grid. The due advances by whole budgets from its own
-        // previous value (remainder carried, never re-anchored to the
-        // actual draw time), so intervals stay even frame-aligned
-        // multiples of the budget instead of jittering or drifting.
+        // Clock-only motion slower than the tier rate: gate on the even due-time grid.
         if (this.clockDrawDue === 0) this.clockDrawDue = this.lastRenderTs > 0 ? this.lastRenderTs + budget : t;
-        // Budget shrank mid-grid (zoom-in without a tween): a stale due
-        // must never park the chart more than one current period out.
+        // Budget shrank mid-grid (zoom-in without a tween).
         if (this.clockDrawDue > t + budget) this.clockDrawDue = t + budget;
         // Draw on the first rAF at/past the due point (same half-tick
         // slack as the tier gate, via shouldRender's aliasing rule).
@@ -2687,13 +2247,10 @@ export class TimelineViewElement extends HTMLElement {
           return;
         }
         this.clockDrawDue += budget;
-        // Stalled past a whole period (hidden tab, long main-thread
-        // block): re-anchor forward — one fresh frame now, no burst of
-        // catch-up draws.
+        // Stalled past a whole period (hidden tab, long main-thread block): re-anchor forward — one fresh frame now, no burst.
         if (this.clockDrawDue <= t) this.clockDrawDue = t + budget;
       } else {
-        // Tier-paced (tweens/interaction, or the px rate meets the tier
-        // rate): the pre-existing pacing, unchanged.
+        // Tier-paced (tweens/interaction, or the px rate meets the tier rate): the pre-existing pacing, unchanged.
         this.clockDrawDue = 0;
         if (!shouldRender(t, this.lastRenderTs, budget)) {
           if (this.animating()) this.schedule();
@@ -2737,22 +2294,13 @@ export class TimelineViewElement extends HTMLElement {
   private pumpLoad(): void {
     const fn = this.loadRangeFn;
     if (!fn) return;
-    // Two different clocks: the probe's forward bound is the live edge —
-    // maxTime when the chart is frozen — while nextRequest/settle time the
-    // retry cadence against the REAL clock, which a maxTime in the past
-    // would park forever.
+    // Different clocks: the probe's forward bound is the live edge — maxTime when the chart is frozen —.
     const edge = this.maxTimeMs ?? this.nowMs();
     const now = this.nowMs();
-    // loadRange fills BACKWARD gaps only: the probe is clamped to the
-    // covered end (historyProbe), so the sliver between the last covered
-    // time and the ever-advancing "now" is NEVER requested — that region
-    // belongs to the consumer's live merges. Without the clamp, follow
-    // mode reopened a fresh forward gap every frame and refired loadRange
-    // serially at ~one request per round-trip, forever (~30 req/s).
+    // loadRange fills BACKWARD gaps only: the probe is clamped to the covered end (historyProbe).
     const probe = historyProbe(this.view, edge, this.coverage.coveredEnd());
     if (!probe) return;
-    // minTime is the consumer's own statement that nothing exists before
-    // it: asking for that range would fail (or answer empty) forever.
+    // minTime is the consumer's own statement that nothing exists before it.
     const min = this.minTimeMs;
     const want = min !== null && probe.start < min ? { start: min, end: probe.end } : probe;
     if (!(want.end > want.start)) return;
@@ -2775,8 +2323,7 @@ export class TimelineViewElement extends HTMLElement {
 
   // -- Sizing / theme ------------------------------------------------------------
 
-  // True while the plot canvas has been (re)sized but not yet painted; see
-  // the cold-surface split in draw().
+  // True while the plot canvas has been (re)sized but not yet painted; see the cold-surface split in draw().
   private surfaceCold = true;
 
   private resizeBackingStore(): void {
@@ -2784,17 +2331,7 @@ export class TimelineViewElement extends HTMLElement {
     const raw = typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1;
     const dpr = Math.min(MAX_DPR, raw);
     const hostH = this.clientHeight;
-    // Minimap visibility is decided here — the one place that already
-    // owns geometry: data must exist, the host must not be opted out or
-    // too short. While visible, the PLOT canvas cedes the strip's band
-    // (cssW/cssH describe the plot canvas only, so every downstream
-    // computation — lane packing, auto-fit, tooltip clamps, hit tests —
-    // stays consistent without knowing the strip exists). The corner
-    // chrome (fullscreen toggle, live pill, "?" legend pill + panel)
-    // rides up above the band via the stylesheet's
-    // `canvas.minimap:not([hidden]) ~ …` lift rules — ALL of it together,
-    // never from here: a partial inline lift once parked the ⤢ toggle
-    // under the statically-positioned legend pill.
+    // Minimap visibility is decided here — the place that already owns geometry: data must exist.
     const wantMM = !this.hasAttribute('no-minimap') && this.byId.size > 0 && hostH >= MINIMAP_MIN_HOST_PX;
     if (wantMM !== this.mmVisible) {
       this.mmVisible = wantMM;
@@ -2816,13 +2353,8 @@ export class TimelineViewElement extends HTMLElement {
     this.cssW = bw / dpr;
     this.cssH = bh / dpr;
     // Aspect-scaled DEFAULT zoom: until the first user gesture or
-    // programmatic setViewport (viewTouched), the visible span derives
-    // from the HOST box's aspect ratio — 3 min at 16:9, scaled linearly
-    // (defaultSpanForAspect, clamped) — re-derived on every real resize
-    // with the view END anchored. The host box (container aspect) on
-    // purpose, not the plot box: the default must not couple to gutter
-    // auto-sizing or minimap visibility. A chosen window is never
-    // overridden — this block stops running forever once touched.
+    // programmatic setViewport (viewTouched), the visible span derives from
+    // the HOST box's aspect ratio.
     if (!this.viewTouched) {
       const hostW = this.clientWidth;
       if (hostW > 0 && hostH > 0) {
@@ -2838,14 +2370,8 @@ export class TimelineViewElement extends HTMLElement {
     this.invalidate();
   }
 
-  /**
-   * The 2d context — OPAQUE (alpha: false) on purpose: the chart paints
-   * its own background every frame, and an opaque canvas lets the engine
-   * use subpixel text antialiasing (alpha canvases get grayscale-only) — a
-   * real legibility win at 10-11px. Consequence: --timeline-bg must be an
-   * opaque color (a translucent bg would composite on black, not on the
-   * host).
-   */
+  /** The 2d context — OPAQUE (alpha: false) on purpose: the chart paints its
+   * own background every frame. */
   private ctx2d(): CanvasRenderingContext2D | null {
     return (this.ctx ??= this.canvas.getContext('2d', { alpha: false }));
   }
@@ -2887,8 +2413,7 @@ export class TimelineViewElement extends HTMLElement {
     this.colorCache.clear();
     this.patternCache.clear();
     this.labelPainter.clear();
-    // Theme colors are baked into the minimap density texture — stamp it
-    // stale (an async rebuild repaints it) and drop the cached fills.
+    // Theme colors are baked into the minimap density texture — stamp it stale (an async rebuild repaints it).
     this.mmThemeGen++;
     this.mmDimCache.clear();
     this.layout = layoutLanes(this.displayCounts, this.metrics(), this.displayHeights);
@@ -2901,8 +2426,8 @@ export class TimelineViewElement extends HTMLElement {
     return this.styleMap[state] ?? this.styleMap[''] ?? {};
   }
 
-  private resolved(catKey: string, state: string, override: string | null): ResolvedStyle {
-    const cacheKey = `${catKey}\u0000${state}\u0000${override ?? ''}`;
+  private resolved(catKey: string, state: string, override: string | null, depth = 0): ResolvedStyle {
+    const cacheKey = `${catKey}\u0000${state}\u0000${override ?? ''}\u0000${depth}`;
     const hit = this.colorCache.get(cacheKey);
     if (hit) return hit;
     const st = this.styleFor(state);
@@ -2915,7 +2440,8 @@ export class TimelineViewElement extends HTMLElement {
     } else {
       const hue = categoryHue(catKey);
       const j = categoryJitter(catKey);
-      const l = clamp(t.catLightness * (st.lightnessScale ?? 1) + j.dl, 0.2, 0.92);
+      // A sub-span is the same hue as its root, one shade darker per level.
+      const l = clamp(t.catLightness * (st.lightnessScale ?? 1) + j.dl - depth * SUB_SPAN_SHADE_STEP, 0.2, 0.92);
       const c = clamp(t.catChroma * (st.saturationScale ?? 1) + j.dc, 0, 0.3);
       const mode = this.oklch ? 'oklch' : 'hsl';
       const alpha = clamp(st.alphaScale ?? 1, 0, 1);
@@ -2926,9 +2452,7 @@ export class TimelineViewElement extends HTMLElement {
     const dimmed = st.dimmed === true;
     const finalBorder = emphasisBorder ? t.emphasis : border;
     const out: ResolvedStyle = {
-      // A dimmed region is "one filter over its GEOMETRY": fill and
-      // border through the same dimColor transform. Label text is
-      // deliberately exempt — see labelText().
+      // A dimmed region is "one filter over its GEOMETRY": fill and border through the same dimColor transform.
       fill: dimmed ? dimColor(fill) : fill,
       border: dimmed ? dimColor(finalBorder) : finalBorder,
       borderWidth: st.border?.width ?? 1,
@@ -2940,20 +2464,10 @@ export class TimelineViewElement extends HTMLElement {
     return out;
   }
 
-  /**
-   * Draw label text at GUARANTEED contrast: the full-contrast theme
-   * foreground over a thin counter-color halo (strokeText under the
-   * fill; labelHaloColor picks dark-under-light-fg / light-under-dark-fg
-   * at theme read). Every span-surface label goes through here so
-   * legibility never depends on what happens to be underneath — solid
-   * fill, dimmed section, hatch stripes, a scrim — or on the zoom level
-   * that decides which of those the text lands on. (Labels used to take
-   * a dimmed section's dimColor(fg) — mid-grey — which was unreadable
-   * over the equally-dim fill and flipped with zoom as the anchor
-   * crossed segment boundaries.) Callers set font/textAlign/textBaseline;
-   * lineJoin is restored to the canvas default so border/connector
-   * strokes are untouched.
-   */
+  /** Draw label text at GUARANTEED contrast: the full-contrast theme
+   * foreground over a thin counter-color halo (strokeText under the fill;
+   * labelHaloColor picks dark-under-light-fg / light-under-dark-fg at theme
+   * read). */
   private labelText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number): void {
     ctx.strokeStyle = this.labelHalo;
     ctx.lineWidth = LABEL_HALO_PX;
@@ -2981,7 +2495,6 @@ export class TimelineViewElement extends HTMLElement {
     if (kind === 'hatch') {
       c.lineWidth = 1.6;
       c.beginPath();
-      // 45° stripes, drawn twice so the tile wraps seamlessly.
       c.moveTo(-size / 2, size * 1.5);
       c.lineTo(size * 1.5, -size / 2);
       c.moveTo(-size / 2, size / 2);
@@ -3004,24 +2517,7 @@ export class TimelineViewElement extends HTMLElement {
     return pattern;
   }
 
-  /**
-   * Phase-anchor a cached pattern to a CONTENT origin — a span's
-   * unclamped start x / track top y, a coverage gap's start — so the tile
-   * grid travels 1:1 with what it fills. createPattern tiles are pinned
-   * to the CANVAS origin by default: under a scrolling/panning viewport
-   * that read as spans sliding over a static hatch behind a stencil
-   * instead of carrying their own texture. Anchoring to the (unclamped)
-   * content origin keeps the phase stable while a span is partially
-   * clipped off-screen AND rides lane scrolling/height changes in y. The
-   * origin folds mod the tile size — identical rendering (a whole-tile
-   * translate is identity), numerically tame for far-off-screen origins —
-   * and non-finite origins fall back to the canvas-anchored default.
-   * setTransform REPLACES the creation-time matrix, so the 1/dpr tile
-   * scale is re-applied here; call before every patterned fill — the
-   * cache shares one CanvasPattern per (kind, color) and the transform is
-   * read at fill time.
-   */
-  /** Reused by anchorPattern — setTransform reads the matrix synchronously, so one mutable instance is safe (and kills a per-patterned-fill allocation). */
+  /** Reused by anchorPattern — setTransform reads the matrix synchronously. */
   private patternMatrix = typeof DOMMatrix !== 'undefined' ? new DOMMatrix() : null;
 
   private anchorPattern(pat: CanvasPattern, ox: number, oy: number): CanvasPattern {
@@ -3043,12 +2539,7 @@ export class TimelineViewElement extends HTMLElement {
 
   // -- Geometry ----------------------------------------------------------------
 
-  /**
-   * CSS-px rect of an interval (valid even outside the viewport). Mapped
-   * through the device-pixel-snapped render view and deliberately NOT
-   * rounded per element — one global rounding policy (renderView), so bars
-   * hold exact relative offsets while the viewport translates.
-   */
+  /** CSS-px rect of an interval (valid even outside the viewport). */
   private rectFor(n: NInterval, now: number): HitRect {
     return this.rectForInto(n, now, { x: 0, y: 0, w: 0, h: 0 });
   }
@@ -3098,8 +2589,7 @@ export class TimelineViewElement extends HTMLElement {
         }
       }
     }
-    // Intervals: topmost = last in draw order within the lane — which
-    // puts the lane's cluster stack markers (drawn after its bars) first.
+    // Intervals: topmost = last in draw order within the lane — which puts the lane's cluster stack markers (drawn after its bars).
     const laneIdx = this.laneAtY(y);
     if (laneIdx >= 0) {
       const ncs = this.laneClusters[laneIdx];
@@ -3107,7 +2597,7 @@ export class TimelineViewElement extends HTMLElement {
         for (let i = ncs.length - 1; i >= 0; i--) {
           const c = ncs[i];
           // A spread cluster answers per MARK — the unit it draws. The
-          // whole chain would report "x240 events" over four hours, which
+          // whole chain would report "x240 events" a few hours, which
           // tells the pointer nothing about what it is on.
           if (!c.point) {
             const geo = this.clusterMarks(c);
@@ -3116,8 +2606,7 @@ export class TimelineViewElement extends HTMLElement {
               const r = expandHitRect({ x: p.cx - (geo.r + 2), y: geo.y, w: (geo.r + 2) * 2, h: geo.th }, HIT_MIN_W);
               if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
                 const members = c.members.slice(p.mark.from, p.mark.to);
-                // A mark standing only for itself IS one event — it opens
-                // like any other pip, not as a group of one.
+                // A mark standing only for itself IS one event — it opens like any other pip, not as a group of one.
                 if (members.length === 1) return { type: 'interval', interval: members[0].src, lane: this.lanes[laneIdx], segment: null };
                 return { type: 'cluster', intervals: members.map((member) => member.src), lane: this.lanes[laneIdx] };
               }
@@ -3139,11 +2628,10 @@ export class TimelineViewElement extends HTMLElement {
         if (n.start > this.renderView().end) continue;
         const r = expandHitRect(this.rectFor(n, now), HIT_MIN_W);
         if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
-          // Which phase segment the pointer's TIME falls in (data-space —
-          // the expanded hit halo around instants resolves to none).
+          // Which phase segment the pointer's TIME falls.
           const t = xToTime(x - this.gutterW, this.renderView(), this.plotWidth());
           const segment = n.segs ? segmentAtTime(n.segs, n.start, n.end ?? now, t) : null;
-          return { type: 'interval', interval: n.src, lane: this.lanes[n.laneIdx], segment };
+          return { type: 'interval', interval: n.src, lane: this.lanes[n.laneIdx], segment, parent: n.parent?.src ?? null };
         }
       }
     }
@@ -3180,19 +2668,7 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   private onWheel = (e: WheelEvent): void => {
-    // Stream-level routing: the gesture router applies routeWheel's
-    // per-event table to a stream's first decisive event and then LOCKS
-    // that axis (e.timeStamp bounds the gesture — WHEEL_GESTURE_GAP_MS of
-    // silence ends it). Consume (preventDefault) ONLY when the gesture
-    // routes to the chart: a horizontal-locked stream is consumed whole
-    // (its vertical jitter must never creep the page); a vertical-locked
-    // stream latches lane-stack-vs-page from the stack's scrollability in
-    // the wheel's direction (the nested-scroller contract): with headroom
-    // it scrolls the stack in place, without — at an edge, or no
-    // overflow — it routes nowhere and the page scrolls normally;
-    // ctrl/meta zooms and shift pans as per-event routeWheel, outside the
-    // lock. (The listener stays {passive: false} so preventDefault
-    // remains available for the consumed cases.)
+    // Stream-level routing: the gesture router applies routeWheel's per-event table to a stream's first decisive event and then LOCKS.
     const route = this.wheelGesture.route(e, this.laneScrollability(), e.timeStamp);
     if (!route.consumed) return;
     e.preventDefault();
@@ -3200,7 +2676,6 @@ export class TimelineViewElement extends HTMLElement {
     const p = this.toLocal(e);
     if (e.ctrlKey || e.metaKey) {
       if (e.deltaMode === 0) {
-        // Pixel-precise trackpad pinch: apply 1:1, no smoothing, no lag.
         const anchor = xToTime(p.x - this.gutterW, this.view, this.plotWidth());
         this.applyUserView(zoomView(this.view, anchor, zoomFactorForWheel(route.zoomPx), MIN_SPAN_MS, this.maxZoomSpan()), { zoom: true });
         this.glidePx = 0;
@@ -3256,7 +2731,6 @@ export class TimelineViewElement extends HTMLElement {
     this.pointers.set(e.pointerId, p);
     this.noteInput();
     if (this.pointers.size === 2) {
-      // Pinch zoom + two-finger pan.
       const [a, b] = [...this.pointers.values()];
       const other = a.x === p.x && a.y === p.y ? b : a;
       const distNow = Math.hypot(p.x - other.x, p.y - other.y);
@@ -3299,10 +2773,7 @@ export class TimelineViewElement extends HTMLElement {
       if (hit.type === 'interval') {
         this.dispatchEvent(new CustomEvent('intervalclick', { detail: { interval: hit.interval, lane: hit.lane } }));
       } else if (hit.type === 'cluster') {
-        // A cluster click ZOOMS to the member extent so the group splits
-        // into its true timestamps — never an intervalclick (there is no
-        // single interval to open). Coincident members re-cluster at the
-        // minimum span; their tooltip lists them.
+        // A cluster click ZOOMS to the member extent so the group splits into its true timestamps — never an intervalclick.
         let s = Infinity;
         let e = -Infinity;
         for (const iv of hit.intervals) {
@@ -3317,8 +2788,7 @@ export class TimelineViewElement extends HTMLElement {
       } else if (hit.type === 'connector') {
         this.dispatchEvent(new CustomEvent('connectorclick', { detail: { connector: hit.connector } }));
       } else if (hit.type === 'lane') {
-        // A click on the gutter label — lets consumers make lanes navigable
-        // (e.g. a lane per CI hook linking to that hook's page).
+        // A click on the gutter label — lets consumers make lanes navigable.
         this.dispatchEvent(new CustomEvent('laneclick', { detail: { lane: hit.lane } }));
       }
     }
@@ -3403,8 +2873,7 @@ export class TimelineViewElement extends HTMLElement {
       this.coverage.exhaustedBefore,
       cov.length > 0 ? cov[0].start : null,
     );
-    // The strip maps the range the view can actually reach: an extent
-    // reaching before minTime would leave a slice of it permanently dead.
+    // The strip maps the range the view can reach.
     const min = this.minTimeMs;
     if (ext && min !== null && ext.start < min) return ext.end > min ? { start: min, end: ext.end } : null;
     return ext;
@@ -3424,8 +2893,7 @@ export class TimelineViewElement extends HTMLElement {
     const { x, w } = this.mmLocalX(e);
     const zone = minimapHitZone(x, minimapWindowRect(this.view, ext, w));
     if (zone === 'before' || zone === 'after') {
-      // Click outside the window: center it there (a jump, so follow only
-      // re-engages inside the now snap zone), then drag as a grab.
+      // Click outside the window: center it there (a jump, so follow only re-engages inside the now snap zone).
       this.applyUserView(minimapCenter(this.view, x, ext, w), { jump: true });
       this.mmDrag = { mode: 'middle', lastX: x };
     } else if (zone === 'inside') {
@@ -3452,17 +2920,11 @@ export class TimelineViewElement extends HTMLElement {
     if (!ext) return;
     this.noteInput();
     if (d.mode === 'middle') {
-      // Grab-the-middle: constant-width pan, 1:1 under the pointer. The
-      // SAME code path as a canvas pan ({pan: true}), so a backward drag
-      // disengages follow and docking at the live edge re-engages it.
       const dx = x - d.lastX;
       d.lastX = x;
       if (dx !== 0) this.applyUserView(minimapPan(this.view, dx, ext, w), { pan: true });
     } else {
-      // Handles: the left edge is zoom-like (a pinned live edge stays
-      // pinned — dragging it only changes the span); the right edge is
-      // pan-like, so pulling the window's end backward disengages follow
-      // instead of fighting the per-frame pin.
+      // Handles: the left edge is zoom-like (a pinned live edge stays pinned — dragging it only changes the span); the right edge is pan-like.
       this.applyUserView(minimapResize(this.view, d.mode, x, ext, w), { pan: d.mode === 'right' });
     }
   };
@@ -3492,6 +2954,7 @@ export class TimelineViewElement extends HTMLElement {
     this.hover = hit;
     this.canvas.style.cursor = hit ? 'pointer' : '';
     if (nextId !== prevId) {
+      // The hovered interval and every ancestor: their family boxes light up.
       this.dispatchEvent(
         new CustomEvent('intervalhover', {
           detail: hit?.type === 'interval' ? { interval: hit.interval, lane: hit.lane } : { interval: null, lane: null },
@@ -3499,8 +2962,7 @@ export class TimelineViewElement extends HTMLElement {
       );
       this.invalidate();
     }
-    // Cluster hover ring (keyed by the first member — the cluster's
-    // identity). No intervalhover: a cluster is not a single interval.
+    // Cluster hover ring (keyed by the first member — the cluster's identity).
     const nextCluster = hit?.type === 'cluster' ? (hit.intervals[0]?.id ?? null) : null;
     if (nextCluster !== this.hoverClusterId) {
       this.hoverClusterId = nextCluster;
@@ -3544,9 +3006,7 @@ export class TimelineViewElement extends HTMLElement {
     if (typeof content === 'string') tt.textContent = content;
     else tt.append(content);
     tt.classList.add('visible');
-    // Measure at a neutral position: a stale left/top from the previous
-    // show could squeeze the box against the host edge and mis-measure
-    // the wrapped size the flip-to-fit math is about to use.
+    // Measure at a neutral position: a stale left/top from the show could squeeze the box against the host edge.
     tt.style.left = '0px';
     tt.style.top = '0px';
     // Position near the cursor, flipped to stay inside the host.
@@ -3588,14 +3048,14 @@ export class TimelineViewElement extends HTMLElement {
       title.className = 'tt-title';
       const swatch = document.createElement('span');
       swatch.className = 'tt-swatch';
-      swatch.style.background = this.resolved(n.catKey, n.state, this.overrideColor(n)).fill;
+      swatch.style.background = this.styleOf(n).fill;
       title.append(swatch, document.createTextNode(n.label || n.id));
       frag.append(title);
       row('lane', hit.lane.label);
       row('category', n.catKey);
       if (n.state) row('state', n.state);
-      // The phase under the pointer, named by its style-map kind — the
-      // legend's vocabulary, so no legend round-trip to decode a stripe.
+      if (n.parent !== null) row('part of', n.parent.label || n.parent.id);
+      // The phase under the pointer, named by its style-map kind — the legend's vocabulary, so no legend round-trip.
       if (hit.segment) row('segment', `${hit.segment.kind} · ${formatDuration(hit.segment.end - hit.segment.start)}`);
       const now = this.nowMs();
       const end = n.end ?? now;
@@ -3608,9 +3068,28 @@ export class TimelineViewElement extends HTMLElement {
           row(s.kind, `${formatDuration((s.end ?? end) - s.start)}`);
         }
       }
+      if (n.children !== null) {
+        // The family at a glance: count, how many still run, then each non-default state's count.
+        const kids = n.children;
+        let running = 0;
+        const byState = new Map<string, number>();
+        for (const c of kids) {
+          if (c.end === null) running++;
+          if (c.state) byState.set(c.state, (byState.get(c.state) ?? 0) + 1);
+        }
+        const parts = [`${kids.length}`];
+        if (running > 0) parts.push(`${running} running`);
+        for (const [state, count] of byState) parts.push(`${count} ${state}`);
+        row('sub-spans', parts.join(' · '));
+        const shown = Math.min(kids.length, 6);
+        for (let i = 0; i < shown; i++) {
+          const c = kids[i];
+          const dur = formatDuration((c.end ?? now) - c.start) + (c.end === null ? ' …' : '');
+          row('·', `${c.label || c.id} · ${c.state ? `${c.state} · ` : ''}${dur}`);
+        }
+        if (kids.length > shown) row('·', `+${kids.length - shown} more`);
+      }
     } else if (hit.type === 'cluster') {
-      // The component-built ×N summary: count, member time extent, up to
-      // 8 member labels, and the zoom affordance.
       const ivs = hit.intervals;
       const members: NInterval[] = [];
       for (const iv of ivs) {
@@ -3685,6 +3164,11 @@ export class TimelineViewElement extends HTMLElement {
     return this.colorForFn(n.src, this.lanes[n.laneIdx]) ?? null;
   }
 
+  /** An interval's resolved style: a sub-span takes its root's category, shaded by depth. */
+  private styleOf(n: NInterval): ResolvedStyle {
+    return this.resolved(n.root.catKey, n.state, this.overrideColor(n), n.depth);
+  }
+
   // -- Drawing -------------------------------------------------------------------
 
   private draw(): void {
@@ -3704,25 +3188,11 @@ export class TimelineViewElement extends HTMLElement {
     ctx.fillStyle = t.bg;
     ctx.fillRect(0, 0, w, h);
 
-    // A COLD SURFACE is a frame's worth of work by itself: allocating the
-    // backing store and first-touching ~11 MB of pixels costs several ms
-    // where the rasterizer is software, and doing it in the same frame as the
-    // first real render measured 8-11 ms — the one frame in a whole session
-    // that missed the budget. So the cold frame establishes the surface and
-    // stops; the next frame draws the chart into a surface that is already
-    // warm. Costs one extra frame after a create or a resize, and nothing
-    // afterwards.
+    // So the cold frame establishes the surface and stops; the next frame
+    // draws the chart into a surface that is already warm.
     if (this.surfaceCold) {
       this.surfaceCold = false;
-      // Warm the text pipeline while this frame is otherwise idle. The first
-      // measureText/fillText with a given font shapes its glyphs, and paying
-      // that for the axis ticks and every lane label inside the first REAL
-      // draw is what pushed that frame to 9-10 ms. A cold frame that has
-      // nothing else to do is exactly where it belongs.
-      // Every size a lane label can be drawn at, not just the base one: a
-      // compact lane picks its font from its own height, so the first draw
-      // that lands with lanes at mixed heights shapes glyphs at several sizes
-      // at once (measured: drawLanes 8 ms on that one frame).
+      // Warm the text pipeline while this frame is otherwise idle.
       ctx.textBaseline = 'middle';
       ctx.fillStyle = t.bg; // paint warm glyphs offscreen-left, invisible
       for (let fs = LANE_LABEL_MIN_FONT_PX; fs <= t.fontSize; fs++) {
@@ -3766,22 +3236,14 @@ export class TimelineViewElement extends HTMLElement {
     this.drawMinimap();
   }
 
-  /**
-   * The minimap strip: the FULL loaded extent (mmExtent) as per-lane
-   * collapsed density marks in category hues at low alpha (no text), the
-   * live edge as a now tick, and the current viewport as a brighter
-   * window rect with grabbable edge handles. Rendered only from draw() —
-   * the strip repaints exactly when the main chart does (same rAF loop,
-   * same dirty flag, same idle pacing), never on its own schedule.
-   *
-   * The density marks are served from an offscreen TEXTURE (one blit per
-   * frame) instead of the old O(all-intervals) per-frame refill — see the
-   * mmTex field block: 1:1 device-size texture, whole-pixel shift steps,
-   * incremental right-edge paints on merge, async sliced full rebuilds,
-   * atomic swap. Only the now tick, the window rect, and the handful of
-   * ONGOING interval marks (their ends track the live clock) draw per
-   * frame.
-   */
+  /** The minimap strip: the FULL loaded extent (mmExtent) as per-lane
+   * collapsed density marks in category hues at low alpha (no text), the live
+   * edge as a now tick, and the current viewport as a brighter window rect
+   * with grabbable edge handles. Rendered only from draw() — the strip
+   * repaints exactly when the main chart does (same rAF loop, same dirty
+   * flag, same idle pacing), never on its own schedule. Only the now tick,
+   * the window rect, and the handful of ONGOING interval marks (their ends
+   * track the live clock) draw per frame. */
   private drawMinimap(): void {
     if (!this.mmVisible) return;
     const ctx = this.mmCtx2d();
@@ -3806,11 +3268,7 @@ export class TimelineViewElement extends HTMLElement {
     const ext = this.mmExtent();
     if (!ext) return;
     const now = this.liveEdge();
-    // Keep the density texture current (steps/increments/rebuild kicks),
-    // then blit it 1:1 in device px — NEVER scaled. A size mismatch
-    // (resize/DPR change whose async rebuild hasn't swapped in yet) skips
-    // the blit: a blank band beats a stretched one, and the live
-    // overdraws below still render.
+    // Keep the density texture current (steps/increments/rebuild kicks).
     this.mmSyncTexture(ext, w, h);
     const tex = this.mmTex;
     if (tex && tex.width === Math.max(1, Math.round(w * dpr)) && tex.height === Math.max(1, Math.round(h * dpr))) {
@@ -3818,9 +3276,7 @@ export class TimelineViewElement extends HTMLElement {
       ctx.drawImage(tex, 0, 0);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
-    // ONGOING intervals are never baked (their right edge is the live
-    // clock) — draw their marks over the texture every frame; there are
-    // only ever a handful at once.
+    // ONGOING intervals are never baked (their right edge is the live clock) — draw their marks over the texture every frame.
     const laneN = this.perLane.length;
     const ongoing = this.mmOngoing;
     if (ongoing.length > 0 && laneN > 0) {
@@ -3837,8 +3293,7 @@ export class TimelineViewElement extends HTMLElement {
         ctx.fillRect(x0, y, Math.max(x1 - x0, 1), markH);
       }
     }
-    // The live edge, frozen + muted while the feed is stale (the main
-    // now line's language). Live overdraw — never baked into the texture.
+    // The live edge, frozen + muted while the feed is stale (the main now line's language).
     const nx = timeToX(now, ext, w);
     if (this.maxTimeMs === null && nx >= 0 && nx <= w) {
       ctx.fillStyle = this.feedStale ? t.muted : withAlpha(t.now, 0.8);
@@ -3866,16 +3321,7 @@ export class TimelineViewElement extends HTMLElement {
     return fill;
   }
 
-  /**
-   * Keep the density texture serving the current strip: decide between a
-   * synchronous FIRST build (nothing exists to serve meanwhile — one-time,
-   * equal to a single frame of the old per-frame cost), an ASYNC sliced
-   * rebuild (geometry/theme/lane-count changes, in-place mark rewrites,
-   * accumulated placement drift — the old texture keeps serving 1:1
-   * until the swap), or INCREMENTAL maintenance (merge slivers painted
-   * at the frozen mapping; whole-strip-pixel extent steps via shift +
-   * exposed-column repaint).
-   */
+  /* */
   private mmSyncTexture(ext: TimeView, w: number, h: number): void {
     const dpr = this.dpr;
     const bw = Math.max(1, Math.round(w * dpr));
@@ -3913,21 +3359,16 @@ export class TimelineViewElement extends HTMLElement {
     if (errStart >= 1 || errEnd >= 1) this.mmStepExtent(ext, w);
   }
 
-  /**
-   * Step the texture's frozen extent to the live one WITHOUT resampling:
+  /** Step the texture's frozen extent to the live one WITHOUT resampling:
    * SHIFT the content by the whole-device-pixel translation delta (a
    * same-size copy through the double-buffer partner — self-blit lacks
-   * snapshot semantics; never a scale-blit), clear + repaint from data
-   * only the columns the shift/compression exposed or invalidated, and
-   * accumulate the residual placement error (shift rounding + the
-   * compression a shift cannot express) into mmTexDriftPx — the budget
-   * that forces the async rebuild to true the approximation up. Handles
-   * live-end compression AND the pad-regime translation (minimapExtent's
-   * backward-padded start; exact under a shift) in one primitive. A step
-   * needing more than MM_STEP_MAX_FRAC of the strip repainted (a
-   * lazy-history jump) defers to the async rebuild via mmTexDirty — the
-   * old pixels keep serving 1:1, briefly misplaced, never stretched.
-   */
+   * snapshot semantics; never a scale-blit), clear + repaint from data only
+   * the columns the shift/compression exposed or invalidated, and accumulate
+   * the residual placement error (shift rounding + the compression a shift
+   * cannot express) into mmTexDriftPx — the budget that forces the async
+   * rebuild to true the approximation up. Handles live-end compression AND
+   * the pad-regime translation (minimapExtent's backward-padded start; exact
+   * under a shift) in one primitive. */
   private mmStepExtent(ext: TimeView, w: number): void {
     const tex = this.mmTex;
     const b = this.mmTexB;
@@ -3981,7 +3422,6 @@ export class TimelineViewElement extends HTMLElement {
     const padY = 3;
     const rowH = laneN > 0 ? (h - padY * 2) / laneN : 0;
     const markH = Math.max(1, Math.min(rowH * 0.75, 6));
-    // 2 css px margin: min-width marks + antialiasing bleed into the clip.
     const margin = (2 * span) / Math.max(1, w);
     const tA = extent.start + (x0 / bw) * span - margin;
     const tB = extent.start + (x1 / bw) * span + margin;
@@ -4022,9 +3462,7 @@ export class TimelineViewElement extends HTMLElement {
     const pend = this.mmPendingNew;
     for (let i = 0; i < pend.length; i++) {
       const n = pend[i];
-      // Skip superseded queue entries (replaced since ingest) and rows
-      // beyond the texture's lane count — both funnels to a full rebuild
-      // via mmTexDirty / the laneN stamp anyway.
+      // Skip superseded queue entries (replaced since ingest) and rows beyond the texture's lane count — both funnels to a full rebuild.
       if (n.end === null || this.byId.get(n.id) !== n || n.laneIdx >= laneN) continue;
       const x0 = timeToX(n.start, extent, w);
       const x1 = timeToX(n.end, extent, w);
@@ -4133,8 +3571,7 @@ export class TimelineViewElement extends HTMLElement {
     }
     this.mmRebuild = null;
     if (r.epoch !== this.packEpoch || r.themeGen !== this.mmThemeGen) {
-      // Painted from live arrays that changed mid-build — the content is
-      // unaccountable; drop it and let the next frame re-kick fresh.
+      // Painted from live arrays that changed mid-build — the content is unaccountable.
       this.invalidate();
       return;
     }
@@ -4220,14 +3657,7 @@ export class TimelineViewElement extends HTMLElement {
     }
   }
 
-  /**
-   * Snap a TEXT draw origin (x or y) to the device-pixel grid. Applied
-   * per fillText call — text, unlike bar geometry, tolerates per-element
-   * rounding (see snapTextOrigin): a fractional origin — laneScroll
-   * accumulation, height tweens, odd track heights — smears every glyph
-   * stroke across two pixel rows; a snapped one rasterizes crisp, at the
-   * cost of labels stepping in whole device pixels while things move.
-   */
+  /** Snap a TEXT draw origin (x or y) to the device-pixel grid. */
   private textPx(v: number): number {
     return snapTextOrigin(v, this.dpr);
   }
@@ -4298,9 +3728,7 @@ export class TimelineViewElement extends HTMLElement {
         ctx.fillRect(0, Math.max(AXIS_H, top), w, Math.min(top + lh, h) - Math.max(AXIS_H, top));
       }
       const yBottom = snap(top + lh, dpr);
-      // Collected, not stroked here: one path for every lane separator beats
-      // a beginPath/stroke pair per lane (49 lanes = 49 rasterizer round
-      // trips per frame, for identical 1px lines).
+      // Collected, not stroked here: one path for every lane separator beats a beginPath/stroke pair per lane.
       if (yBottom > AXIS_H && yBottom < h) separators.push(yBottom);
       // Gutter label, graded by the lane's CURRENT height: full while the
       // lane comfortably fits the base font; smaller + faded while it
@@ -4314,10 +3742,7 @@ export class TimelineViewElement extends HTMLElement {
           : Math.max(LANE_LABEL_MIN_FONT_PX, Math.min(t.fontSize - 2, Math.floor(lh - 3)));
         const charW = full ? this.charW : (this.charW * fs) / t.fontSize;
         this.measureCharW = charW;
-        // fitTieredText measures text, which is the dearest thing a frame
-        // does per lane — and the answer only changes when the label, the
-        // gutter width or the font does. All three are in the key, so the
-        // cache needs no invalidation hook.
+        // fitTieredText measures text, which is the dearest thing a frame does per lane — and the answer only changes when the label.
         const label = this.lanes[i].label;
         const fitKey = `${label}\u0000${this.gutterW}\u0000${fs}\u0000${t.font}`;
         let fit = this.laneFitCache.get(fitKey);
@@ -4372,9 +3797,7 @@ export class TimelineViewElement extends HTMLElement {
         if (x1 - x0 < 1) continue;
         const busy = pending !== null && pending.start < gap.end && pending.end > gap.start;
         const pat = this.patternFor('hatch', busy ? withAlpha(t.muted, 0.35) : withAlpha(t.muted, 0.18));
-        // Anchored to the gap's own start so the hatch scrolls WITH the
-        // uncovered region (the busy-crawl translate below still animates
-        // relative to it — pattern transforms compose with the CTM).
+        // Anchored to the gap's own start so the hatch scrolls WITH the uncovered region.
         ctx.fillStyle = pat ? this.anchorPattern(pat, x0, AXIS_H) : withAlpha(t.muted, 0.08);
         ctx.save();
         if (busy && !this.reducedMotion) ctx.translate((now / 40) % 7, 0);
@@ -4393,7 +3816,7 @@ export class TimelineViewElement extends HTMLElement {
     const ex = this.coverage.exhaustedBefore;
     if (ex !== null && ex >= rv.start && ex <= rv.end) {
       const x = snap(gx + timeToX(ex, rv, plotW), this.dpr);
-      // The void before history: clearly darker than the plot bg.
+      // The void before history: darker than the plot bg.
       if (x > gx) {
         ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
         ctx.fillRect(gx, AXIS_H, x - gx, h - AXIS_H);
@@ -4426,18 +3849,9 @@ export class TimelineViewElement extends HTMLElement {
     for (let laneIdx = 0; laneIdx < this.perLane.length; laneIdx++) {
       const laneTop = AXIS_H + tops[laneIdx] - this.laneScroll;
       if (laneTop + heights[laneIdx] < AXIS_H || laneTop > h) continue;
-      // Iterate only the UNCLUSTERED items (built at cluster time, same
-      // (start, id) order — clustered members draw as their cluster's
-      // stack marker below, and skipping them one by one used to burn
-      // thousands of no-op iterations per frame on busy zooms).
+      // Iterate only the UNCLUSTERED items.
       const per = this.laneUnclustered[laneIdx] ?? this.perLane[laneIdx];
-      // Lower-bound cull: a TERMINATED item starting before
-      // rv.start − maxDur necessarily ended before the window; ongoing
-      // items (end = null, growing to now) block the bound only down to
-      // the lane's earliest ongoing start. Binary-search the first
-      // possibly-visible index (arrays are (start, id)-sorted) instead of
-      // scanning every frame from 0 — the loop is O(visible + log N),
-      // with the existing sorted `break` as the upper bound.
+      // Lower-bound cull: a TERMINATED item starting before rv.start − maxDur necessarily ended before the window.
       let cullFrom = rv.start - (this.laneMaxDur[laneIdx] ?? 0);
       const ongoingStart = this.laneOngoingStart[laneIdx];
       if (ongoingStart !== undefined && ongoingStart < cullFrom) cullFrom = ongoingStart;
@@ -4451,9 +3865,9 @@ export class TimelineViewElement extends HTMLElement {
       for (let i = lo; i < per.length; i++) {
         const n = per[i];
         if (n.start > rv.end) break; // sorted by start
-        if ((n.end ?? now) < rv.start && n.end !== null) continue;
+        if (n.famEnd !== null && n.famEnd < rv.start) continue;
         if (n.clustered) continue; // belt — membership changed since the last cluster pass
-        this.drawInterval(ctx, n, now);
+        this.drawNode(ctx, n, now);
       }
       // The lane's cluster stack markers, over its bars.
       const ncs = this.laneClusters[laneIdx];
@@ -4463,43 +3877,71 @@ export class TimelineViewElement extends HTMLElement {
     void t;
   }
 
+  /** A root, then each sub-span under it, depth first: a child paints over the gap above it. */
+  private drawNode(ctx: CanvasRenderingContext2D, n: NInterval, now: number): void {
+    this.drawInterval(ctx, n, now);
+    const children = n.children;
+    if (children !== null) {
+      for (let i = 0; i < children.length; i++) this.drawNode(ctx, children[i], now);
+    }
+  }
+
+  /** The x ranges, clipped to [x0, x1], that the bars of `members` cover. Instants cover nothing. */
+  private barOverlaps(members: readonly NInterval[], x0: number, x1: number, now: number): [number, number][] {
+    const out: [number, number][] = [];
+    const rv = this.renderView();
+    const plotW = this.plotWidth();
+    for (const m of members) {
+      if (isInstantWidth(durationWidthPx(m.start, m.end ?? now, rv, plotW))) continue;
+      const mr = this.rectForInto(m, now, { x: 0, y: 0, w: 0, h: 0 });
+      const a = Math.max(x0, mr.x);
+      const b = Math.min(x1, mr.x + Math.max(mr.w, MIN_BAR_PX));
+      if (b > a) out.push([a, b]);
+    }
+    return out;
+  }
+
   private drawInterval(ctx: CanvasRenderingContext2D, n: NInterval, now: number): void {
     const t = this.theme;
     const dpr = this.dpr;
     const rv = this.renderView();
     const plotW = this.plotWidth();
     const r = this.rectForInto(n, now, this.rectScratch);
-    const bh = r.h; // per-lane track height: compact lanes render slivers
-    const style = this.resolved(n.catKey, n.state, this.overrideColor(n));
+    let bh = r.h; // per-lane track height: compact lanes render slivers
+    const style = this.styleOf(n);
     const hovered = this.hoverIntervalId === n.id;
 
-    // Bar vs pip from the DURATION mapped through the current scale —
-    // translation-invariant, so a scrolling viewport can never flip an
-    // event's shape (a rounded-coordinate width oscillates ±1px with
-    // subpixel phase). Zero/near-zero-duration events are pips; anything
-    // wider draws as a bar, clamped to MIN_BAR_PX so a real duration is
-    // never demoted to a pip by rounding.
+    // Bar vs pip from the DURATION mapped through the current scale — translation-invariant.
     const trueW = durationWidthPx(n.start, n.end ?? now, rv, plotW);
     if (isInstantWidth(trueW)) {
       this.drawInstant(ctx, style, r.x + r.w / 2, r.y + bh / 2, bh, hovered);
       return;
     }
 
-    // Which ends the viewport clips (the span truly continues off-screen
-    // past them) — those ends get the edge-continuation shadow, painted
-    // last so it applies over every treatment.
+    // A sub-span hangs from its parent, which sits on the row directly above it.
+    const xEnd = r.x + Math.max(r.w, MIN_BAR_PX);
+    const above = n.parent !== null ? this.barOverlaps([n.parent], r.x, xEnd, now) : [];
+    const attached = above.length > 0;
+    if (attached) {
+      const gap = this.metrics().trackGap;
+      r.y -= gap;
+      bh += gap;
+    }
+
+    // Which ends the viewport clips (the span truly continues off-screen past them) — those ends get the edge-continuation shadow.
     const fade = edgeContinuation(n.start, n.end ?? now, rv, plotW, EDGE_FADE_PX);
 
-    // Unrounded coordinates on purpose: renderView is the single global
-    // rounding step; rounding again per bar would jiggle neighbors
-    // relative to each other during fractional translations.
+    // Unrounded coordinates on purpose: renderView is the global rounding step.
     const x0 = r.x;
     const bw = Math.max(r.w, MIN_BAR_PX);
     const x1 = x0 + bw;
     const y = r.y;
     const radius = Math.min(3, bh / 3, bw / 2);
+    // Square the edges where a family joins: the top of a sub-span, the bottom of a span that has sub-spans.
+    const top = attached ? 0 : radius;
+    const bottom = n.children !== null && this.barOverlaps(n.children, x0, x1, now).length > 0 ? 0 : radius;
     const path = new Path2D();
-    path.roundRect(x0, y, bw, bh, radius);
+    path.roundRect(x0, y, bw, bh, [top, top, bottom, bottom]);
 
     // Body fill.
     if (style.pattern === 'outline') {
@@ -4521,9 +3963,7 @@ export class TimelineViewElement extends HTMLElement {
       ctx.fill(path);
     }
 
-    // Where the label anchors: the bar start, sticking to the plot's
-    // left edge (past any continuation shadow) while the start is
-    // scrolled off-screen.
+    // Where the label anchors: the bar start.
     const labelPad = 5;
     const labelX = Math.max(x0, this.gutterW + (fade.left ? EDGE_FADE_PX : 0)) + labelPad;
 
@@ -4534,18 +3974,9 @@ export class TimelineViewElement extends HTMLElement {
       for (const s of n.segs) {
         let sx0 = Math.max(x0, this.gutterW + timeToX(s.start, rv, plotW));
         const sx1 = Math.min(x1, this.gutterW + timeToX(s.end ?? (n.end ?? now), rv, plotW));
-        const ss = this.resolved(n.catKey, s.kind, null);
+        const ss = this.resolved(n.root.catKey, s.kind, null, n.depth);
         if (ss.pattern === 'outline') {
           // A terminal cut (e.g. a kill tail: cancel requested → finished).
-          // Unlike decorative phases it must NEVER vanish: it keeps a
-          // minimum device-pixel footprint (grown backward from its end —
-          // the tail sits at the bar end) instead of the sub-half-px skip,
-          // and renders visibly as a dark scrim over the dead tail. Once
-          // the tail is wide enough for a line to mark a point INSIDE the
-          // span, a cut line in the segment's own hue (the same color
-          // family as the cancelled border) marks the kill point. Never a
-          // foreground-bright line: on a hairline tail that sat flush
-          // against the end border and read as a stray white artifact.
           const minW = TERMINAL_SEG_MIN_DEVICE_PX / dpr;
           if (sx1 - sx0 < minW) sx0 = Math.max(x0, sx1 - minW);
           const segW = sx1 - sx0;
@@ -4563,9 +3994,7 @@ export class TimelineViewElement extends HTMLElement {
           ctx.fillRect(sx0, y, sx1 - sx0, bh);
           const pat = this.patternFor(ss.pattern, ss.fill);
           if (pat) {
-            // Anchored to the BAR's unclamped origin (one phase per bar):
-            // stable while the bar's start is clipped off-screen — the
-            // clamped sx0 would phase-jump at the clip boundary.
+            // Anchored to the BAR's unclamped origin (one phase per bar): stable while the bar's start is clipped off-screen.
             ctx.fillStyle = this.anchorPattern(pat, x0, y);
             ctx.fillRect(sx0, y, sx1 - sx0, bh);
           }
@@ -4577,6 +4006,19 @@ export class TimelineViewElement extends HTMLElement {
         ctx.fillStyle = withAlpha('#000000', 0.35);
         ctx.fillRect(sx0, y, 1 / dpr, bh);
       }
+      ctx.restore();
+    }
+
+    // The bar above casts a shadow onto an attached sub-span, so the join reads as tucked under, not as missing padding.
+    if (attached) {
+      const sh = Math.min(SUB_SPAN_SHADOW_PX, bh / 2);
+      const grad = ctx.createLinearGradient(0, y, 0, y + sh);
+      grad.addColorStop(0, withAlpha('#000000', SUB_SPAN_SHADOW_ALPHA));
+      grad.addColorStop(1, withAlpha('#000000', 0));
+      ctx.save();
+      ctx.clip(path);
+      ctx.fillStyle = grad;
+      for (const [a, b] of above) ctx.fillRect(a, y, b - a, sh);
       ctx.restore();
     }
 
@@ -4610,10 +4052,7 @@ export class TimelineViewElement extends HTMLElement {
       }
     }
 
-    // Border — width capped for sliver bars so a 2px emphasis border can't
-    // swallow a 4px compact track. Dashes (the cancelled treatment) fall
-    // back to solid below BORDER_DASH_MIN_PX, where a dash pattern reads
-    // as broken corners rather than a dashed edge.
+    // Border — width capped for sliver bars so a 2px emphasis border can't swallow a 4px compact track.
     ctx.strokeStyle = style.border;
     ctx.lineWidth = Math.min(style.borderWidth, Math.max(1, bh / 4));
     const dash = style.dash && bw >= BORDER_DASH_MIN_PX ? style.dash : null;
@@ -4638,18 +4077,17 @@ export class TimelineViewElement extends HTMLElement {
       ctx.fill();
     }
 
-    // Label — suppressed entirely below fit height (a compact sliver has
-    // no room for text); otherwise never allowed to spill out of the bar,
+    // Label — suppressed entirely below fit height (a compact sliver has no
+    // room for text); otherwise never allowed to spill out of the bar,
     // sticking to the plot's left edge while the bar's start is scrolled
-    // off-screen — just past the continuation shadow when one is active,
-    // so the sticky label never sits inside the darkened zone.
+    // off-screen — past the continuation shadow when one is active, so the
+    // sticky label never sits inside the darkened zone.
     if (bh >= t.fontSize + 3) {
       const glyphPad = style.glyph === 'bang' ? 8 : 0;
       this.measureCharW = this.charW;
       const fit = fitTieredText(n.tiers ?? n.label, x1 - labelX - labelPad - glyphPad, this.measureLabel);
       if (fit !== null) {
-        // Full-contrast text + halo regardless of the surface — the
-        // span's own state/segments must never grey the label out.
+        // Full-contrast text + halo regardless of the surface.
         const lx = this.textPx(labelX);
         const ly = this.textPx(y + bh / 2 + 0.5);
         if (fit.faded) {
@@ -4668,17 +4106,9 @@ export class TimelineViewElement extends HTMLElement {
 
     // Edge-continuation shadow: the clipped end darkens over the last
     // EDGE_FADE_PX toward the viewport edge — the span reads as sliding
-    // UNDER the window edge, which casts a shadow on it. NEVER a fade to
-    // the background color: dissolving the span made it look like it
-    // evaporates there instead of continuing. Painted OVER the finished
-    // bar (fill, segments, border, hover ring) as a black gradient —
-    // full EDGE_SHADOW_ALPHA at the edge (clearly darker than the page
-    // background over any body), eased via a mid stop, clear at the
-    // inner side — plus a 1px near-black line at the boundary itself to
-    // strengthen the occluding-edge read. Reads identically over solid,
-    // hollow, hatched, and scrimmed treatments and stays correct on an
-    // opaque canvas. The rect overshoots the bar by 1px vertically to
-    // catch the border's outer half (still inside the 2px track gap).
+    // UNDER the window edge, which casts a shadow on it. NEVER a fade to the
+    // background color: dissolving the span made it look like it evaporates
+    // there instead of continuing.
     if (fade.left) {
       const gx = this.gutterW;
       const grad = ctx.createLinearGradient(gx, 0, gx + EDGE_FADE_PX, 0);
@@ -4715,19 +4145,11 @@ export class TimelineViewElement extends HTMLElement {
     const t = this.theme;
     const r = this.pipRadius(trackH);
     const rx = r * 0.78;
-    // Pips deliberately skip the bars' below-12px dash-to-solid fallback —
-    // a closed diamond outline has no broken-corner failure mode, and a
-    // cancelled INSTANT must carry the same dashed signature as a
-    // cancelled span. strokePip holds that geometry, shared with the
-    // sprite bake so a blitted pip and a drawn one cannot diverge.
+    // Pips deliberately skip the bars' below-12px dash-to-solid fallback — a closed diamond outline has no broken-corner failure mode.
     this.strokePip(ctx, style, cx, cy, r);
     const emphasis = style.glyph === 'bang' || style.border === t.emphasis;
     // Ghost copies (the back layers of a cluster's 3-stack) draw fill +
-    // border only: no emphasis stem (an emphasis cluster shows ONE stem on
-    // its front copy, never a comb) and no hover ring (callers pass
-    // hovered=false for ghosts). The dashed-cancelled outline deliberately
-    // stays on ghosts — a cancelled cluster reads as a stack of dashed
-    // hollow diamonds, matching the per-state language.
+    // border only.
     if (emphasis && !ghost) {
       // Unmissable: a stem above the diamond, like an exclamation.
       ctx.strokeStyle = t.emphasis;
@@ -4750,11 +4172,9 @@ export class TimelineViewElement extends HTMLElement {
     }
   }
 
-  /**
-   * Screen geometry of a cluster's marker — shared by drawing and hit
-   * testing so the two can never disagree. Null while the cluster is
-   * unplaced (outside the window) or no part of its extent is visible.
-   */
+  /** Screen geometry of a cluster's marker — shared by drawing and
+   * hit testing so both can never disagree. Null while the cluster is
+   * unplaced (outside the window) or no part of its extent is visible. */
   private clusterPos(c: NCluster): { cx: number; cy: number; y: number; th: number; r: number } | null {
     if (c.track < 0) return null;
     const rv = this.renderView();
@@ -4769,14 +4189,12 @@ export class TimelineViewElement extends HTMLElement {
     return { cx: this.gutterW + timeToX(mt, rv, plotW), cy: y + th / 2, y, th, r };
   }
 
-  /**
-   * Screen geometry of a SPREAD cluster's marks — shared by drawing and
-   * hit testing so the two can never disagree. Every mark is exactly
+  /** Screen geometry of a SPREAD cluster's marks — shared by drawing
+   * and hit testing so both can never disagree. Every mark is exactly
    * CLUSTER_MARK_PX wide: no width here is derived from a time range,
    * which is the mechanical reason marks cannot fuse into a bar (see
    * docs/timeline/zoom-out-never-merges.md). Off-screen marks are
-   * dropped; null while the cluster is unplaced or none is on screen.
-   */
+   * dropped; null while the cluster is unplaced or none is on screen. */
   private clusterMarks(c: NCluster): { y: number; th: number; r: number; pips: { cx: number; mark: ClusterMark }[] } | null {
     if (c.track < 0) return null;
     const rv = this.renderView();
@@ -4794,42 +4212,25 @@ export class TimelineViewElement extends HTMLElement {
     return pips.length > 0 ? { y, th, r, pips } : null;
   }
 
-  /**
-   * A cluster marker: the SAME diamond pip as a single instant, drawn as
-   * a STACK of exactly THREE copies (two ghost copies offset straight
-   * RIGHT behind the true pip, fading with depth — middle dimmer, back
-   * dimmest) — the stack silhouette alone carries "several instants live
-   * here at this zoom". Always three, never scaled by the member count:
-   * the glyph says "a stack", the tooltip carries the real count. There
-   * is no count text on the canvas. Styled by the members' shared state
-   * exactly like singles (all-skipped = dim-filled diamonds,
+  /** A cluster marker: the SAME diamond pip as a single instant, drawn as a
+   * STACK of exactly Copies (ghost copies offset straight RIGHT behind the
+   * true pip, fading with depth — middle dimmer, back dimmest) — the
+   * stack silhouette alone carries "several instants live here at this
+   * zoom". There is no count text on the canvas. Styled by the members'
+   * shared state exactly like singles (all-skipped = dim-filled diamonds,
    * all-cancelled = hollow dashed diamonds, mixed = the neutral default);
    * the FRONT copy sits at the true anchor — the extent midpoint, sliding
    * along the visible slice at a window edge (clusterMarkerTime) — so hit
    * rects, hover ring, and tooltip anchoring are unchanged. Ghost copies
-   * skip the hover ring and emphasis stem (see drawInstant's `ghost`).
-   * Like pips, clusters get no edge-continuation treatment — a point
-   * marker has no clipped extent.
-   */
-  /**
-   * A lane's cluster markers, from a BAKED sprite. Each marker is a
-   * 3-diamond stack — six canvas path operations drawn live, and a dense
-   * hour of traffic puts ~400 on screen, which measured as the single
-   * largest slice of frame time (31 ms of a 59 ms draw budget across a
-   * load). The whole stack bakes into one image per (style, radius, dpr),
-   * so a marker costs one blit (pipSprite carries the measurements).
-   *
-   * A hovered marker or an emphasis stem is per-marker geometry, so those
-   * fall back to drawCluster — and draw AFTER the blits, which is where
-   * they belong anyway (a hover ring under a neighbour's ghost was always
-   * a latent glitch).
-   */
+   * skip the hover ring and emphasis stem (see drawInstant's `ghost`). Like
+   * pips, clusters get no edge-continuation treatment — a point marker
+   * has no clipped extent. */
+  /** A lane's cluster markers, from a BAKED sprite. The whole stack bakes. */
   private drawClusters(ctx: CanvasRenderingContext2D, ncs: NCluster[]): void {
     if (ncs.length === 0) return;
     const t = this.theme;
     let fallback: NCluster[] | null = null;
-    // Grouped by the glyph they blit, so one bake and one transform switch
-    // serve the whole group.
+    // Grouped by the glyph they blit, so one bake and one transform switch serve the whole group.
     let groups: Map<string, { style: ResolvedStyle; r: number; at: NCluster[] }> | null = null;
     for (const c of ncs) {
       const style = this.resolved(c.catKey, c.state, null);
@@ -4882,8 +4283,7 @@ export class TimelineViewElement extends HTMLElement {
       ctx,
       pips.map((p) => ({ sprite, cx: p.cx, cy })),
     );
-    // The hovered mark redraws whole, on top: its ring and any emphasis
-    // stem are per-marker geometry the sprite omits.
+    // The hovered mark redraws whole, on top: its ring and any emphasis stem are per-marker geometry the sprite omits.
     if (hoverAt >= 0) this.drawInstant(ctx, style, pips[hoverAt].cx, cy, geo.th, true);
   }
 
@@ -4986,21 +4386,13 @@ export class TimelineViewElement extends HTMLElement {
   }
 
   private drawNowLine(ctx: CanvasRenderingContext2D, now: number): void {
-    // The RAW view, not renderView(): the now line is VIEWPORT-anchored —
-    // while follow-now pins the view, `now` sits at a fixed span fraction
-    // and this x must be frame-to-frame constant. The snapped render view
-    // carries a per-frame quantization error that used to flip the
-    // rounded x between adjacent device pixels — a visible wiggle in the
-    // one state where the line must hold perfectly still (see nowLineX).
-    // Frozen content has no "now" to mark — the edge is just where the
-    // data stops, and a line there would read as a live clock.
+    // The RAW view, not renderView(): the now line is VIEWPORT-anchored — while follow-now pins the view.
     if (this.maxTimeMs !== null) return;
     const view = this.view;
     if (now < view.start || now > view.end) return;
     const t = this.theme;
     const x = nowLineX(now, view, this.gutterW, this.plotWidth(), this.dpr);
-    // Stale: the line is parked at the last vouched timestamp, not ticking —
-    // muted + dashed so it can't be mistaken for a live edge.
+    // Stale: the line is parked at the last vouched timestamp.
     const stale = this.feedStale;
     ctx.strokeStyle = stale ? withAlpha(t.muted, 0.8) : withAlpha(t.now, 0.85);
     ctx.lineWidth = 1;
@@ -5044,6 +4436,11 @@ function snap(v: number, dpr: number): number {
 }
 
 /** Explicit labelTiers win (sanitized); else derive from the label; null = single tier. */
+/** The packFamily input for a node and its sub-spans. */
+function familyNode(n: NInterval): PackNode {
+  return { id: n.id, start: n.start, end: n.end, children: n.children === null ? null : n.children.map(familyNode) };
+}
+
 function intervalLabelTiers(explicit: string[] | undefined, label: string): string[] | null {
   if (explicit !== undefined) {
     const tiers = explicit.filter((s) => typeof s === 'string' && s !== '');

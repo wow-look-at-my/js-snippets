@@ -8,7 +8,7 @@
 // constructor and setCapacity(), and computeStats / binMinMax write into
 // caller-owned outputs, so a per-frame HUD redraw performs no allocation.
 // niceTicks is the one allocating helper — call it only when the display
-// range actually changes.
+// range changes.
 
 // -- Ring buffer ---------------------------------------------------------------
 
@@ -22,7 +22,7 @@ export class SampleRing {
   private head = 0; // next write position
   private count = 0; // valid samples (<= capacity)
 
-  /** `capacity` is floored and clamped to >= 1. */
+  /* */
   constructor(capacity: number) {
     this.buf = new Float32Array(clampCapacity(capacity));
   }
@@ -44,7 +44,7 @@ export class SampleRing {
     if (this.count < this.buf.length) this.count++;
   }
 
-  /** Sample by age: at(0) is the oldest, at(length - 1) the newest. NaN out of range. */
+  /*NaN out of range. */
   at(i: number): number {
     if (i < 0 || i >= this.count) return NaN;
     const cap = this.buf.length;
@@ -98,12 +98,10 @@ export interface PerfStats {
   max: number;
 }
 
-/**
- * Fill `out` with the stats of the ring's contents. Non-finite samples are
- * skipped for avg/min/max (all three are NaN when no finite sample exists);
+/** Fill `out` with the stats of the ring's contents. Non-finite samples are
+ * skipped for avg/min/max (all of them are NaN when no finite sample exists);
  * `current` is the raw latest sample. Writes into the caller-owned object —
- * no allocation — and returns it.
- */
+ * no allocation — and returns it. */
 export function computeStats(ring: SampleRing, out: PerfStats): PerfStats {
   let n = 0;
   let sum = 0;
@@ -132,9 +130,9 @@ export interface AutoRangeOptions {
   fixedMin?: number;
   /** Pin the high end exactly (no padding is applied to a pinned end). */
   fixedMax?: number;
-  /** Fraction of the data span added to each un-pinned end (default 0.1). */
+  /* */
   pad?: number;
-  /** Extend the un-pinned low/high end to include 0 (default false). */
+  /* */
   includeZero?: boolean;
 }
 
@@ -144,12 +142,9 @@ export interface DisplayRange {
   max: number;
 }
 
-/**
- * Padded display range for the given data extremes. Degenerate-safe: empty
- * (non-finite) or flat data still yields a usable nonzero span. fixedMin /
- * fixedMax pin their end exactly. With includeZero, a zero floor pulled in
- * from non-negative data is kept at exactly 0 rather than padded below it.
- */
+/** Padded display range for the given data extremes. Degenerate-safe:
+ * empty (non-finite) or flat data still yields a usable nonzero span.
+ * fixedMin / fixedMax pin their end exactly. */
 export function autoRange(dataMin: number, dataMax: number, opts: AutoRangeOptions = {}): DisplayRange {
   const pad = opts.pad !== undefined && Number.isFinite(opts.pad) ? opts.pad : 0.1;
   let lo = Number.isFinite(dataMin) ? dataMin : 0;
@@ -189,10 +184,7 @@ export function autoRange(dataMin: number, dataMax: number, opts: AutoRangeOptio
 
 const NICE_MANTISSAS = [1, 2, 5];
 
-/**
- * The smallest "nice" step (1, 2 or 5 × 10^k) that divides `span` into at
- * most `maxTicks` intervals. Returns 1 for a non-positive/non-finite span.
- */
+/* */
 export function niceStep(span: number, maxTicks: number): number {
   if (!Number.isFinite(span) || span <= 0) return 1;
   const max = Math.max(1, Math.floor(maxTicks));
@@ -206,12 +198,8 @@ export function niceStep(span: number, maxTicks: number): number {
   }
 }
 
-/**
- * Tick positions on the 1-2-5 × 10^k grid within [lo, hi], using
- * niceStep(hi - lo, maxTicks) — so at most maxTicks + 1 ticks. Returns []
- * for an empty/invalid range. Allocates (the element calls it only when the
- * display range changes).
- */
+/*Returns [] for an empty/invalid range. Allocates (the element calls it
+ * only when the display range changes). */
 export function niceTicks(lo: number, hi: number, maxTicks: number): number[] {
   if (!Number.isFinite(lo) || !Number.isFinite(hi) || !(hi > lo)) return [];
   const step = niceStep(hi - lo, maxTicks);
@@ -224,15 +212,11 @@ export function niceTicks(lo: number, hi: number, maxTicks: number): number[] {
 
 // -- Min-max downsampling --------------------------------------------------------
 
-/**
- * Min-max downsample of the ring into `bins` buckets — the classic
- * more-samples-than-pixels reduction. Sample i (0 = oldest) lands in bin
- * floor(i * bins / count), so every finite sample influences exactly one bin
- * and outMin[b] <= outMax[b] for every non-empty bin. Empty bins (and both
- * arrays past a clamped `bins`) are NaN. `bins` is clamped to the shorter
- * out array. Writes only into the caller-owned arrays — no allocation.
- * Returns the number of non-empty bins (min(bins, count) for finite data).
- */
+/** Min-max downsample of the ring into `bins` buckets — the classic
+ * more-samples-than-pixels reduction. Empty bins (and both arrays past a
+ * clamped `bins`) are NaN. `bins` is clamped to the shorter out array.
+ * Writes only into the caller-owned arrays — no allocation. Returns the
+ * number of non-empty bins (min(bins, count) for finite data). */
 export function binMinMax(ring: SampleRing, bins: number, outMin: Float32Array, outMax: Float32Array): number {
   const nBins = Math.min(Math.max(0, Math.floor(bins)), outMin.length, outMax.length);
   for (let b = 0; b < nBins; b++) {
@@ -259,15 +243,12 @@ export function binMinMax(ring: SampleRing, bins: number, outMin: Float32Array, 
   return used;
 }
 
-/**
- * Newest finite sample in each of `bins` buckets — the reduction a stacked
+/** Newest finite sample in each of `bins` buckets — the reduction a stacked
  * AREA wants, where binMinMax's envelope would draw a band as a ragged blur.
- * Bin membership matches binMinMax exactly (sample i lands in
- * floor(i * bins / count)), so every series of one SeriesRing bins onto the
- * same columns and the bands stay aligned. Empty bins are NaN. `bins` is
- * clamped to out.length. Writes only into the caller-owned array — no
- * allocation. Returns the number of non-empty bins.
- */
+ * Bin membership matches binMinMax exactly (sample i lands in floor(i * bins
+ * / count)), so every series of one SeriesRing bins onto the same columns and
+ * the bands stay aligned. Empty bins are NaN. `bins` is clamped to
+ * out.length. Writes only into the caller-owned array — no allocation. */
 export function binLast(ring: SampleRing, bins: number, out: Float32Array): number {
   const nBins = Math.min(Math.max(0, Math.floor(bins)), out.length);
   for (let b = 0; b < nBins; b++) out[b] = NaN;
@@ -296,15 +277,10 @@ export interface SeriesSpec {
   color?: string;
 }
 
-/**
- * The data behind a stacked area: one SampleRing per band, on one time axis.
- * Every push advances EVERY series, so sample i of one band lines up
- * with sample i of the next. A key a sample omits contributes 0 to that
- * column rather than a gap, because a band of a stack has no place to put
- * one.
- *
- * Only the constructor, setCapacity() and setKeys() allocate.
- */
+/** The data behind a stacked area: one SampleRing per band, on one time
+ * axis. Every push advances EVERY series, so sample i of one band lines up
+ * with sample i of the next. Only the constructor, setCapacity() and
+ * setKeys() allocate. */
 export class SeriesRing {
   private ks: string[];
   private rings: SampleRing[];
@@ -316,7 +292,7 @@ export class SeriesRing {
     this.rings = this.ks.map(() => new SampleRing(this.cap));
   }
 
-  /** The series keys, in stacking order (index 0 sits at the bottom). */
+  /** The series keys, in stacking order (index multiple sits at the bottom). */
   get keys(): readonly string[] {
     return this.ks;
   }
@@ -341,16 +317,14 @@ export class SeriesRing {
     return this.rings[series];
   }
 
-  /** Sample by series and age: at(s, 0) is the oldest. NaN out of range. */
+  /*NaN out of range. */
   at(series: number, i: number): number {
     const r = this.rings[series];
     return r === undefined ? NaN : r.at(i);
   }
 
-  /**
-   * Append one column. A record is read by key; an array is read by series
-   * index. A key the sample omits, and any non-finite value, records 0.
-   */
+  /** Append one column. A record is read by key; an array is read by
+   * series index. */
   push(values: Readonly<Record<string, number>> | readonly number[]): void {
     const byIndex = Array.isArray(values);
     for (let s = 0; s < this.rings.length; s++) {
@@ -372,11 +346,8 @@ export class SeriesRing {
     for (const r of this.rings) r.setCapacity(cap);
   }
 
-  /**
-   * Replace the series list. A key present before and after keeps its history.
-   * A new key starts with the same number of samples as the others, all 0, so
-   * the columns stay aligned and the band simply begins flat.
-   */
+  /** Replace the series list. A key present before and after keeps its
+   * history. */
   setKeys(keys: readonly string[]): void {
     const length = this.length;
     const previous = new Map<string, SampleRing>();
@@ -392,11 +363,7 @@ export class SeriesRing {
   }
 }
 
-/**
- * Top edge of band `series` at sample `i`: the sum of series 0..series.
- * Non-finite samples count as 0, so one bad reading shortens its own band
- * instead of erasing the stack above it.
- */
+/* */
 export function stackedTop(s: SeriesRing, series: number, i: number): number {
   let sum = 0;
   for (let j = 0; j <= series && j < s.count; j++) {
@@ -406,12 +373,12 @@ export function stackedTop(s: SeriesRing, series: number, i: number): number {
   return sum;
 }
 
-/** Top of the whole stack at sample `i` (0 for an empty or out-of-range column). */
+/* */
 export function stackedTotal(s: SeriesRing, i: number): number {
   return stackedTop(s, s.count - 1, i);
 }
 
-/** The largest stacked total across the stored samples (0 when there are none). */
+/* */
 export function stackedMax(s: SeriesRing): number {
   let mx = 0;
   for (let i = 0; i < s.length; i++) {
@@ -423,12 +390,7 @@ export function stackedMax(s: SeriesRing): number {
 
 // -- Value formatting --------------------------------------------------------------
 
-/**
- * Deterministic HUD value formatting. Non-finite → '—'. Unit 'ms' → adaptive
- * decimals (|v| >= 100 → 0, >= 10 → 1, else 2) + 'ms'; 'fps' → Math.round +
- * 'fps'; any other non-empty unit → 1 decimal + the unit as a suffix; '' →
- * the bare adaptive number.
- */
+/** Deterministic HUD value formatting. Non-finite → '—'. */
 export function formatValue(v: number, unit: string): string {
   if (!Number.isFinite(v)) return '—';
   if (unit === 'fps') return `${Math.round(v)}fps`;

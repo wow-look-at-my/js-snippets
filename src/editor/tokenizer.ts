@@ -1,19 +1,4 @@
-/**
- * Byte-preserving tokenizer + syntax classifier for C-like source.
- *
- * Pure and DOM-free, so it can run in a browser, a worker, or Node. Every byte
- * of the input is preserved (whitespace and comments included) and each token
- * carries its `start`/`end` offsets, so the source can be re-rendered span by
- * span without ever drifting out of sync with the text — which is exactly what
- * the `<code-editor>` element relies on to keep a native caret aligned over the
- * highlighted glyphs.
- *
- * Handles HLSL / GLSL / WGSL / C / C++ / JavaScript well enough for editor
- * highlighting: line + block comments, `"`/`'`/`` ` `` strings, decimal/hex
- * numbers with exponents and type suffixes, and a greedy longest-operator
- * match. It is deliberately not a full parser — it never tracks scopes,
- * preprocessor state, or template-literal interpolation.
- */
+/** Byte-preserving tokenizer + syntax classifier for C-like source. */
 
 // -- Tokens ------------------------------------------------------------------
 
@@ -39,13 +24,10 @@ export interface Token {
 // never returns a short token where a longer one applies (e.g. `<<=` before
 // `<<` before `<`). Authoring order here is irrelevant — the sort fixes it.
 const OPERATORS: string[] = [
-  // 3+ char (mostly JS, harmless elsewhere)
   '>>>=', '...', '>>>', '<<=', '>>=', '**=', '&&=', '||=', '??=',
-  // 2 char
   '==', '!=', '<=', '>=', '&&', '||', '??', '?.', '=>', '**',
   '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=',
   '<<', '>>', '++', '--', '->', '::',
-  // 1 char
   '+', '-', '*', '/', '%', '=', '<', '>', '!', '~', '&', '|', '^',
   '(', ')', '[', ']', '{', '}', ',', ';', '.', '?', ':', '@', '#', '$',
 ].sort((a, b) => b.length - a.length);
@@ -141,8 +123,7 @@ export function tokenize(src: string): Token[] {
       continue;
     }
 
-    // Operator / punctuation (greedy longest match). An unknown byte falls
-    // through as a single-char punct so the loop can never stall.
+    // Operator / punctuation (greedy longest match).
     let matched: string | null = null;
     for (const op of OPERATORS) {
       if (src.startsWith(op, i)) {
@@ -180,15 +161,9 @@ export interface LanguageDef {
   name: string;
   /** Reserved words coloured as keywords/types. */
   keywords: ReadonlySet<string>;
-  /**
-   * Punctuation that turns the following identifier into a `member` access.
-   * Defaults to `['.', '->', '::']`.
-   */
+  /** Punctuation that turns the following identifier into a `member` access. Defaults to `['.', '->', '::']`. */
   memberOps?: readonly string[];
-  /**
-   * When true (default), an identifier immediately followed by `(` is coloured
-   * as a `function` call.
-   */
+  /** When true (default), an identifier immediately followed by `(` is coloured as a `function` call. */
   detectCalls?: boolean;
 }
 

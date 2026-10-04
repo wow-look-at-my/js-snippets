@@ -1,9 +1,5 @@
 // Float-color framebuffer (RGBA16F by default) — the render target you need
-// for additive/HDR accumulation without 8-bit clamping. Rendering to float
-// color in WebGL2 requires the EXT_color_buffer_float extension; this helper
-// performs that check and fails loudly instead of leaving an incomplete FBO.
-// createPingPong pairs two of them for iterative feedback passes (sample the
-// previous result while rendering the next).
+// for additive/HDR accumulation without 8-bit clamping.
 
 /** Options for `createFloatFbo`. */
 export interface FloatFboOptions {
@@ -112,11 +108,7 @@ export interface PingPong<T extends PingPongTarget = FloatFbo> {
   dispose(): void;
 }
 
-/**
- * Pure pairing logic behind `createPingPong`: wrap two existing targets into
- * a ping-pong pair (`read` starts as `a`, `write` as `b`). `swap()` works even
- * when the method is detached from the pair.
- */
+/*`swap()` works even when the method is detached from the pair. */
 export function makePingPong<T extends PingPongTarget>(a: T, b: T): PingPong<T> {
   const pair: PingPong<T> = {
     read: a,
@@ -138,19 +130,9 @@ export function makePingPong<T extends PingPongTarget>(a: T, b: T): PingPong<T> 
   return pair;
 }
 
-/**
- * Create a ping-pong pair of equal float FBOs (see `createFloatFbo`) for
+/** Create a ping-pong pair of equal float FBOs (see `createFloatFbo`) for
  * iterative accumulation passes: bind `write.framebuffer`, sample
- * `read.texture`, then `swap()`. Float targets matter here — feedback loops
- * make small per-step changes that 8-bit storage quantizes away (e.g. a
- * ×0.999 alpha decay rounds straight back to 255/255, so it never fades).
- *
- * Both targets start empty/transparent (WebGL2 zero-initializes texture
- * storage), so the first `read` samples transparent black. `resize()`
- * reallocates — and thereby clears — both targets (no-op when the size is
- * unchanged). `swap()` reassigns `read`/`write`, so always access the targets
- * through the pair instead of caching them across swaps.
- */
+ * `read.texture`, then `swap()`. */
 export function createPingPong(
   gl: WebGL2RenderingContext,
   width: number,

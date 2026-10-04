@@ -1,11 +1,4 @@
-/**
- * Deterministic category colors, the uniform dim transform, and the label
- * halo — the color primitives shared by the canvas-painted components
- * (`<timeline-view>`, `<dag-view>`).
- *
- * The contract that matters: a category string maps to ONE color, forever,
- * on every machine. Nothing here reads state, a clock, or a random source.
- */
+/** Deterministic category colors, the uniform dim transform. */
 
 /** FNV-1a 32-bit hash (stable across sessions/platforms). */
 export function hashString(s: string): number {
@@ -17,30 +10,16 @@ export function hashString(s: string): number {
   return h >>> 0;
 }
 
-/**
- * Stable category → hue in [0, 360): FNV-1a scattered by the golden-ratio
- * conjugate, so similar strings land far apart and hues spread uniformly.
- * Same string = same hue, forever.
- */
+/** Stable category → hue. */
 export function categoryHue(category: string): number {
   const g = (hashString(category) * 0.61803398875) % 1;
   return Math.floor(g * 360);
 }
 
-/**
- * The salt categoryJitter hashes after the category name. A NUL separator
- * keeps two different names from spelling each other's salted form. It is
- * built from a char code, not an escape, so this file stays plain ASCII —
- * a raw NUL byte makes grep call the whole source "binary".
- */
+/** The salt categoryJitter hashes after the category name. */
 const TONE_SALT = `${String.fromCharCode(0)}tone`;
 
-/**
- * Deterministic per-category lightness/chroma offsets (|dl| <= 0.05,
- * |dc| <= 0.02), derived from independent hash bits. A second visual
- * discriminator: two categories that happen to hash to nearby hues still
- * separate by tone, while every category keeps one stable color forever.
- */
+/* */
 export function categoryJitter(category: string): { dl: number; dc: number } {
   const h = hashString(category + TONE_SALT);
   return {
@@ -53,11 +32,11 @@ export function categoryJitter(category: string): { dl: number; dc: number } {
 export interface CategoryColorOptions {
   /** 'oklch' (perceptually even lightness — preferred) or 'hsl' fallback. */
   mode?: 'oklch' | 'hsl';
-  /** oklch lightness 0..1 (default 0.62 — readable chips on a dark bg). */
+  /* */
   lightness?: number;
-  /** oklch chroma (default 0.11 — saturated but not neon). */
+  /* */
   chroma?: number;
-  /** Alpha 0..1 (default 1). */
+  /* */
   alpha?: number;
 }
 
@@ -84,7 +63,7 @@ function round3(n: number): number {
 
 // -- Dim transform -------------------------------------------------------------------
 
-/** Parse a CSS color into sRGB 0..255 channels + alpha, or null if unsupported. */
+/* */
 function parseColor(color: string): { r: number; g: number; b: number; a: number } | null {
   const c = color.trim();
   if (c.startsWith('#')) {
@@ -151,15 +130,11 @@ function parseColor(color: string): { r: number; g: number; b: number; a: number
   return { r: lin[0], g: lin[1], b: lin[2], a: alpha };
 }
 
-/**
- * The uniform DIM transform: 50% saturation, 50% value (HSV), hue and
- * alpha untouched — "a filter laid over the whole dimmed region". Applied
- * to EVERY color painted inside a dimmed region (fill, hatching, border,
- * label text), so relative text-vs-fill contrast is preserved while the
- * whole section recedes. Accepts #hex, rgb()/rgba(), hsl()/hsla(), and
+/*Applied to EVERY color painted inside a dimmed region (fill, hatching,
+ * border, label text), so relative text-vs-fill contrast is preserved while
+ * the whole section recedes. Accepts #hex, rgb()/rgba(), hsl()/hsla(), and
  * oklch() color forms; anything else (named colors, var() references) is
- * returned unchanged — the caller keeps a sane color either way.
- */
+ * returned unchanged — the caller keeps a sane color either way. */
 export function dimColor(color: string): string {
   const p = parseColor(color);
   if (!p) return color;
@@ -196,7 +171,7 @@ export function dimColor(color: string): string {
 
 // -- Label legibility -----------------------------------------------------------------
 
-/** WCAG relative luminance (0..1) of sRGB 0..255 channels. */
+/* */
 function relativeLuminance(r: number, g: number, b: number): number {
   const lin = (ch: number): number => {
     const s = Math.max(0, Math.min(255, ch)) / 255;
@@ -205,20 +180,11 @@ function relativeLuminance(r: number, g: number, b: number): number {
   return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
 }
 
-/**
- * Halo color for canvas label text: the translucent counter-color rim
- * (`strokeText` under the fill) that guarantees label legibility over
- * ANY surface — solid fills, dimmed/hatched segments, pattern stripes,
- * scrims — at every zoom. Picks whichever of black/white contrasts more
- * with the foreground itself (the WCAG-ratio crossover sits at relative
- * luminance ≈ 0.1791): dark halo under a light fg, light halo under a
- * dark fg, so the pairing holds on light themes too. Alpha 0.55 keeps it
- * a rim, not a box. Unparseable colors (var() refs, named colors) fall
- * back to the dark halo — the shape of the dark default theme.
- */
+/** Halo color for canvas label text: the translucent counter-color rim
+ * (`strokeText` under the fill) that guarantees label legibility over ANY
+ * surface — solid fills, dimmed/hatched segments. */
 export function labelHaloColor(fg: string): string {
   const p = parseColor(fg);
-  // contrast(fg, black) >= contrast(fg, white) ⇔ (L+0.05)² >= 0.05·1.05.
   const dark = !p || relativeLuminance(p.r, p.g, p.b) >= Math.sqrt(0.05 * 1.05) - 0.05;
   return dark ? 'rgba(0, 0, 0, 0.55)' : 'rgba(255, 255, 255, 0.55)';
 }

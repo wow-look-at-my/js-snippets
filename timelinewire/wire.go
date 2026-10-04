@@ -8,25 +8,8 @@
 // step by hand.
 //
 // It knows a LAYOUT and not a vocabulary: the caller names its own columns in
-// a Schema and the names never reach the wire, so two producers with different
+// a Schema and the names never reach the wire, so producers with different
 // fields still speak one format.
-//
-// THE LAYOUT (v1, magic "TLC1"), in order:
-//
-//	magic          4 bytes
-//	maxId          uvarint   — newest row id; the consumer's next cursor
-//	retentionStart varint    — epoch ms; the feed's window floor
-//	now            varint    — epoch ms; the producer's clock
-//	n              uvarint   — row count
-//	<DeltaU columns>  running deltas, unsigned
-//	<DeltaZ columns>  running deltas, zigzag-signed
-//	<Plain columns>   one uvarint per row
-//	<Bits columns>    ceil(n/8) bytes each
-//	<Strings columns> dictionary, then one index per row — EXCEPT a dictionary
-//	                  of one, which carries no index run at all
-//
-// Changing any of that is a NEW VERSION — new magic, new fixture — never an
-// edit to this one.
 package timelinewire
 
 import (
@@ -34,8 +17,7 @@ import (
 	"fmt"
 )
 
-// Schema names a payload's columns and says how each is encoded. Order within
-// each group is WIRE ORDER and must match the decoder's schema exactly.
+// Schema names a payload's columns and says how each is encoded.
 type Schema struct {
 	// Magic is the 4-byte prefix identifying the layout version.
 	Magic string
@@ -80,7 +62,7 @@ func Encode(p Page, s Schema) ([]byte, error) {
 		return nil, err
 	}
 
-	// Sized for the measured ~24 B/row so the common case never regrows.
+	// Sized for the measured B/row so the common case never regrows.
 	buf := make([]byte, 0, 512+p.N*24)
 	buf = append(buf, s.Magic...)
 	buf = binary.AppendUvarint(buf, p.MaxID)
@@ -88,10 +70,8 @@ func Encode(p Page, s Schema) ([]byte, error) {
 	buf = binary.AppendVarint(buf, p.NowMs)
 	buf = binary.AppendUvarint(buf, uint64(p.N))
 
-	// Ids are consecutive and timestamps monotonic in practice, so both delta
-	// to one byte. The SIGNED delta on timestamps keeps the format correct
-	// even when they are not — events recorded at completion can finish out of
-	// start order.
+	// Ids are consecutive and timestamps monotonic in practice, so both delta to
+	// one byte.
 	for _, name := range s.DeltaU {
 		var prev uint64
 		for _, v := range p.U[name] {
@@ -121,11 +101,7 @@ func Encode(p Page, s Schema) ([]byte, error) {
 		buf = append(buf, bits...)
 	}
 
-	// Dictionary, then one index per row. Index 0 is the reserved empty
-	// string, so an absent value needs no presence bit — and a column NO row
-	// used is written as a dictionary of one with NO index run at all, which
-	// the decoder infers from the dictionary size. That is most of why a
-	// sparse window stays small.
+	// Dictionary, then one index per row.
 	idxs := make([]uint64, p.N)
 	for _, name := range s.Strings {
 		d := newDict()
@@ -179,7 +155,6 @@ func colErr(group, name string, got, want int, present bool) error {
 	return fmt.Errorf("timelinewire: %s column %q has %d values, want %d", group, name, got, want)
 }
 
-// dict interns one column's distinct strings, entry 0 always "".
 type dict struct {
 	byStr map[string]int
 	strs  []string

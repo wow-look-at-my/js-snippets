@@ -86,7 +86,6 @@ test('lerp interpolates and hits both endpoints', () => {
   assert.deepEqual(lerp([0, 0], [10, 20], 0), [0, 0]);
   assert.deepEqual(lerp([0, 0], [10, 20], 1), [10, 20]);
   assert.deepEqual(lerp([0, 0], [10, 20], 0.5), [5, 10]);
-  // t outside [0,1] extrapolates rather than clamping.
   assert.deepEqual(lerp([0, 0], [10, 20], 2), [20, 40]);
 });
 

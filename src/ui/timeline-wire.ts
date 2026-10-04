@@ -1,42 +1,10 @@
 // A COLUMNAR WIRE FORMAT for feeding <timeline-view> a lot of events cheaply,
 // plus the frame-paced driver that decodes one without blocking the page.
-//
-// It lives here because it is part of the timeline: a chart holding 100k
-// intervals needs a way to receive them that is not 27 MB of JSON, and the
-// decode has to fit inside a frame. Measured against the JSON it replaced, on
-// 100k events: 7.5 B/event gzipped instead of 28, and ~5x less main-thread
-// time — nothing parses per record, and no per-event object is built at all
-// until a tooltip asks for one.
-//
-// WHAT THIS MODULE IS NOT: it has no idea what your events MEAN. It decodes
-// bytes into typed columns; turning those into intervals (labels, states,
-// lanes) is the consumer's domain logic and stays in the consumer. That split
-// is why one format serves different producers — they agree on a LAYOUT, not
-// on a vocabulary. The encoding half is ../../timelinewire (Go).
-//
-// THE LAYOUT (v1, magic "TLC1"), in order:
-//
-//   magic          4 bytes
-//   maxId          uvarint   — newest row id; the caller's next cursor
-//   retentionStart varint    — epoch ms; the feed's window floor
-//   now            varint    — epoch ms; the producer's clock
-//   n              uvarint   — row count
-//   <numeric columns, in schema order>
-//   <bitset columns, in schema order>   ceil(n/8) bytes each
-//   <string columns, in schema order>   dictionary, then one index per row
-//
-// A string column whose dictionary holds exactly ONE entry carries no index
-// run at all (the column was unused in this window) and reads as that entry
-// for every row.
-//
-// A change to this layout is a NEW VERSION — new magic, new fixture — never an
-// edit to this one. A decoder that silently accepts two layouts is how a feed
-// starts lying.
 
 /** How a payload's columns are named and encoded. Supplied by the consumer:
  *  the format is a layout, the names are the consumer's own. */
 export interface WireSchema {
-    /** 4 characters, checked against the payload's first 4 bytes. */
+    /** a few characters, checked against the payload's first a few bytes. */
     magic: string;
     /** Ascending unsigned values, delta-encoded (row ids). */
     deltaU: readonly string[];
@@ -52,7 +20,7 @@ export interface WireSchema {
 
 export interface StringColumn {
     dict: string[];
-    /** null when the column was unused in this window — every row reads dict[0]. */
+    /* */
     idx: Int32Array | null;
 }
 
@@ -60,7 +28,7 @@ export interface StringColumn {
  *  no per-row object exists until {@link rowObject} builds one. */
 export interface Columns {
     n: number;
-    /** Delta-decoded unsigned columns. Float64 because ids outlive 2^31. */
+    /** Delta-decoded unsigned columns. */
     u: Record<string, Float64Array>;
     /** Delta-decoded signed columns (epoch ms), same reason. */
     z: Record<string, Float64Array>;
@@ -85,33 +53,17 @@ export interface DecodedPage {
 /** A resumable unit of work: yields periodically, returns its result. */
 export type Task<T> = Generator<undefined, T, undefined>;
 
-// ---- pacing ----
-//
-// ONE CHUNK PER FRAME, where a chunk is A FRAME'S WORTH OF WORK — not one step
-// of one phase. That distinction is the whole model. runSliced claims a frame,
-// then pulls generator steps (across phase boundaries) until CHUNK_MS of real
-// work is spent, then waits for the next frame. One unit per frame means the
-// unit's cost IS the frame's load, so a chunk under budget keeps every frame
-// under budget.
-//
-// Sizing each phase's step adaptively instead — steering every phase toward a
-// time target and yielding a frame at each — is what the first cut did, and it
-// took 70 frames (~1.2 s) to do 8 ms of work: there are ~23 phases, every one
-// paid at least a frame, and the chunks averaged 0.13 ms against an 8 ms
-// budget. Filling the frame instead took it to 3 frames.
+// ---- pacing ---- ONE CHUNK PER FRAME, where a chunk is A FRAME'S WORTH OF WORK — not one step.
 
-/** A frame's worth of decode work. Half the usual 16.6 ms frame, because the
- *  component draws in the same frame. */
+/** A frame's worth of decode work. */
 export const CHUNK_MS = 4;
 
-/** Rows per generator step. A fixed GRANULARITY, not a size to tune: it bounds
- *  the OVERSHOOT, since the clock is only read between steps. */
+/** Rows per generator step. */
 export const STEP = 1024;
 
 let frameSeq = 0;
 let framePending: Promise<void> | null = null;
-// Waiters take frames in turn: N concurrent loads spread over N frames instead
-// of sharing one.
+// Waiters take frames in turn: N concurrent loads spread over N frames instead of sharing one.
 let frameQueue: Promise<void> = Promise.resolve();
 
 function yieldToBrowser(): Promise<void> {
@@ -134,10 +86,8 @@ function afterNextFrame(): Promise<void> {
         const wait = (): void => {
             requestAnimationFrame(() => {
                 frameSeq++;
-                // Resume in a FRESH TASK after the frame's callbacks, and only
-                // once the frame counter actually moved: a bare
-                // rAF-then-setTimeout can land back in the frame it yielded,
-                // silently handing that frame a second budget.
+                // Resume in a FRESH TASK after the frame's callbacks, and
+                // only once the frame counter moved.
                 setTimeout(() => {
                     if (frameSeq > start) {
                         framePending = null;
@@ -153,11 +103,11 @@ function afterNextFrame(): Promise<void> {
     return framePending;
 }
 
-/** Waits for a frame to render. A frame is a global TURN — two concurrent
+/** Waits for a frame to render. A frame is a global TURN — concurrent
  *  loads get different frames rather than sharing one. */
 export function nextFrame(): Promise<void> {
     if (typeof requestAnimationFrame !== 'function') {
-        return yieldToBrowser(); // node, tests: no frames to wait for
+        return yieldToBrowser(); // node, tests.
     }
     const turn = frameQueue.then(afterNextFrame);
     frameQueue = turn.catch(() => undefined);
@@ -200,14 +150,11 @@ class WireReader {
     private b: Uint8Array;
 
     // An explicit field, not a `private b: Uint8Array` parameter property:
-    // node runs this module's tests by STRIPPING types, and parameter
-    // properties are syntax it cannot strip (they emit code).
+    // node runs this module's tests by STRIPPING types.
     constructor(b: Uint8Array) {
         this.b = b;
     }
 
-    // Varints are read as floats past 2^31 (ids and epoch-ms deltas both
-    // exceed it); 2**s keeps the shift exact instead of wrapping at 32 bits.
     uvarint(): number {
         let x = 0, s = 0;
         for (;;) {
@@ -224,16 +171,7 @@ class WireReader {
         return u % 2 === 0 ? u / 2 : -(u + 1) / 2;
     }
 
-    // Bulk readers. Two properties matter:
-    //
-    //  - Nearly every value on the wire fits in one byte (a dictionary index
-    //    for a column with <128 entries, a 1-per-event id delta, a 3 ms
-    //    duration), so the single-byte case is inlined rather than paying a
-    //    call into uvarint() ~1.8M times per full window.
-    //  - Each reader decodes a ROW RANGE, not a whole column, and the read
-    //    position lives on the reader. That is what makes a decode
-    //    interruptible: the sliced driver calls these in chunks and yields
-    //    between them, so no single task blocks a frame.
+    // Bulk readers.
     uvarints(out: Int32Array | Float64Array, from: number, to: number): void {
         const b = this.b;
         let p = this.p;
@@ -260,8 +198,8 @@ class WireReader {
     }
 
     // Running sums of zigzag deltas, straight into the output column. The
-    // accumulator is the previous value already written, so a range resumes
-    // exactly where the last one stopped.
+    // accumulator is the value already written, so a range resumes exactly
+    // where the last one stopped.
     varintSums(out: Float64Array, from: number, to: number): void {
         const b = this.b;
         let p = this.p, acc = from === 0 ? 0 : out[from - 1];
@@ -347,7 +285,7 @@ class WireReader {
     }
 }
 
-/** Walks [0,n) in STEP-sized ranges, yielding after each. */
+/* */
 function* chunked(n: number, work: (from: number, to: number) => void): Task<void> {
     for (let i = 0; i < n; ) {
         const to = Math.min(i + STEP, n);
@@ -427,17 +365,7 @@ export function bitAt(c: Columns, name: string, i: number): boolean {
     return bits ? (bits[i >> 3] & (1 << (i & 7))) !== 0 : false;
 }
 
-/**
- * Finds the row holding `id` by binary search, or -1.
- *
- * Intervals carry the page's COLUMNS as their payload — ONE shared reference,
- * not a per-row object. That is deliberate: a {columns, row} pair per row is
- * another allocation per event, and at 100k events allocation rate IS latency
- * (the GC scavenges it triggers were landing inside decode chunks as 4-7 ms
- * pauses). Recovering the row on hover costs ~17 comparisons instead, once.
- *
- * Requires the id column to ascend, which delta encoding already guarantees.
- */
+/* */
 export function rowOfId(c: Columns, idColumn: string, id: number): number {
     const ids = c.u[idColumn];
     if (!ids) return -1;

@@ -1,10 +1,4 @@
-// Tests for the deterministic procedural noise (hash -> value noise -> fbm, 2D
-// and 3D).
-//
-// Asserts: determinism (same input -> identical output), the documented [0,1)
-// output range, byte-equivalence of the hash to specific known constants (so a
-// silent change to the hash math is caught), 2D lattice tiling, and that fbm
-// accumulates octaves (more octaves change the result; output stays normalised).
+// Tests for the deterministic procedural noise (hash -> value noise -> fbm, 2D and 3D).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -30,7 +24,6 @@ test('valueNoise / fbm are deterministic', () => {
 // ---- Known hash constants (byte-equivalence to the source math) ------------
 
 test('hash2 matches specific known constants', () => {
-  // All-zero inputs hash to exactly 0.
   assert.equal(hash2(0, 0, 16, 0), 0);
   assert.equal(hash2(1, 2, 16, 7), 0.08902817570814588);
   assert.equal(hash2(3, 5, 8, 1), 0.5579161333287871);

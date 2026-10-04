@@ -1,21 +1,6 @@
-/**
- * The pure half of <data-table>: column resolution, sorting, faceting and
- * filter selection. No DOM — unit-tested under node.
- *
- * The element is a thin renderer over these functions, so the parts that
- * are easy to get subtly wrong (sort stability, where nullish values land,
- * whether a facet chip counts before or after the query) are testable
- * without a browser.
- */
+/** The pure half of <data-table>: column resolution, sorting, faceting and filter selection. */
 
-/**
- * One row is any object the consumer hands over; columns read it.
- *
- * Deliberately `object`, NOT `Record<string, unknown>`: a real consumer's
- * row is a declared interface (`ActivityEntry`, `RunState`), and a declared
- * interface has no index signature, so the Record constraint rejects every
- * type anyone actually has. Key lookup is narrowed internally instead.
- */
+/** One row is any object the consumer hands over; columns read it. */
 export type DataRow = object;
 
 /** Reads `row[key]` without demanding an index signature of the caller. */
@@ -32,17 +17,8 @@ export interface SortState {
   dir: SortDir;
 }
 
-/**
- * A column declaration. `key` identifies it (and, by default, reads the
- * row's property of that name); everything else is optional.
- *
- * The split between `value` and `text` is deliberate. `value` is what the
- * column SORTS and COMPARES by — a number, a Date, a string. `text` is what
- * the column SEARCHES by, and defaults to the rendered string. A duration
- * column formatted "1.2s" sorts by its millisecond number and searches by
- * the text the operator can actually see; conflating them gives you a table
- * that sorts "10s" before "9s".
- */
+/** A column declaration. `key` identifies it (and, by default, reads the row's
+ * property of that name); everything else is optional. */
 export interface DataColumn<Row extends DataRow = DataRow> {
   key: string;
   label: string;
@@ -72,15 +48,7 @@ export function textOf<Row extends DataRow>(row: Row, col: DataColumn<Row>): str
   return v == null ? '' : String(v);
 }
 
-/**
- * Three-way compare for cell values.
- *
- * NULLISH ALWAYS SORTS LAST, in both directions — it is absence, not a
- * value, and a column of mostly-empty cells whose blanks march to the top
- * on every descending sort is useless. Numbers compare numerically, Dates
- * chronologically, everything else as locale strings (numeric-aware, so
- * "run 10" follows "run 9").
- */
+/* */
 export function isBlank(v: unknown): boolean {
   return v == null || v === '';
 }
@@ -109,17 +77,13 @@ export function sortRows<Row extends DataRow>(
   const col = columns.find((c) => c.key === sort.key);
   if (!col) return [...rows];
   const sign = sort.dir === 'desc' ? -1 : 1;
-  // Decorate with the original index so ties resolve to input order —
+  // Decorate with the index so ties resolve to input order —
   // Array.prototype.sort is spec-stable, but the index also lets the
   // descending case keep input order among ties instead of reversing it.
   return rows
     .map((row, i) => ({ row, i, v: valueOf(row, col) }))
     .sort((x, y) => {
-      // Blanks are handled OUTSIDE the direction sign. Folding them into
-      // the signed compare is the obvious implementation and it is wrong:
-      // it flips "absent sorts last" into "absent sorts first" on every
-      // descending sort, so a mostly-empty column answers a click with a
-      // screen of blank rows.
+      // Blanks are handled OUTSIDE the direction sign.
       const xb = isBlank(x.v);
       const yb = isBlank(y.v);
       if (xb || yb) return xb && yb ? x.i - y.i : xb ? 1 : -1;
@@ -129,27 +93,14 @@ export function sortRows<Row extends DataRow>(
     .map((d) => d.row);
 }
 
-/**
- * The header-click cycle: unsorted → ascending → descending → unsorted.
- * Returning to unsorted matters — it is how an operator gets back to the
- * order the producer chose (usually "newest first"), which no combination
- * of asc/desc reproduces.
- */
+/** The header-click cycle: unsorted → ascending → descending → unsorted. */
 export function nextSortState(current: SortState | null, key: string): SortState | null {
   if (!current || current.key !== key) return { key, dir: 'asc' };
   if (current.dir === 'asc') return { key, dir: 'desc' };
   return null;
 }
 
-/**
- * One group of facet chips: a named way of bucketing rows.
- *
- * Groups are plural because one axis is rarely enough — an event feed
- * wants severity AND subsystem, a runs table wants status, and a chip row
- * that mixes unrelated axes into one namespace cannot say which is which.
- * `of` returns the bucket for a row, or nullish/'' for "not in this group"
- * (such a row is never counted and never hidden by it).
- */
+/** One group of facet chips: a named way of bucketing rows. */
 export interface FacetGroupSpec<Row extends DataRow = DataRow> {
   key: string;
   of: (row: Row) => string | null | undefined;
@@ -163,11 +114,7 @@ export interface TableFilter<Row extends DataRow = DataRow> {
   query?: string;
   hidden?: HiddenFacets;
   facets?: readonly FacetGroupSpec<Row>[];
-  /**
-   * Overrides what the query searches. Default: every searchable column's
-   * text. Set it when rows carry searchable content no column renders —
-   * an event's `fields` values, say — so typing a repo slug still narrows.
-   */
+  /** Overrides what the query searches. Default: every searchable column's text. */
   searchText?: (row: Row) => string;
 }
 
@@ -192,11 +139,7 @@ function haystackOf<Row extends DataRow>(row: Row, columns: readonly DataColumn<
   return parts.join(' ').toLowerCase();
 }
 
-/**
- * Every whitespace-separated term must match somewhere (AND). That is what
- * makes a two-word query useful — "manager failed" should mean both words,
- * not the union, which on a busy table is indistinguishable from no filter.
- */
+/** Every whitespace-separated term must match somewhere (AND). */
 export function matchesQuery(haystack: string, query: string): boolean {
   const terms = String(query ?? '')
     .toLowerCase()
@@ -205,26 +148,13 @@ export function matchesQuery(haystack: string, query: string): boolean {
   return terms.every((t) => haystack.includes(t));
 }
 
-/**
- * Applies the filter and computes the facet counts.
+/** Applies the filter and computes the facet counts.
  *
- * FACET COUNTS COVER EVERY SUPPLIED ROW, not the surviving ones: a chip
- * reading "skipped ×0" the moment you hide skipped rows is useless, because
- * the number you need in order to decide whether to unhide is exactly the
- * one that just went to zero. The query narrows what is SHOWN; it never
- * rewrites the chips out from under the reader.
+ * FACET COUNTS COVER EVERY SUPPLIED ROW, not the surviving ones: a chip reading "skipped ×0" the moment you hide skipped rows is useless, because the number you need to decide whether to unhide is exactly the one that went to zero. The query narrows what is SHOWN; it never rewrites the chips out from under the reader.
  *
- * Row order is PRESERVED — sorting is a separate step (sortRows), so a
- * producer's meaningful default order (usually newest-first) survives
- * filtering untouched.
+ * Row order is PRESERVED — sorting is a separate step (sortRows), so a producer's meaningful default order (usually newest-first) survives filtering untouched.
  *
- * The caller's cap (a server-side `?max=`, say) is upstream of all of this
- * and is NOT this component's problem to solve — but it is the consumer's:
- * if the producer caps a page BEFORE applying the same exclusions, a burst
- * of unwanted rows fills the page, this filter empties it, and the table
- * reports "nothing here" while the rows the operator wants sit just past
- * the window. Filter first, cap second, on whichever side owns the data.
- */
+ * The caller's cap (a server-side `?max=`, say) is upstream of all of this and is NOT this component's problem to solve — but it is the consumer's: if the producer caps a page BEFORE applying the same exclusions, a burst of unwanted rows fills the page, this filter empties it, and the table reports "nothing here" while the rows. Filter first, cap second, on whichever side owns the data. */
 export function selectRows<Row extends DataRow>(
   rows: readonly Row[] | null | undefined,
   columns: readonly DataColumn<Row>[],
@@ -247,8 +177,7 @@ export function selectRows<Row extends DataRow>(
       counts?.set(bucket, (counts.get(bucket) ?? 0) + 1);
       if (hidden.get(g.key)?.has(bucket)) excluded = true;
     }
-    // Counting continues across every group even once excluded — a chip
-    // must report what it hides, including rows another chip also hides.
+    // Counting continues across every group even once excluded — a chip must report what it hides.
     if (excluded) continue;
     if (query.trim() !== '' && !matchesQuery(haystackOf(row, columns, filter.searchText), query)) continue;
     shown.push(row);

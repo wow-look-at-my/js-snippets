@@ -1,39 +1,4 @@
-/**
- * Custom <select> dropdown replacement — for browsers whose native dropdown
- * is broken or unusable.
- *
- * The motivating case is Tesla's in-car browser: it renders a native
- * `<select>` popup in a separate OS-level window that the page compositor
- * never captures, so the option list is invisible and every dropdown is
- * unusable. This module replaces a `<select>` with an **in-page popup
- * listbox** built from ordinary DOM and appended to `<body>` — no native
- * dropdown is ever opened, so nothing spawns the uncapturable window.
- *
- * The original `<select>` stays in the DOM as the model: it is hidden but
- * keeps its value, and choosing an option sets that value and dispatches
- * `input` + `change`, so any existing listener (or framework, e.g. lil-gui)
- * runs unchanged. Options are read live at open time, so a select whose
- * `<option>`s are repopulated later still works.
- *
- * Two ways to use it:
- *
- *   // 1. Upgrade existing native <select>s (gate on a broken-dropdown UA):
- *   import { installSelectFallback } from '.../ui/combobox.js';
- *   installSelectFallback();              // Tesla UA by default; force with { force: true }
- *
- *   // 2. Declarative custom element (always a custom dropdown):
- *   import '.../ui/combobox.js';          // registers <combo-box>
- *   //  <combo-box><select>…</select></combo-box>
- *
- * Rendered in the LIGHT DOM and injects its own themeable stylesheet once —
- * drop the module in, no CSS file to ship (the styles compile into this
- * module from combobox.css as a text import). Theme by overriding the
- * `--cb-*` custom properties (see COMBOBOX_CSS).
- *
- * The pure half — the activation gate, option navigation, type-ahead, and
- * popup placement math — lives in ui/combobox-logic.js and is re-exported
- * here, so one import is enough.
- */
+/** Custom <select> dropdown replacement — for browsers whose native dropdown is broken or unusable. */
 
 import CSS_TEXT from './combobox.css';
 import {
@@ -51,13 +16,7 @@ export * from './combobox-logic.ts';
 
 // -- Theme ---------------------------------------------------------------------
 
-/**
- * The component's self-contained stylesheet (the combobox.css source). Every
- * colour reads a `--cb-*` custom property with an inline fallback, so it
- * works unthemed and retints when you set those on `:root`, a host, or any
- * ancestor. The popup is appended to `<body>`, so its rules are global (not
- * scoped to a host).
- */
+/** The component's self-contained stylesheet (the combobox.css source). */
 export const COMBOBOX_CSS: string = CSS_TEXT;
 
 const STYLE_ID = 'js-snippets-combobox-styles';
@@ -77,13 +36,7 @@ export function injectStyles(): void {
 const UPGRADED = new WeakSet<HTMLSelectElement>();
 
 export interface UpgradeOptions {
-  /**
-   * Return an existing element to reuse as the trigger (and leave the value
-   * display to the host) instead of generating one. Lets the select's
-   * surrounding widget keep painting the value — e.g. a lil-gui option
-   * controller, where you would return the `.widget` and its `.display`
-   * stays in sync. Return null/undefined to generate a trigger (default).
-   */
+  /** Return an existing element to reuse as the trigger (and leave the value display to the host) instead. */
   existingTrigger?: (select: HTMLSelectElement) => HTMLElement | null | undefined;
 }
 
@@ -105,7 +58,7 @@ export function upgradeSelect(select: HTMLSelectElement, opts: UpgradeOptions = 
   let syncLabel: () => void = () => {};
 
   if (reuse) {
-    // Host already paints the value (e.g. lil-gui's .display); just adopt it.
+    // Host already paints the value (e.g. lil-gui's .display); adopt it.
     trigger = reuse;
     trigger.classList.add('cb-trigger', 'cb-trigger-host');
   } else {
@@ -169,7 +122,6 @@ export function openPopup(select: HTMLSelectElement, trigger: HTMLElement, syncL
     if (cs.fontFamily) popup.style.fontFamily = cs.fontFamily;
     if (cs.fontSize) popup.style.fontSize = cs.fontSize;
   } catch {
-    /* getComputedStyle can throw on detached nodes */
   }
 
   const items: HTMLElement[] = [];
@@ -341,11 +293,8 @@ export function installSelectFallback(opts: FallbackOptions = {}): () => void {
 
 // -- Declarative custom element ----------------------------------------------------
 
-/**
- * `<combo-box><select>…</select></combo-box>` — upgrades its child `<select>`
- * to the in-page popup on connect, unconditionally (no UA gate). Exported so
- * you can register under a different tag: `customElements.define('x', ComboBox)`.
- */
+/** `<combo-box><select>…</select></combo-box>` — upgrades its child
+ * `<select>` to the in-page popup on connect, unconditionally (no UA gate). */
 export class ComboBox extends HTMLElement {
   connectedCallback(): void {
     const select = this.querySelector('select');

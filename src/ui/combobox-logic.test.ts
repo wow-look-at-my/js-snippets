@@ -1,9 +1,4 @@
-// Tests for the pure half of the combobox (ui/combobox-logic.ts): the
-// activation gate (UA matching + force overrides), option-text extraction,
-// enabled-option navigation, type-ahead matching, and the popup placement
-// math. The DOM half (ui/combobox.ts — the popup, <combo-box>, select
-// upgrading) needs a real browser and is not node-testable — see the Testing
-// section in CLAUDE.md.
+// Tests for the pure half of the combobox (ui/combobox-logic.ts): the activation gate (UA matching + force overrides).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -54,8 +49,7 @@ test('hasForceParam accepts only a real combobox=force query param', () => {
 
 test('shouldEnable: force bypasses the gate; the default gate is off under node', () => {
   assert.equal(shouldEnable({ force: true }), true);
-  // Node's navigator.userAgent is not a Tesla, there is no location, and no
-  // force override is set — the fallback must stay off.
+  // Node's navigator.userAgent is not a Tesla, there is no location.
   assert.equal(shouldEnable(), false);
   assert.equal(shouldEnable({}), false);
 });
@@ -188,11 +182,11 @@ test('placement: opens below the trigger when there is room', () => {
     { width: 180, height: 200 },
   );
   assert.equal(p.openUp, false);
-  assert.equal(p.top, 132); // trigger bottom + 2
+  assert.equal(p.top, 132);
   assert.equal(p.left, 50);
-  assert.equal(p.maxHeight, 320); // plenty of room -> the 320 cap
+  assert.equal(p.maxHeight, 320);
   assert.equal(p.minWidth, 150);
-  assert.equal(p.maxWidth, 200); // max(trigger width, 200), viewport not the limit
+  assert.equal(p.maxWidth, 200);
 });
 
 test('placement: flips above when below is short and above is roomier', () => {
@@ -202,7 +196,7 @@ test('placement: flips above when below is short and above is roomier', () => {
     { width: 180, height: 300 },
   );
   assert.equal(p.openUp, true);
-  assert.equal(p.top, 298); // 600 - 2 - 300: popup bottom lands 2px above the trigger
+  assert.equal(p.top, 298);
   assert.ok(p.top + 300 <= 600, 'popup sits fully above the trigger');
   assert.ok(p.top >= 4);
 });
@@ -215,7 +209,7 @@ test('placement: stays below when above is even shorter than below', () => {
   );
   assert.equal(p.openUp, false);
   assert.equal(p.top, 82);
-  assert.equal(p.maxHeight, 112); // spaceBelow - 8
+  assert.equal(p.maxHeight, 112);
 });
 
 test('placement: maxHeight never drops below 80 in a cramped viewport', () => {
@@ -233,7 +227,6 @@ test('placement: clamps the popup inside the right viewport edge', () => {
     { width: 1000, height: 600 },
     { width: 250, height: 100 },
   );
-  // Effective width clamps to maxWidth = 200; right edge pinned to vw - 4.
   assert.equal(p.maxWidth, 200);
   assert.equal(p.left, 796);
 });
@@ -244,7 +237,7 @@ test('placement: floors left at 4; maxWidth stops at the trigger width', () => {
     { width: 320, height: 600 },
     { width: 400, height: 100 },
   );
-  assert.equal(p.maxWidth, 300); // max(width, 200) already under the vw - 16 cap
+  assert.equal(p.maxWidth, 300);
   assert.equal(p.left, 4);
 });
 
@@ -254,7 +247,7 @@ test('placement: the viewport caps maxWidth for an over-wide trigger', () => {
     { width: 320, height: 600 },
     { width: 400, height: 100 },
   );
-  assert.equal(p.maxWidth, 304); // vw - 16
+  assert.equal(p.maxWidth, 304);
   assert.equal(p.minWidth, 400); // min-width wins over max-width, as in CSS
   assert.equal(p.left, 4);
 });

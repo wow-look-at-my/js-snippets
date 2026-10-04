@@ -1,18 +1,11 @@
 // Texture that tracks an HTMLVideoElement (the raw-GL equivalent of
-// three.js's VideoTexture). Call `update()` once per rendered frame: it
-// uploads the video's current frame when one is available, using
-// `requestVideoFrameCallback` (when the browser has it) to skip redundant
-// uploads between video frames.
+// three.js's VideoTexture).
 
 /** Options for `createVideoTexture`. */
 export interface VideoTextureOptions {
-  /**
-   * Store as `SRGB8_ALPHA8` so sampling returns linear values (default true —
-   * right for color video). Pass false for data-encoded video (e.g. depth
-   * visualizations) to sample the raw `RGBA8` bytes.
-   */
+  /** Store as `SRGB8_ALPHA8` so sampling returns linear values (default true — right for color video). */
   srgb?: boolean;
-  /** Flip rows on upload so v=0 is the bottom of the frame (default true, matching the three.js convention). */
+  /** Flip rows on upload so v=0 is the bottom of the frame (default true, matching those.js convention). */
   flipY?: boolean;
 }
 
@@ -20,12 +13,7 @@ export interface VideoTextureOptions {
 export interface VideoTexture {
   texture: WebGLTexture;
   video: HTMLVideoElement;
-  /**
-   * Upload the current video frame if a new one is available and the video
-   * has data (`readyState >= HAVE_CURRENT_DATA`). Returns true when an upload
-   * happened. Without `requestVideoFrameCallback` support every call with
-   * data uploads (the pre-rVFC three.js behavior).
-   */
+  /** Upload the current video frame if a new one is available and the video has data. */
   update(): boolean;
   dispose(): void;
 }
@@ -52,8 +40,7 @@ export function createVideoTexture(
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   gl.bindTexture(gl.TEXTURE_2D, null);
 
-  // With rVFC, `dirty` marks "a new frame was presented"; without it we treat
-  // every update() as dirty (upload each render).
+  // With rVFC, `dirty` marks "a new frame was presented".
   const hasRvfc = typeof video.requestVideoFrameCallback === 'function';
   let dirty = true;
   let rvfcHandle = 0;

@@ -1,45 +1,4 @@
-/**
- * <activity-feed> — a filterable activity/event log table.
- *
- * One element = one feed of timestamped, kinded events ("what has this
- * service been doing?"). It derives each row's severity and family from its
- * kind string and presents a query box plus severity (and optionally
- * family) chips.
- *
- *   import 'https://…/js-snippets/ui/activity-feed.js'; // registers <activity-feed>
- *
- *   <activity-feed empty-text="Nothing yet." storage-key="myapp.activity">
- *     <p>loading activity…</p>          <!-- shown until the module upgrades -->
- *   </activity-feed>
- *
- *   const feed = document.querySelector('activity-feed');
- *   feed.entries = [{ time: '2026-07-31T10:00:00Z', kind: 'manager.inbox_dropped',
- *                     message: 'gha-coordinator: inbox full…' }];
- *
- * IT IS A <data-table> UNDERNEATH. Rows, chips, counts, the two empty
- * states and the filter plumbing are that component's; this file supplies
- * only what is specific to an event feed — three columns, the kind badge,
- * and the severity/family derivation. Nothing about tables is implemented
- * twice, which is the point: drift between two hand-rolled tables is
- * invisible until one of them is quietly wrong.
- *
- * COLOR IS DERIVED, NEVER ENUMERATED. Severity comes from the action half
- * of the kind ("manager.inbox_dropped" → bad) and family from the namespace
- * half (→ a stable per-family dot hue), so a kind the producer adds
- * tomorrow is styled the first time it appears. The alternative — a
- * stylesheet listing known kinds — drifts silently: everything unlisted
- * shares one grey, and a feed of 77 kinds reads as three colors.
- *
- * Entry text is rendered as TEXT NODES, never innerHTML, so arbitrary
- * producer strings can never inject markup. A consumer that wants richer
- * messages (linkified issue refs, say) sets `messageRenderer` to a function
- * returning a Node — it is called per row and its result is appended as-is,
- * so the consumer owns that DOM's safety.
- *
- * Theme via --activity-* custom properties (see activity-feed.css). The
- * pure logic lives in ui/activity-feed-math.ts (node-tested) and is
- * re-exported here so one import serves both.
- */
+/** <activity-feed> — a filterable activity/event log table. */
 
 import ACTIVITY_CSS from './activity-feed.css';
 import { DataTableElement, type FacetGroup, type TableColumn } from './data-table.ts';
@@ -73,12 +32,7 @@ const DEFAULT_EMPTY = 'Nothing yet.';
 const SEV_GROUP = 'severity';
 const FAM_GROUP = 'family';
 
-/**
- * A stable hue per family name (0..359). A tiny FNV-ish string hash: the
- * same family is always the same color across instances and reloads, and an
- * unseen family gets a usable color immediately rather than falling off an
- * allowlist. Hues are quantized to 24 steps so neighbours stay separable.
- */
+/* */
 export function familyHue(family: string): number {
   let h = 2166136261;
   for (let i = 0; i < family.length; i++) {
@@ -107,10 +61,7 @@ export class ActivityFeedElement extends HTMLElement {
 
     this.table = document.createElement('data-table') as DataTableElement<ActivityEntry>;
     this.table.searchable = true;
-    // The feed's own sheet rides INTO the table's shadow root: the kind
-    // badge and the row severity rule are rendered in there, out of reach
-    // of any outer stylesheet. Applied after the table's own sheet, so
-    // where the two overlap the feed's look wins.
+    // The feed's own sheet rides INTO the table's shadow root: the kind badge and the row severity rule are rendered in there.
     this.table.styleText = ACTIVITY_CSS;
     this.table.filteredEmptyText = (total) => `No entries match the filter (${total} hidden).`;
     // The feed owns persistence: its stored shape predates the generic
@@ -259,18 +210,16 @@ export class ActivityFeedElement extends HTMLElement {
     this.table.setAttribute('placeholder', this.getAttribute('placeholder') ?? 'filter activity…');
   }
 
-  /** The three columns, rebuilt whenever a renderer or label changes. */
+  /** Those columns, rebuilt whenever a renderer or label changes. */
   private applyColumns(): void {
     const cols: TableColumn<ActivityEntry>[] = [
       {
         key: 'time',
         label: this._columns.time,
         className: 'time',
-        // A feed is a chronology in the producer's order; offering to sort
-        // it by a rendered locale string would be worse than not sorting.
+        // A feed is a chronology in the producer's order.
         sortable: false,
-        // The query never searched the timestamp and shouldn't start:
-        // "2026" would match every row on the page.
+        // The query never searched the timestamp and shouldn't start: "2026" would match every row on the page.
         searchable: false,
         render: (e) => (this._timeFormatter ? this._timeFormatter(e.time, e) : formatTimestamp(e.time)),
       },
@@ -300,8 +249,7 @@ export class ActivityFeedElement extends HTMLElement {
       },
     ];
     this.table.columns = cols;
-    // The haystack is the kind, the message and every field VALUE — typing
-    // a family, a status word or a repo slug all narrow the same box.
+    // The haystack is the kind, the message and every field VALUE.
     this.table.searchText = (e) => [e.kind ?? '', messageOf(e), ...Object.values(e.fields ?? {})].join(' ');
     this.table.rowClass = (e) => `sev-${severityOf(e.kind)}`;
   }
@@ -333,7 +281,6 @@ export class ActivityFeedElement extends HTMLElement {
     try {
       this.filter = parseStoredFilter(globalThis.localStorage?.getItem(key));
     } catch {
-      /* storage unavailable (private mode, sandboxed iframe): no persistence */
     }
   }
 
@@ -343,7 +290,6 @@ export class ActivityFeedElement extends HTMLElement {
     try {
       globalThis.localStorage?.setItem(key, JSON.stringify(this.filter));
     } catch {
-      /* storage unavailable: the choice just doesn't persist */
     }
   }
 }

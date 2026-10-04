@@ -1,8 +1,4 @@
-// Orbit + first-person look cameras -- the drag controllers almost every 3D
-// scratchpad reimplements (and the hand-rolled look ones keep shipping with an
-// inverted Y axis). The pure helpers (`orbitEye`, `dirFromAzEl`,
-// `applyLookDrag`) have no DOM dependency; `createOrbitController` /
-// `createLookController` wire pointer (and wheel) events onto an element.
+// Orbit + first-person look cameras.
 
 import { lookAt } from '../math/mat4.ts';
 import type { Vec3 } from '../math/vec3.ts';
@@ -22,11 +18,7 @@ export function orbitEye(target: Vec3, azimuth: number, elevation: number, dista
   ];
 }
 
-/**
- * Unit direction from azimuth/elevation (the `orbitEye` offset at distance 1,
- * relative to the target). Handy for a sun/light direction:
- * `[cosEl*sinAz, sinEl, cosEl*cosAz]`.
- */
+/*Handy for a sun/light direction: `[cosEl*sinAz, sinEl, cosEl*cosAz]`. */
 export function dirFromAzEl(azimuth: number, elevation: number): Vec3 {
   const ce = Math.cos(elevation), se = Math.sin(elevation);
   return [ce * Math.sin(azimuth), se, ce * Math.cos(azimuth)];
@@ -34,23 +26,23 @@ export function dirFromAzEl(azimuth: number, elevation: number): Vec3 {
 
 /** Options for `createOrbitController`. */
 export interface OrbitControllerOptions {
-  /** Initial azimuth in radians (default 0.7). */
+  /* */
   azimuth?: number;
-  /** Initial elevation in radians (default 0.5). */
+  /* */
   elevation?: number;
-  /** Initial distance from the target (default 6). */
+  /* */
   distance?: number;
-  /** Look-at target (default [0, 0, 0]). */
+  /* */
   target?: Vec3;
-  /** Radians of rotation per pixel dragged (default 0.006). */
+  /* */
   rotateSpeed?: number;
-  /** Minimum / maximum zoom distance (defaults 0.1 / Infinity). */
+  /* */
   minDistance?: number;
   maxDistance?: number;
-  /** Elevation clamp in radians (defaults 0.05 / 1.5). */
+  /* */
   minElevation?: number;
   maxElevation?: number;
-  /** Wheel zoom strength; distance *= exp(deltaPixels * zoomSpeed) (default 0.0015). */
+  /* */
   zoomSpeed?: number;
 }
 
@@ -117,7 +109,6 @@ export function createOrbitController(
   };
   const onWheel = (e: WheelEvent) => {
     e.preventDefault();
-    // Normalise deltaMode: 0 = pixels, 1 = lines (~16px), 2 = pages (~viewport).
     const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? canvas.clientHeight || 800 : 1;
     controller.distance = clamp(controller.distance * Math.exp(e.deltaY * unit * zoomSpeed), minDistance, maxDistance);
   };
@@ -153,7 +144,7 @@ export function createOrbitController(
 
 /** First-person look camera state, in degrees (see `applyLookDrag`). */
 export interface LookState {
-  /** Yaw in degrees, wrapped to (-180, 180]. 0 looks along +Z (`dirFromAzEl(0, 0)`). */
+  /* */
   azDeg: number;
   /** Pitch in degrees above the horizon (positive = looking up), clamped. */
   elDeg: number;
@@ -161,45 +152,23 @@ export interface LookState {
 
 /** Options for `applyLookDrag` (and inherited by `createLookController`). */
 export interface LookDragOptions {
-  /** Degrees of rotation per pixel dragged (default 0.25). */
+  /* */
   sensDegPerPx?: number;
   /** Flip the pitch axis: pointer up = look DOWN, flight-sim style (default false). */
   invertY?: boolean;
-  /** Elevation clamp in degrees (defaults -89 / +89, just short of the poles). */
+  /* */
   minElDeg?: number;
   maxElDeg?: number;
 }
 
-/** Wrap an angle in degrees to (-180, 180]. */
+/* */
 function wrapAzDeg(a: number): number {
-  const w = ((a % 360) + 360) % 360; // [0, 360)
+  const w = ((a % 360) + 360) % 360;
   return w > 180 ? w - 360 : w;
 }
 
-/**
- * Advance a first-person look camera by a pointer drag of `(dxPx, dyPx)` CSS
- * pixels. Returns a NEW state; the input is not mutated.
- *
- * THE DRAG CONVENTION -- take the signs from here instead of re-deriving them
- * (hand-rolled look cameras keep getting them wrong):
- *
- * - Pointer RIGHT (`dxPx > 0`) => the view yaws RIGHT, so azimuth DECREASES:
- *   `azDeg' = azDeg - dxPx * sens`. Why the minus: the view direction is
- *   `dirFromAzEl` = `[cosEl*sinAz, sinEl, cosEl*cosAz]`, so growing azimuth
- *   rotates forward from +Z toward +X; but a camera looking along `forward`
- *   with world up +Y has screen-right = `cross(forward, up)` (the `lookAt`
- *   side vector `x = cross(up, backward)` = `cross(forward, up)`), which at
- *   az = 0 is -X. Indeed d(forward)/d(az) . cross(forward, up) = -1 at every
- *   azimuth -- growing azimuth always yaws LEFT, so pointer-right subtracts.
- * - Pointer DOWN (`dyPx > 0`; screen Y grows downward) => the view pitches
- *   DOWN: `elDeg' = elDeg - dyPx * sens`. Pointer up = look up. Pass
- *   `invertY: true` for the flipped flight-sim taste.
- *
- * Elevation is clamped to `[minElDeg, maxElDeg]` (default +/-89 so the view
- * never hits the poles); azimuth wraps to (-180, 180]. Feed the result to
- * `dirFromAzEl(azDeg * PI/180, elDeg * PI/180)` for the view direction --
- * pointer-right then reads as look-right on screen.
- */
+/** Advance a first-person look camera by a pointer drag of `(dxPx, dyPx)` CSS
+ * pixels. Returns a NEW state; the input is not mutated. */
 export function applyLookDrag(
   state: LookState,
   dxPx: number,
@@ -220,9 +189,9 @@ export function applyLookDrag(
 
 /** Options for `createLookController`. */
 export interface LookControllerOptions extends LookDragOptions {
-  /** Initial yaw in degrees (default 0). */
+  /* */
   azDeg?: number;
-  /** Initial pitch in degrees (default 0). */
+  /* */
   elDeg?: number;
   /** Called with the new state after every drag update. */
   onChange?: (state: LookState) => void;

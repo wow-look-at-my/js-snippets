@@ -15,17 +15,11 @@ import {
 import type { WireSchema } from './timeline-wire.ts';
 
 // ONE FIXTURE, BOTH LANGUAGES. ../../timelinewire/testdata/golden-v1.b64 is
-// written by the Go ENCODER in this repo (timelinewire/wire_test.go asserts it
-// still emits exactly these bytes) and decoded here. That single file is what
-// holds the two halves of the format together — there is no second
-// implementation of the layout anywhere, in this repo or a consumer's, so
-// there is nothing to keep in step by hand.
+// written by the Go ENCODER in this repo.
 const GOLDEN_B64 = readFileSync(
   new URL('../../timelinewire/testdata/golden-v1.b64', import.meta.url), 'utf8').trim();
 
-// The schema the golden page was encoded with. It lives in the TEST, not the
-// module: the module decodes a LAYOUT and the column names belong to whoever
-// produced the payload, so no producer's vocabulary reaches the decoder.
+// The schema the golden page was encoded with.
 const GOLDEN: WireSchema = {
   magic: 'TLC1',
   deltaU: ['id'],
@@ -70,9 +64,7 @@ test('non-ASCII survives the dictionary', () => {
 });
 
 test('a column no row used reads empty for every row', () => {
-  // The encoder writes such a column as a one-entry dictionary and NO index
-  // run — the compression that makes the format small on sparse windows. Every
-  // row must still answer, and answer "".
+  // The encoder writes such a column as a one-entry dictionary and NO index run — the compression that makes the format small.
   const { c } = decodePage(golden(), GOLDEN);
   assert.equal(c.s.detail.idx, null, 'detail should carry no index run');
   for (let i = 0; i < c.n; i++) assert.equal(stringAt(c, 'detail', i), '');
@@ -117,8 +109,7 @@ test('a truncated or corrupt payload throws rather than decoding garbage', () =>
   badMagic[0] = 0x58; // "X"
   assert.throws(() => decodePage(badMagic, GOLDEN), /bad magic/);
 
-  // Trailing bytes mean the reader and the writer disagree about the layout,
-  // even though everything up to here parsed.
+  // Trailing bytes mean the reader and the writer disagree about the layout, even though everything up to here parsed.
   const extra = new Uint8Array(good.length + 1);
   extra.set(good);
   assert.throws(() => decodePage(extra, GOLDEN), /trailing bytes/);
@@ -145,8 +136,7 @@ test('decodePageGen yields, so a page can be spread across frames', () => {
 });
 
 test('runSliced completes a task and reports each chunk it ran', async () => {
-  // Under node there are no frames, so this checks the contract that matters
-  // off-browser: every chunk is measured and the task runs to completion.
+  // Under node there are no frames, so this checks the contract that matters off-browser.
   const slices: number[] = [];
   const page = await runSliced(decodePageGen(golden(), GOLDEN), (ms) => slices.push(ms));
   assert.equal(page.c.n, 3);

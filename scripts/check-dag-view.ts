@@ -1,32 +1,11 @@
 // Browser check for <dag-view> on the REAL element.
-//
-// The layout math under it is node-tested; NONE of what this file checks
-// can be. Whether the element upgrades, whether the canvas actually paints
-// pixels, whether a hover fades the graph, whether a click selects, whether
-// the arrow keys walk the edges, whether the toolbar moves the viewport --
-// every one of those needs a browser, and a green `pnpm test` says nothing
-// about any of them.
-//
-//   pnpm build:showcase
-//   NODE_PATH=/opt/node22/lib/node_modules node scripts/check-dag-view.ts
-//
-// Node runs this .ts directly by stripping the types (22.18+, on by default).
-// The types are not decoration: `ts0 build` type-checks scripts/ too, so an
-// element API this file misuses fails the build instead of failing here at
-// 11pm. That is what DagViewElement below is imported for.
-//
-// Writes a screenshot of each graph next to the built gallery unless
-// --no-shots is passed. Exits non-zero on the first failed check or on any
-// page error, so it can gate a change rather than merely describe one.
 
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { resolve, dirname, join } from 'node:path';
 import type { DagViewElement } from '../src/ui/dag-view.ts';
 
-// The slice of playwright this file drives. Playwright is preinstalled
-// globally rather than depended on here, so its own types are not
-// resolvable -- these describe what is called, and nothing else.
+// The slice of playwright this file drives.
 interface ElementHandle {
 	screenshot(options: { path: string }): Promise<unknown>;
 }
@@ -55,15 +34,13 @@ interface Browser {
 	close(): Promise<void>;
 }
 
-// Node's ESM resolver ignores NODE_PATH, and playwright comes from the
-// global install, so it is pulled through CJS resolution, which honours it.
-// A bare import throws ERR_MODULE_NOT_FOUND.
+// Node's ESM resolver ignores NODE_PATH, and playwright comes from the global
+// install, so it is pulled through CJS resolution, which honours it.
 const { chromium } = createRequire(import.meta.url)('playwright') as {
 	chromium: { launch(options: { args?: string[] }): Promise<Browser> };
 };
 
-// Flags are stripped so the positional path stays positional -- passing
-// `--readme` alone must not be read as "the page lives at ./--readme".
+// Flags are stripped so the positional path stays positional.
 const args = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 const file = args[0] ?? 'showcase/dist/index.html';
 const shots = !process.argv.includes('--no-shots');
@@ -118,8 +95,8 @@ for (const u of upgrade) {
 	check(`#${u.id} upgraded with a sized canvas`, u.upgraded && u.hasCanvas && u.w > 0 && u.h > 0, JSON.stringify(u));
 }
 
-// -- The canvas actually painted -------------------------------------------------
-// A component can upgrade, size its canvas and still draw nothing. The only
+// -- The canvas painted ------------------------------------------------- A
+// component can upgrade, size its canvas and still draw nothing. The only
 // proof is pixels that are not the background.
 
 const painted = await page.evaluate(() => {
@@ -185,10 +162,7 @@ check('the LR instance lays out the same graph', orient.lrNodes === orient.tb.no
 
 // -- Interaction: selection ---------------------------------------------------------
 
-// The section sits well down a scrolling page, so the element has to be IN
-// the viewport before a mouse coordinate means anything. Scrolling first,
-// then reading the rect, is the difference between clicking the graph and
-// clicking whatever happens to be at those coordinates.
+// The section sits well down a scrolling page.
 await page.evaluate(() => document.getElementById('demo-dag')!.scrollIntoView({ block: 'center' }));
 await page.waitForTimeout(300);
 
@@ -233,10 +207,6 @@ check('the nodeclick event reaches the page', /bundle/.test(selected.readout), s
 // Driven as the real gesture rather than by calling the getter, because what
 // has to hold is that a reader looking at a wrong picture can hand somebody
 // the numbers. A getter nothing is wired to does not do that.
-// The text is taken off the element's own event rather than read back from
-// the clipboard, which needs a permission this harness does not grant. The
-// toast covers the clipboard write itself: it only says "Copied" once that
-// resolved, and says something else when it did not.
 await page.evaluate(() => {
 	const el = document.getElementById('demo-dag')!;
 	el.addEventListener('snapshotcopy', (e) => {
@@ -328,8 +298,7 @@ check(
 if (snap !== null) {
 	check('every drawn node is in the dump', snap.nodes.length === info.info.nodeCount, `${snap.nodes.length}`);
 	check('every drawn edge is in the dump', snap.edges.length > 0, `${snap.edges.length}`);
-	// The whole point of the screen half: these are canvas pixels, so a band
-	// of empty canvas can be measured off the dump instead of described.
+	// The whole point of the screen half: these are canvas pixels.
 	const bundle = snap.nodes.find((n) => n.id === 'bundle');
 	const onCanvas =
 		bundle !== undefined &&
@@ -423,13 +392,8 @@ check("the empty text is the consumer's", /No dependencies recorded/.test(empty.
 // them, which is why this case is built rather than looked up.
 //
 // It went wrong twice, and both failures look identical on screen -- a dark
-// box with a couple of stray lines. Edgeless nodes each became a layer of
-// their own, so 118 repositories with one three-node chain reported 11
-// layers. And the block they packed into was four times wider than tall
-// against a canvas that is not, so the fit was bound by width and landed at
-// 0.35 -- under LOD_LABEL_SCALE, where the component draws boxes and no text.
-// Its own comment names that state: "shows a reader nothing but coloured
-// boxes and reads as broken".
+// box with a couple of stray lines. Its own comment names that state: "shows
+// a reader nothing but coloured boxes and reads as broken".
 
 const scaled = await page.evaluate(async () => {
 	const host = document.createElement('div');
@@ -443,8 +407,6 @@ const scaled = await page.evaluate(async () => {
 	for (let i = 0; i < 118; i++) ids.push(`owner/repo-${String(i).padStart(3, '0')}`);
 	el.setData({
 		nodes: ids.map((id) => ({ id, label: id.split('/')[1], sublabel: id.split('/')[0] })),
-		// One three-node chain and one pair: the longest chain is what a layer
-		// count may be derived from, and nothing else is.
 		edges: [
 			{ from: ids[3], to: ids[7] },
 			{ from: ids[7], to: ids[11] },
@@ -489,9 +451,7 @@ if (shots) {
 		input.dispatchEvent(new Event('input'));
 		el.fit();
 	});
-	// Park the pointer off the graph first: a hover fades everything outside
-	// one neighbourhood, and a reference shot of a half-faded graph shows
-	// the highlight rather than the component.
+	// Park the pointer off the graph first: a hover fades everything outside one neighbourhood.
 	await page.mouse.move(2, 2);
 	await page.waitForTimeout(400);
 	const gallery: [string, string][] = [
@@ -518,8 +478,6 @@ if (shots) {
 		}
 	}
 
-	// One shot at 1:1, where the labels are at their real size -- the fitted
-	// view is the picture, this is the legibility check.
 	await page.evaluate(() => {
 		const el = document.getElementById('demo-dag') as DagViewElement;
 		el.focusNode('bundle', 1);

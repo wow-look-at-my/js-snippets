@@ -15,7 +15,6 @@ const assertVecClose = (got: readonly number[], want: readonly number[], msg?: s
 test('flyMoveDelta forward moves along the view direction', () => {
   // az=0, el=0 looks along +Z (dirFromAzEl convention).
   assertVecClose(flyMoveDelta({ azDeg: 0, elDeg: 0 }, moving({ forward: true }), 5), [0, 0, 5]);
-  // Pitched up 90°: forward flies straight up — noclip, not ground-clamped.
   assertVecClose(flyMoveDelta({ azDeg: 0, elDeg: 90 }, moving({ forward: true }), 2), [0, 2, 0]);
 });
 

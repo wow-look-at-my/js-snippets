@@ -1,7 +1,5 @@
-// Procedural mesh generators.
-// Each returns { positions, normals, indices } as typed arrays.
-// Winding convention: indices are counter-clockwise viewed from outside the
-// surface — front-facing under WebGPU's default frontFace: 'ccw'.
+// Procedural mesh generators. Each returns { positions, normals, indices } as
+// typed arrays.
 
 export interface Mesh {
   positions: Float32Array;
@@ -211,14 +209,10 @@ export function createTorus(radius = 1, tube = 0.4, radialSegments = 24, tubular
   };
 }
 
-/**
- * Returns a new mesh with every triangle's winding reversed: (a, b, c) →
+/** Returns a new mesh with every triangle's winding reversed: (a, b, c) →
  * (a, c, b), so front faces become back faces. The input is not mutated —
  * positions/normals are passed through as the same arrays and only a new
- * index array is allocated. Use it to render a mesh's interior, or to
- * pre-flip geometry drawn under a mirror (determinant < 0) transform so
- * back-face culling keeps working.
- */
+ * index array is allocated. */
 export function flipWinding(mesh: Mesh): Mesh {
   const src = mesh.indices;
   const indices = new Uint16Array(src.length);

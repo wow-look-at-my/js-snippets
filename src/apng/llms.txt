@@ -14,12 +14,12 @@ const result = await encodeApng(width, height, frames, { threshold: 2 });
 encodeApng(width, height, frames, options?) -> Promise<ApngResult> frames: { data: Uint8Array | Uint8ClampedArray, delayMs?: number }[] Every frame must be exactly width*height*4 bytes of non-premultiplied RGBA8. Throws on a wrong-sized frame, a non-positive size, or an empty list.
 
 What it does beyond writing the frames out, all of it aimed at file size:
-  - DIRTY RECTANGLES: each frame stores only the bounding box of the pixels that moved since the previous one.
+  - DIRTY RECTANGLES: each frame stores only the bounding box of the pixels that moved since the one.
   - TRANSPARENT SKIPPING: inside that box, pixels that did not move are written fully transparent and composited with blend_op=OVER. The decoder then keeps what was there, and deflate sees long runs of one value. This is only legal when every changed pixel is opaque (OVER reproduces its source exactly only at alpha 255) — otherwise the frame falls back to SOURCE.
-  - THRESHOLD: a channel movement of `threshold` or less is not a movement. Default 2 — invisible at 8 bits, and enough to absorb the +-1 noise that otherwise leaves a dirty-rect encoder with nothing static to find. 0 is exact/lossless. Comparison is against the CANVAS A DECODER SHOWS, not the previous source frame. Tolerated differences therefore cannot accumulate: every output pixel stays within `threshold` of its source, forever.
+  - THRESHOLD: a channel movement of `threshold` or less is not a movement. Default 2 — invisible at several bits, and enough to absorb the +-1 noise that otherwise leaves a dirty-rect encoder with nothing static to find. 0 is exact/lossless. Comparison is against the CANVAS A DECODER SHOWS, not the previous source frame. Tolerated differences therefore cannot accumulate: every output pixel stays within `threshold` of its source, forever.
   - COALESCING: a frame that changes nothing is dropped and its delay added to the frame before it (`coalesce`, default true).
   - EXACT PALETTE: <= 256 distinct RGBA values become an 8-bit indexed PNG, one byte per pixel instead of four. Detection is exact and never quantises. `colorType: 'indexed'` on frames that do not fit throws rather than approximating.
-  - FILTERING: per-row adaptive filter selection by default. `effort: 'best'` compresses every legal (blend op, filter strategy) pairing per frame and keeps the smallest. That costs up to 12 deflate passes per frame.
+  - FILTERING: per-row adaptive filter selection by default. `effort: 'best'` compresses every legal (blend op, filter strategy) pairing per frame and keeps the smallest. That costs a bounded number of deflate passes per frame.
 
 ApngOptions: threshold=2, alphaThreshold=threshold, delayMs=100, loops=0 (0 = forever), colorType='auto'|'rgba'|'indexed', filter (see apng/png.js), effort='fast'|'best', coalesce=true, deflate, onProgress(done, total).
 
@@ -31,7 +31,7 @@ deflateZlib(bytes) -> Promise<Uint8Array> is the default compressor, `Compressio
 delayFraction(ms) -> { num, den } is APNG's uint16 delay fraction, exported because a caller reading back an fcTL needs the same rounding.
 
 ### apng/worker.js
-Running apng/encoder.js off the main thread: the worker-side handler and the main-thread client. DOM/Worker-bound, so it is not node-tested.
+Running apng/encoder.js off the main thread: the worker-side handler and the main-thread client. DOM/Worker-bound. As a result, it is not node-tested.
 
 Exports: installApngWorker, createApngEncoder
 
@@ -53,7 +53,7 @@ const result = await encoder.encode(w, h, frames, { threshold: 2 }, onProgress);
 
 installApngWorker() registers the message handler on the current worker global. It THROWS if that global has a `document`. Encoding on the main thread is the thing this module exists to prevent. It holds no in-page fallback anywhere.
 
-createApngEncoder(workerUrl, { transferFrames = false }) -> ApngEncoder .encode(width, height, frames, options?, onProgress?) -> Promise<ApngResult> .terminate()  kill the worker, rejecting everything in flight. The next encode spawns a fresh one (this is how you abandon a long encode whose inputs just changed)
+createApngEncoder(workerUrl, { transferFrames = false }) -> ApngEncoder .encode(width, height, frames, options?, onProgress?) -> Promise<ApngResult> .terminate() kill the worker, rejecting everything in flight. The next encode spawns a fresh one (this is how you abandon a long encode whose inputs changed)
 
 FRAMES MAY BE BITMAPS: each entry is either `{ data, delayMs? }` (RGBA8 already at the output size) or `{ bitmap, delayMs? }` (an ImageBitmap of any size, which the WORKER rasterises with apng/raster.js). Pass bitmaps and the page never touches a pixel. Decode a file with createImageBitmap and hand it over: both the scaling and the encoding then happen off-thread. `options.fit` ('contain' default | 'cover' | 'stretch') places a bitmap whose aspect ratio differs from the output's. 'Contain' leaves the bars transparent, which an APNG stores for almost nothing.
 
@@ -71,7 +71,7 @@ FitMode = 'contain'|'cover'|'stretch', FitRect { x, y, w, h };
 ```
 
 - fitRect(srcW, srcH, dstW, dstH, mode='contain') -> FitRect — where to draw a source inside a differently-shaped canvas. 'contain' fits it whole and centres it, 'cover' fills and overflows, 'stretch' ignores aspect ratio. Throws on a non-positive source size.
-- clampSize(width, height, max) -> { width, height } — scale down so neither side exceeds `max`, keeping the ratio, never scaling up, never returning 0.
+- clampSize(width, height, max) -> { width, height } — scale down so neither side exceeds `max`, keeping the ratio, not scaling up, not returning 0.
 - rasterizeToRgba(source, width, height, mode='contain') -> Uint8ClampedArray — draw any CanvasImageSource into a fresh transparent canvas of that size. Throws where OffscreenCanvas does not exist rather than returning blanks.
 
 ### apng/png.js
@@ -86,12 +86,12 @@ FilterStrategy = 'none'|'sub'|'up'|'average'|'paeth'|'adaptive';
 ```
 
 - crc32(bytes, seed=0) — the zlib polynomial. `seed` continues a running CRC (pass a previous finalised value), so a chunk's type and data can be fed in separately.
-- writeChunk(type, data) — length + 4-char type + data + CRC. Throws unless `type` is exactly 4 characters.
+- writeChunk(type, data) — length + 4-char type + data + CRC. Throws unless `type` is a few characters.
 - filterScanlines(raw, stride, height, bpp, strategy='adaptive') — PNG's pre-compression form: one filter byte then `stride` residual bytes per row. `bpp` is the byte distance to the pixel on the left (4 for RGBA8, 1 for 8-bit indexed). 'adaptive' is the standard minimum-sum-of-absolute- differences choice per row.
 - unfilterScanlines(filtered, stride, height, bpp) — the inverse, for a caller that verifies its own output or reads a PNG it did not write. Throws on an unknown filter type.
 
 ### apng/diff.js
-Inter-frame differencing: which pixels moved, the box around them, and the two ways to encode it. Pure.
+Inter-frame differencing: which pixels moved, the box around them, and the ways to encode it. Pure.
 
 Exports: diffFrames, cropRect, cropRectMasked, composite
 
@@ -118,6 +118,6 @@ Palette { rgba, size, trnsCount, transparentIndex, lookup };
 ```
 
 - buildPalette(images, limit=256, reserveTransparent=true) -> Palette | null null when the images use more than the budget of distinct RGBA values. It bails as soon as the count is exceeded, so photographic input costs a few thousand pixel reads rather than a full scan. NOTHING HERE QUANTISES: indexing can never change a pixel. Entries are ordered non-opaque first, so the tRNS chunk (a prefix of the palette) is as short as possible, then most- used first. `reserveTransparent` guarantees a fully transparent entry for
-  - masked frames, which costs one slot — so fully opaque input fits 255 colours, not 256.
+  - masked frames, which costs one slot — so fully opaque input fits colours, not 256.
 - indexImage(src, palette) -> Uint8Array, one byte per pixel. Throws on a colour the palette lacks rather than substituting a near one.
 - packRgba(r, g, b, a) -> number, the endian-independent lookup key.

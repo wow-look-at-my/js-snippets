@@ -9,7 +9,7 @@ ProgramOptions = { label?: string; attribLocations?: Record<string, number> };
 
 Exports:
   - annotateShaderLog(source, infoLog, contextLines? = 1) → string Interleaves "ERROR: 0:<line>:" style log lines with the referenced source lines (marker on the offending line, contextLines around it). Log lines without a line reference pass through verbatim.
-  - injectChunk(source, chunk) → string Splice a shared GLSL chunk (helper functions used by several shaders — GLSL's missing #include) immediately after the first-line #version directive, or prepend it when there is none. Exactly one newline follows the chunk whether or not it ends with one. No-op when the chunk already appears verbatim in the source (idempotent). The chunk lands before the host's precision statements, so it must declare its own default precision (repeat precision declarations are legal GLSL).
+  - injectChunk(source, chunk) → string Splice a shared GLSL chunk (helper functions used by several shaders — GLSL's missing #include) immediately after the first-line #version directive, or prepend it when there is none. Exactly one newline follows the chunk whether it ends with one. No-op when the chunk already appears verbatim in the source (idempotent). The chunk lands before the host's precision statements. As a result, it must declare its own default precision (repeat precision declarations are legal GLSL).
   - compileShader(gl, type, source, label?) → WebGLShader Throws an Error containing the annotated info log on compile failure.
   - createProgram(gl, vertexSource, fragmentSource, options?) → WebGLProgram Compile + link. Binds attribLocations before linking (pin locations so VAOs need no program query). Detaches/deletes shaders. Throws annotated errors.
   - getUniformLocations(gl, program, names) → Record<name, WebGLUniformLocation | null> Batch getUniformLocation. Optimized-away/typo'd names map to null.
@@ -42,7 +42,7 @@ PingPong<T extends PingPongTarget = FloatFbo> = { read: T, write: T, swap(): voi
 ```
 Exports:
   - createFloatFbo(gl, width, height, options?) → FloatFbo No depth attachment. Resize() reallocates the backing texture. ReadPixels(..., gl.FLOAT, ...) works while the FBO is bound.
-  - createPingPong(gl, width, height, options?) → PingPong<FloatFbo> Two equal createFloatFbo targets for iterative accumulation: bind write.framebuffer, sample read.texture, then swap(). Float storage is the point — 8-bit quantizes away small per-step feedback changes (a ×0.999 alpha decay never fades). Both targets start empty/transparent (WebGL2 zero-initializes textures). Resize() reallocates — and clears — both. Swap() reassigns read/write, so access targets through the pair rather than caching them across swaps.
+  - createPingPong(gl, width, height, options?) → PingPong<FloatFbo> Multiple equal createFloatFbo targets for iterative accumulation: bind write.framebuffer, sample read.texture, then swap(). Float storage is the point — 8-bit quantizes away small per-step feedback changes (a ×0.999 alpha decay never fades). Both targets start empty/transparent (WebGL2 zero-initializes textures). Resize() reallocates — and clears — both. Swap() reassigns read/write, so access targets through the pair rather than caching them across swaps.
   - makePingPong(a, b) → PingPong<T> Pure pairing logic over any two resize/dispose targets (what createPingPong wraps around two FloatFbos). Read starts as a, write as b.
 
 ### webgl2/video-texture.js
@@ -63,4 +63,4 @@ Fullscreen triangle pass generated from gl_VertexID — no vertex buffer. The GL
 
 Exports:
   - FULLSCREEN_VERTEX_SHADER: string #version 300 es vertex shader. Emits `out vec2 vUv` in [0,1]² with v=0 at the bottom of the screen (pairs with flipY-uploaded textures).
-  - createFullscreenPass(gl) → { draw(): void, dispose(): void } draw() binds a dedicated empty VAO and drawArrays 3 vertices. Bind your program/uniforms/blend state first.
+  - createFullscreenPass(gl) → { draw(): void, dispose(): void } draw() binds a dedicated empty VAO and drawArrays vertices. Bind your program/uniforms/blend state first.

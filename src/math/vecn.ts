@@ -1,10 +1,4 @@
-// Arbitrary-dimension vector utilities — all functions return new arrays, no
-// mutation. Use these when the dimension is data-driven (a feature vector, a
-// polynomial coefficient list, a least-squares row). For a fixed 2/3/4
-// dimension prefer vec2/vec3/vec4: those are monomorphic and faster.
-//
-// Every binary operation REQUIRES equal lengths and throws otherwise. A silent
-// shortest-wins or zero-fill turns a wiring mistake into a plausible number.
+// Arbitrary-dimension vector utilities — all functions return new arrays, no mutation.
 
 export type VecN = number[];
 
@@ -70,7 +64,6 @@ export function distance(a: readonly number[], b: readonly number[]): number {
   return Math.hypot(...a.map((x, i) => x - b[i]));
 }
 
-// A zero vector stays zero: the length falls back to 1, so no component is NaN.
 export function normalize(v: readonly number[]): VecN {
   const len = Math.hypot(...v) || 1;
   return v.map((x) => x / len);

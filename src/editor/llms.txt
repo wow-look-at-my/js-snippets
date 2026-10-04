@@ -14,19 +14,19 @@ ed.addEventListener('input', () => console.log(ed.value)); // native bubbling in
 ```
 
 Element <code-editor> attributes (all optional):
-  - language    — built-in name (clike|c|cpp|glsl|hlsl|wgsl|js|ts), default clike
+  - language — built-in name (clike|c|cpp|glsl|hlsl|wgsl|js|ts), default clike
   - placeholder — shown when empty
-  - readonly    — boolean. Disables editing
-  - tab-size    — CSS tab width (Tab key always inserts a real \t)
-  - spellcheck  — default "false"
+  - readonly — boolean. Disables editing
+  - tab-size — CSS tab width (Tab key always inserts a real \t)
+  - spellcheck — default "false"
 
 Initial text comes from the element's text content (or a `value` attribute).
 
 Element properties / methods:
-  - value: string         — source text (source of truth). Set re-renders, no input event
+  - value: string — source text (source of truth). Set re-renders, no input event
   - language: string|LanguageDef — accepts a custom LanguageDef object too
   - readOnly: boolean
-  - focus()               — focus the editor
+  - focus() — focus the editor
 
 Exports:
   - class CodeEditor extends HTMLElement — exported so you can register under another name: customElements.define('my-editor', CodeEditor)

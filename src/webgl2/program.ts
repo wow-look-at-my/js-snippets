@@ -35,24 +35,10 @@ export function annotateShaderLog(source: string, infoLog: string, contextLines 
   return out.join('\n');
 }
 
-/**
- * Insert a shared GLSL `chunk` (helper functions used by several shaders —
+/** Insert a shared GLSL `chunk` (helper functions used by several shaders —
  * GLSL's missing #include) into `source`, immediately after the first-line
  * `#version` directive; when there is none, the chunk is prepended. Pure
- * string processing — no GL required.
- *
- * Exactly one newline separates the chunk from the following line whether or
- * not `chunk` ends with one, so injection shifts the host's error line
- * numbers by a fixed count (annotate the *injected* source and
- * `annotateShaderLog` stays accurate). Idempotence guard: when `chunk`
- * already appears verbatim in `source`, it is returned unchanged — so
- * double-injection is safe, but a chunk whose exact text legitimately occurs
- * in the host is skipped.
- *
- * The chunk lands *before* the host's `precision` statements, so it should
- * declare its own default precision for any types its functions use (repeat
- * precision declarations are legal GLSL).
- */
+ * string processing — no GL required. */
 export function injectChunk(source: string, chunk: string): string {
   if (source.includes(chunk)) return source;
   const block = chunk.endsWith('\n') ? chunk : chunk + '\n';

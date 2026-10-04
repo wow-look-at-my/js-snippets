@@ -1,24 +1,6 @@
-// Browser check for <timeline-view>'s static bounds, against the built
-// gallery.
-//
-// Nothing under `node --test` renders the element (see CLAUDE.md,
-// "Testing"), and minTime/maxTime are element-level: they clamp gestures,
-// gate follow mode and hide chrome. The math they stand on is unit-tested
-// in src/ui/timeline-view-math.test.ts; this drives the REAL element with
-// real pointer and wheel input and asserts the properties that only exist
-// once it is on a page.
-//
-//   pnpm build:showcase
-//   NODE_PATH=/opt/node22/lib/node_modules \
-//     node scripts/check-timeline-bounds.mjs showcase/dist/index.html /tmp
-//
-// Needs playwright and a chromium (both preinstalled in the org's session
-// images: NODE_PATH=/opt/node22/lib/node_modules, PLAYWRIGHT_BROWSERS_PATH
-// =/opt/pw-browsers). Exits non-zero on a failed check or any page error.
+// Browser check for <timeline-view>'s static bounds, against the built gallery.
 
-// Node's ESM resolver ignores NODE_PATH, and playwright is preinstalled
-// globally rather than depended on here, so it comes through CJS
-// resolution, which honours it. A bare import throws ERR_MODULE_NOT_FOUND.
+// Node's ESM resolver ignores NODE_PATH, and playwright is preinstalled globally rather than depended on here.
 import { createRequire } from 'node:module';
 const { chromium } = createRequire(import.meta.url)('playwright');
 import { pathToFileURL } from 'node:url';
@@ -48,8 +30,7 @@ check(st0.min !== null && st0.max !== null, 'static: both bounds set');
 check(!st0.follow, 'static: follow is off');
 check(st0.vp.end <= st0.max + 0.001, 'static: view ends at/before maxTime');
 
-// Drag the frozen chart hard to the LEFT (pans the view forward in time):
-// the view must stop at maxTime, not sail past it.
+// Drag the frozen chart hard to the LEFT (pans the view forward in time): the view must stop at maxTime.
 const box = await (await page.$('#static')).boundingBox();
 const cy = box.y + box.height / 2;
 await page.mouse.move(box.x + box.width - 30, cy);
@@ -114,7 +95,116 @@ check(!f2.follow, 'floor: a backward pan still disengages follow');
 const m = await read('main');
 check(m.min === null && m.max === null && m.follow, 'main: unbounded and still following (no regression)');
 
-for (const id of ['static', 'floor']) {
+// -- Sub-spans
+// ---------------------------------------------------------------------------
+// Every 'intervalhover' the element fires, with the pointer position that
+// caused it, is the only public window onto the element's row layout.
+await page.evaluate(() => {
+	const el = document.getElementById('subspans');
+	window.__hover = null;
+	el.addEventListener('intervalhover', (e) => {
+		const iv = e.detail.interval;
+		window.__hover = iv ? { id: iv.id, parentId: iv.parentId ?? null } : null;
+	});
+});
+const hoverAt = async (hx, hy) => {
+	await page.mouse.move(hx, hy);
+	await page.waitForTimeout(8);
+	return page.evaluate(() => window.__hover);
+};
+// The instance sits low on the page: bring it on screen.
+const subHandle = await page.$('#subspans');
+await subHandle.scrollIntoViewIfNeeded();
+await page.waitForTimeout(200);
+const sbox = await subHandle.boundingBox();
+const svp = await page.evaluate(() => document.getElementById('subspans').viewport);
+check(svp.end > svp.start, 'subspans: the instance has a viewport');
+
+// Sweep the pointer down one column of the plot, px per step, and record which interval each y lands on.
+const sx = sbox.x + sbox.width * 0.55;
+const rows = [];
+for (let y = sbox.y + 24; y < sbox.y + sbox.height - 4; y += 2) {
+	const h = await hoverAt(sx, y);
+	rows.push({ y, id: h?.id ?? null, parentId: h?.parentId ?? null });
+}
+const hits = rows.filter((r) => r.id !== null);
+const parentRow = hits.find((r) => r.parentId === null);
+check(parentRow !== undefined, 'subspans: the sweep lands on a root interval (the release run)');
+if (parentRow) {
+	const pid = parentRow.id;
+	const inFamily = (r) => r.id === pid || r.parentId === pid || hits.some((p) => p.id === r.parentId && p.parentId === pid);
+	const kids = hits.filter((r) => r.parentId === pid);
+	check(kids.length > 0, `subspans: a direct sub-span of ${pid} is under the pointer column`);
+	if (kids.length === 0) {
+		console.error('sweep:', rows.map((r) => `${Math.round(r.y)}:${r.id ?? '-'}`).join(' '));
+		fail.push('subspans: no sub-span row found — the checks below need one');
+	}
+}
+if (parentRow && hits.some((r) => r.parentId === parentRow.id)) {
+	const pid = parentRow.id;
+	const inFamily = (r) => r.id === pid || r.parentId === pid || hits.some((p) => p.id === r.parentId && p.parentId === pid);
+	const kids = hits.filter((r) => r.parentId === pid);
+	check(kids.every((r) => r.y > parentRow.y), 'subspans: every sub-span row lies BELOW its parent row');
+	const lastFamilyY = Math.max(...hits.filter(inFamily).map((r) => r.y));
+	const strangers = hits.filter((r) => r.y > parentRow.y && r.y < lastFamilyY && !inFamily(r));
+	check(strangers.length === 0, `subspans: no stranger inside the family block (${strangers.map((s) => s.id).join(', ') || 'none'})`);
+
+	// Read the canvas at the parent's top edge, the gap, and the sub-span's bottom edge: off the vertical center, where labels draw.
+	const firstKid = kids[0];
+	const parentYs = hits.filter((r) => r.id === pid).map((r) => r.y);
+	const kidYs = hits.filter((r) => r.id === firstKid.id).map((r) => r.y);
+	const gapY = (Math.max(...parentYs) + Math.min(...kidYs)) / 2;
+	const px = await page.evaluate(([cx, py, gy, ky]) => {
+		const el = document.getElementById('subspans');
+		const canvas = el.shadowRoot.querySelector('canvas');
+		const r = canvas.getBoundingClientRect();
+		const ctx = canvas.getContext('2d');
+		const dpr = canvas.width / r.width;
+		const read = (x, y) => Array.from(ctx.getImageData(Math.round((x - r.left) * dpr), Math.round((y - r.top) * dpr), 1, 1).data).slice(0, 3);
+		return { parent: read(cx, py), gap: read(cx, gy), kid: read(cx, ky) };
+	}, [sx, Math.min(...parentYs) + 2, gapY, Math.max(...kidYs) - 2]);
+	const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+	const hue = ([r, g, b]) => {
+		const mx = Math.max(r, g, b);
+		const d = mx - Math.min(r, g, b);
+		if (d === 0) return 0;
+		const h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+		return (h * 60 + 360) % 360;
+	};
+	const hueGap = Math.min(Math.abs(hue(px.kid) - hue(px.parent)), 360 - Math.abs(hue(px.kid) - hue(px.parent)));
+	const gapHue = Math.min(Math.abs(hue(px.gap) - hue(px.kid)), 360 - Math.abs(hue(px.gap) - hue(px.kid)));
+	check(gapHue <= 20 && lum(px.gap) > 30, `subspans: the sub-span is attached, its color fills the gap up to the parent (gap ${px.gap} vs sub-span ${px.kid})`);
+	check(lum(px.gap) < lum(px.kid) - 15, `subspans: the bar above casts a shadow onto the sub-span's top edge (gap ${px.gap} vs body ${px.kid})`);
+	check(lum(px.kid) < lum(px.parent) - 8, `subspans: the sub-span is a darker shade than its parent (sub-span ${px.kid} vs parent ${px.parent})`);
+	check(hueGap <= 20, `subspans: the sub-span keeps its parent's hue (${Math.round(hueGap)} degrees apart)`);
+
+	// A flame chart: test's children run one after another on the row under test. Scan that row left to right.
+	const testRow = hits.find((r) => r.id.endsWith(':test'));
+	check(testRow !== undefined, 'subspans: the sweep crosses the test stage');
+	if (testRow !== undefined) {
+		const testYs = hits.filter((r) => r.id === testRow.id).map((r) => r.y);
+		const childY = (Math.min(...testYs) + Math.max(...testYs)) / 2 + (Math.min(...kidYs) - Math.min(...parentYs));
+		const seen = [];
+		for (let xx = sbox.x + 4; xx < sbox.x + sbox.width - 4; xx += 3) {
+			const h = await hoverAt(xx, childY);
+			if (h?.id && seen[seen.length - 1]?.id !== h.id) seen.push({ id: h.id, x: xx });
+		}
+		const unitAt = seen.findIndex((s) => s.id.endsWith(':test:unit'));
+		const e2eAt = seen.findIndex((s) => s.id.endsWith(':test:e2e'));
+		check(unitAt >= 0 && e2eAt >= 0, `subspans: unit and e2e share the row under test (${seen.map((s) => s.id.split(':').slice(2).join(':')).join(', ') || 'nothing'})`);
+		check(unitAt >= 0 && e2eAt > unitAt, 'subspans: e2e runs after unit, never beside it');
+	}
+
+	// Hover a sub-span: the gallery's tooltip names the parent from hit.parent.
+	await page.mouse.move(sx, firstKid.y);
+	await page.waitForTimeout(120);
+	const tip = await page.evaluate(() => document.getElementById('subspans').shadowRoot.querySelector('.tooltip')?.textContent ?? '');
+	check(/part of /.test(tip), `subspans: the sub-span tooltip names its parent (${JSON.stringify(tip.slice(0, 80))})`);
+}
+
+await page.mouse.move(0, 0);
+await page.waitForTimeout(150);
+for (const id of ['static', 'floor', 'subspans']) {
 	const el = await page.$('#' + id);
 	await el.screenshot({ path: `${outDir}/timeline-${id}.png` });
 }

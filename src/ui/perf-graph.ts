@@ -1,48 +1,4 @@
-/**
- * <perf-graph> — a compact, stackable, canvas-rendered performance graph.
- *
- * One element = one scrolling metric strip (frame time, fps, heap MB, any
- * numeric gauge). push(value) appends a sample; the newest sample hugs the
- * right edge and history scrolls left.
- *
- * Give it `series` instead and it draws a STACKED AREA: one band per series,
- * each column the sum of its parts, which is how a total is read at the same
- * time as the split that makes it up ("how much cache traffic, and whose").
- *
- *   const g = document.querySelector('perf-graph');
- *   g.series = [{ key: 'go-toolchain' }, { key: 'go-s3-server' }];
- *   g.pushSeries({ 'go-toolchain': 12, 'go-s3-server': 4 });
- *
- * A band with no explicit color takes a stable one from its key, so the same
- * project is the same color on every machine and every reload. A key a sample
- * omits reads as 0 for that column. EVERY pixel — including all text — is
- * drawn on the one <canvas> via fillText (zero DOM text nodes, no layout),
- * so a whole column of stacked instances costs N canvases and nothing else.
- * Dependency-free.
- *
- *   import 'https://…/js-snippets/ui/perf-graph.js'; // registers <perf-graph>
- *
- *   <perf-graph label="frame" unit="ms" budget="16.7"></perf-graph>
- *
- *   const g = document.querySelector('perf-graph');
- *   requestAnimationFrame(function tick(now) {
- *     g.push(now - last); last = now;
- *     requestAnimationFrame(tick);
- *   });
- *
- * Cheap by construction: a redraw happens only when new data / size / theme
- * arrived (dirty flag, at most one rAF pending, none when idle), drawing is
- * skipped entirely while the tab is hidden or the element is scrolled out of
- * view (one deferred draw runs on becoming visible), the backing store is
- * DPR-exact (crisp on HiDPI), and a steady-state draw allocates nothing —
- * stats/bins go into preallocated buffers, tick arrays rebuild only when the
- * display range moves, font strings are cached (transient formatted value
- * strings are the accepted exception).
- *
- * Theme via --perf-graph-* CSS custom properties (see THEME_DEFAULTS; dark
- * "Scratch Proto" defaults). The pure math lives in ui/perf-graph-math.ts
- * (node-tested) and is re-exported here so one import serves both.
- */
+/** <perf-graph> — a compact, stackable, canvas-rendered performance graph. */
 
 import {
   SampleRing,
@@ -109,17 +65,9 @@ type Theme = typeof THEME_DEFAULTS;
 
 // -- The custom element ----------------------------------------------------------
 
-/**
- * The graph element. Auto-registered as `<perf-graph>` when this module loads
- * (unless that name is already taken). Attributes (all optional, mirrored by
- * properties): `label`, `unit` ('ms' default | 'fps' | custom suffix | ''),
- * `history` (sample count, default 240), `height` (CSS px, default 48),
- * `min` / `max` (fixed scale ends; absent → autoscale), `budget` (dashed
- * guide value, e.g. 16.7), `compact` (boolean: one row of label + current
- * value over the trace, no stats line, no tick labels, 32px default height —
- * the size for a strip of gauges in a table row). API: push(value),
- * clear(), refreshTheme().
- */
+/** The graph element. Auto-registered as `<perf-graph>` when this module loads
+ * (unless that name is already taken). API: push(value), clear(),
+ * refreshTheme(). */
 export class PerfGraphElement extends HTMLElement {
   static get observedAttributes(): string[] {
     return ['label', 'unit', 'history', 'height', 'min', 'max', 'budget', 'compact'];
@@ -131,18 +79,15 @@ export class PerfGraphElement extends HTMLElement {
   private ring = new SampleRing(DEFAULT_HISTORY);
   private stats: PerfStats = { current: NaN, avg: NaN, min: NaN, max: NaN };
 
-  // Stacked mode. specs is empty for a plain single-series graph, and the
-  // series ring, the colors and the scratch below only exist alongside it.
+  // Stacked mode. specs is empty for a plain single-series graph, and the series ring.
   private specs: SeriesSpec[] = [];
   private seriesRing = new SeriesRing([], DEFAULT_HISTORY);
   private colors: string[] = [];
-  // Per-series band tops, one entry per drawn column. Rebuilt only when the
-  // series list or the backing-store width moves.
+  // Per-series band tops, one entry per drawn column.
   private tops: Float64Array[] = [];
   private binScratch = new Float32Array(0);
 
-  // Attribute caches (kept in sync by attributeChangedCallback) so a draw
-  // never re-parses attributes.
+  // Attribute caches (kept in sync by attributeChangedCallback) so a draw never re-parses attributes.
   private aLabel = '';
   private aUnit = DEFAULT_UNIT;
   private aMin: number | null = null;
@@ -165,8 +110,7 @@ export class PerfGraphElement extends HTMLElement {
   private ticks: number[] = [];
   private rangeOpts: AutoRangeOptions = { pad: 0.08 };
 
-  // Cached theme + prebuilt ctx font strings (rebuilt on connect / resize /
-  // DPR change / refreshTheme(), never per frame).
+  // Cached theme + prebuilt ctx font strings.
   private theme: Theme = { ...THEME_DEFAULTS };
   private fontText = '';
   private fontValue = '';
@@ -277,7 +221,7 @@ export class PerfGraphElement extends HTMLElement {
     this.setAttribute('unit', v ?? '');
   }
 
-  /** Number of samples kept and displayed (default 240). */
+  /* */
   get history(): number {
     return this.ring.capacity;
   }
@@ -285,7 +229,7 @@ export class PerfGraphElement extends HTMLElement {
     this.setAttribute('history', String(v));
   }
 
-  /** Element height in CSS px (default 48, or 32 when compact). */
+  /* */
   get height(): number {
     return parseNum(this.getAttribute('height')) ?? (this.aCompact ? DEFAULT_HEIGHT_COMPACT : DEFAULT_HEIGHT);
   }
@@ -330,12 +274,8 @@ export class PerfGraphElement extends HTMLElement {
 
   // -- Public API ------------------------------------------------------------
 
-  /**
-   * The stacked bands, bottom-up. An empty list (the default) leaves the
-   * element a plain single-series graph. Setting it keeps the history of
-   * every key that survives the change, so a band that comes and goes does
-   * not reset the others.
-   */
+  /** The stacked bands, bottom-up. An empty list (the default) leaves the
+   * element a plain single-series graph. */
   get series(): readonly SeriesSpec[] {
     return this.specs;
   }
@@ -362,11 +302,8 @@ export class PerfGraphElement extends HTMLElement {
     this.schedule();
   }
 
-  /**
-   * Append one stacked column: a record read by series key, or an array read
-   * by series index. A key the sample omits records 0 for that band. Does
-   * nothing until `series` is set.
-   */
+  /** Append one stacked column: a record read by series key, or an array read
+   * by series index. */
   pushSeries(values: Readonly<Record<string, number>> | readonly number[]): void {
     this.seriesRing.push(values);
     this.dirty = true;
@@ -420,8 +357,7 @@ export class PerfGraphElement extends HTMLElement {
   // -- Sizing / theme ------------------------------------------------------------
 
   private applyHeight(): void {
-    // The compact default is applied inline too: the :host rule carries the
-    // full-size default, and a compact graph without a height is shorter.
+    // The compact default is applied inline too: the :host rule carries the full-size default.
     const h = parseNum(this.getAttribute('height')) ?? (this.aCompact ? DEFAULT_HEIGHT_COMPACT : null);
     if (h != null) this.style.height = `${Math.max(1, h)}px`;
     else if (this.heightApplied) this.style.height = ''; // never clobber a user's own inline height
@@ -474,8 +410,6 @@ export class PerfGraphElement extends HTMLElement {
    * therefore the tick array — only rebuilds when data crosses a grid line.
    */
   private updateRange(): void {
-    // A stack grows from zero, so its floor is 0 and its ceiling is the
-    // tallest column — never the tallest single band.
     let dLo = this.stacked ? 0 : this.stats.min;
     let dHi = this.stacked ? stackedMax(this.seriesRing) : this.stats.max;
     const b = this.aBudget;
@@ -516,8 +450,7 @@ export class PerfGraphElement extends HTMLElement {
     const w = this.cssW;
     const h = this.cssH;
     const t = this.theme;
-    // The background may be translucent. Clear the backing store first so
-    // redraws do not blend the new background over the previous frame.
+    // The background may be translucent.
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -629,7 +562,7 @@ export class PerfGraphElement extends HTMLElement {
     if (count > plotWdev) {
       const binsUsed = Math.max(1, Math.min(plotWdev, Math.floor((plotWdev * count) / cap)));
       binMinMax(this.ring, binsUsed, this.binMin, this.binMax);
-      const x0 = w - binsUsed * hairline; // right-aligned, 1 device px per bin
+      const x0 = w - binsUsed * hairline;
       ctx.fillStyle = t.line;
       for (let bin = 0; bin < binsUsed; bin++) {
         const mn = this.binMin[bin];
@@ -703,8 +636,7 @@ export class PerfGraphElement extends HTMLElement {
       }
     }
 
-    // One device pixel per column when binned, otherwise the sample pitch the
-    // single-series trace uses, so a stacked graph scrolls at the same rate.
+    // One device pixel per column when binned, otherwise the sample pitch the single-series trace uses.
     const stepX = binned ? 1 / this.dpr : cap > 1 ? w / (cap - 1) : 0;
     const xAt = (c: number): number => w - (columns - 1 - c) * stepX;
     for (let s = nSeries - 1; s >= 0; s--) {
@@ -750,8 +682,7 @@ export class PerfGraphElement extends HTMLElement {
       const text = `${this.specs[s].label ?? this.specs[s].key} ${formatValue(value, this.aUnit)}`;
       const width = swatch + 3 + ctx.measureText(text).width;
       if (x + width > w - PAD_X) {
-        // No room for this band's entry: say how many are unlisted instead of
-        // drawing a half one off the edge.
+        // No room for this band's entry: say how many are unlisted instead of drawing a half one off the edge.
         ctx.fillStyle = t.text;
         ctx.fillText(`+${this.specs.length - s}`, x, y);
         return;
@@ -798,8 +729,8 @@ function readProp(cs: CSSStyleDeclaration, name: string, fallback: string): stri
   return v !== '' ? v : fallback;
 }
 
-// Auto-register under the conventional tag name, but never clobber an existing
-// definition (a consumer may have registered their own, or loaded this twice).
+// Auto-register under the conventional tag name, but never clobber an
+// existing definition.
 if (typeof customElements !== 'undefined' && !customElements.get('perf-graph')) {
   customElements.define('perf-graph', PerfGraphElement);
 }

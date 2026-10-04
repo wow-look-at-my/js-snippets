@@ -1,8 +1,4 @@
-// Tests for the pure math half of <perf-graph> (ui/perf-graph-math.ts):
-// ring-buffer semantics, caller-owned stats, display-range + tick math, the
-// min-max downsampler, and the value formatter. The element itself
-// (ui/perf-graph.ts) is canvas/DOM-bound and not node-testable — see the
-// Testing section in CLAUDE.md.
+// Tests for the pure math half of <perf-graph> (ui/perf-graph-math.ts): ring-buffer semantics, caller-owned stats.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -85,7 +81,7 @@ test('ring: setCapacity() shrink preserves the newest samples', () => {
 
 test('ring: setCapacity() grow preserves order across an old wrap point', () => {
   const r = new SampleRing(3);
-  for (let v = 1; v <= 5; v++) r.push(v); // holds [3, 4, 5], wrapped
+  for (let v = 1; v <= 5; v++) r.push(v);
   r.setCapacity(6);
   assert.deepEqual(contents(r), [3, 4, 5]);
   r.push(6);
@@ -138,7 +134,7 @@ test('stats: current/avg/min/max over the ring, into the caller-owned object', (
 
 test('stats: reflect only the retained window after a wrap', () => {
   const r = new SampleRing(3);
-  for (let v = 1; v <= 5; v++) r.push(v); // [3, 4, 5]
+  for (let v = 1; v <= 5; v++) r.push(v);
   const out = computeStats(r, freshStats());
   assert.equal(out.current, 5);
   assert.equal(out.avg, 4);
@@ -197,7 +193,7 @@ test('autoRange: fixedMin/fixedMax pin their end exactly', () => {
 test('autoRange: includeZero extends to zero without padding below it', () => {
   const r = autoRange(5, 10, { includeZero: true, pad: 0.1 });
   assert.equal(r.min, 0);
-  assert.equal(r.max, 11); // span became 10 once zero was included
+  assert.equal(r.max, 11);
 });
 
 test('autoRange: swapped inputs are normalized', () => {
@@ -208,7 +204,7 @@ test('autoRange: swapped inputs are normalized', () => {
 
 test('niceStep: picks the smallest 1-2-5 step fitting maxTicks intervals', () => {
   assert.equal(niceStep(10, 5), 2);
-  assert.equal(niceStep(10, 4), 5); // 2 gives 5 intervals, so bump to 5
+  assert.equal(niceStep(10, 4), 5);
   assert.equal(niceStep(10, 10), 1);
   assert.equal(niceStep(1, 10), 0.1);
   assert.equal(niceStep(100, 5), 20);
@@ -271,7 +267,7 @@ test('binMinMax: uneven split follows floor(i * bins / count)', () => {
   const mn = new Float32Array(2);
   const mx = new Float32Array(2);
   assert.equal(binMinMax(r, 2, mn, mx), 2);
-  assert.deepEqual([...mn], [10, 40]); // i = 0..2 → bin 0, i = 3..4 → bin 1
+  assert.deepEqual([...mn], [10, 40]);
   assert.deepEqual([...mx], [30, 50]);
 });
 
@@ -351,7 +347,6 @@ test('binLast: keeps the newest sample of each bin, NaN for empty bins', () => {
   for (const v of [1, 2, 3, 4, 5, 6, 7, 8]) r.push(v);
   const out = new Float32Array(4);
   assert.equal(binLast(r, 4, out), 4);
-  // Bins of two: the second (newer) sample of each pair wins.
   assert.deepEqual(Array.from(out), [2, 4, 6, 8]);
 
   const wide = new Float32Array(6);
@@ -360,7 +355,6 @@ test('binLast: keeps the newest sample of each bin, NaN for empty bins', () => {
   three.push(20);
   three.push(30);
   assert.equal(binLast(three, 6, wide), 3);
-  // Three samples over six bins: bins 0, 2 and 4 take one each, the rest empty.
   assert.deepEqual(Array.from(wide.map((v) => (Number.isNaN(v) ? -1 : v))), [10, -1, 20, -1, 30, -1]);
 });
 

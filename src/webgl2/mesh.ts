@@ -1,7 +1,5 @@
 // VAO construction from typed arrays — the boilerplate between "I have
-// positions/uvs/indices" and a drawable WebGL2 mesh. One buffer per attribute
-// (tightly packed floats), optional index buffer with automatic 16/32-bit
-// element sizing.
+// positions/uvs/indices" and a drawable WebGL2 mesh.
 
 /** One vertex attribute: float data bound at a fixed location. */
 export interface MeshAttribute {
@@ -9,7 +7,7 @@ export interface MeshAttribute {
   location: number;
   /** Tightly packed float data. */
   data: Float32Array;
-  /** Components per vertex (1–4). */
+  /* */
   size: number;
 }
 
@@ -26,7 +24,7 @@ export interface Mesh {
   vao: WebGLVertexArrayObject;
   /** Element count passed to drawElements / vertex count for drawArrays. */
   count: number;
-  /** `gl.UNSIGNED_SHORT` / `gl.UNSIGNED_INT`, or 0 when non-indexed. */
+  /* */
   indexType: GLenum;
   /** Draw mode (`gl.TRIANGLES`, `gl.LINES`, ...). */
   mode: GLenum;
@@ -36,12 +34,7 @@ export interface Mesh {
   dispose(): void;
 }
 
-/**
- * Pick the smallest index array type that can address `vertexCount` vertices:
- * `Uint16Array` when every valid index (≤ vertexCount − 1) fits in 16 bits,
- * else `Uint32Array`. Typed input arrays are returned as-is (no copy). Pure —
- * no GL required.
- */
+/*Typed input arrays are returned as-is (no copy). Pure — no GL required. */
 export function chooseIndexArray(
   indices: ArrayLike<number> | Uint16Array | Uint32Array,
   vertexCount: number,

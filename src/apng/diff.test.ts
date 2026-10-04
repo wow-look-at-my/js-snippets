@@ -1,11 +1,4 @@
 // Tests for inter-frame differencing.
-//
-// The properties that matter are the ones a wrong answer would corrupt output
-// with rather than merely make it bigger: the rectangle must COVER every
-// changed pixel (a tight-but-wrong box drops pixels silently), the threshold
-// must be symmetric, and `composite` must reproduce exactly what a decoder
-// does — it is the encoder's model of the screen, and a mismatch there lets
-// error accumulate frame over frame.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -165,7 +158,6 @@ test('composite over blends a translucent source the way the APNG spec states', 
   composite(canvas, W, { x: 0, y: 0, w: 1, h: 1 }, payload, 'over');
   const [r, g, b, a] = getPixel(canvas, 0, 0);
   assert.equal(a, 255);
-  // 128/255 of white over black: ~128 on every channel.
   for (const c of [r, g, b]) assert.ok(Math.abs(c - 128) <= 1, `channel ${c}`);
 });
 

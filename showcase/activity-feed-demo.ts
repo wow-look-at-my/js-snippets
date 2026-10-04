@@ -1,23 +1,6 @@
-/**
- * Gallery section: <activity-feed>.
- *
- * The fixture's job is to prove the thing the component actually claims:
- * COLOR IS DERIVED, NEVER ENUMERATED. So the kinds below are deliberately
- * a mix of ones the severity rules clearly claim (`*.failed` → bad,
- * `*.skipped` → skip, `*.built` → good) and ones NO rule mentions
- * (`weather.observed`, `kettle.boiled`) — those still get a severity
- * (info) and a stable family hue the first time they appear, which is the
- * whole argument against a stylesheet that lists known kinds.
- *
- * It also demonstrates that the feed is a <data-table> underneath: the
- * chips, the counts, the "showing N of M" readout and the two empty states
- * are that component's, and nothing about tables is implemented twice.
- */
+/** Gallery section: <activity-feed>. */
 
-// SIDE-EFFECT IMPORT — registers <activity-feed> (and, transitively,
-// <data-table>, which it is built on). Both names below are used only in
-// type positions, and a type-only import is elided, so without this line
-// the element never upgrades. See data-table-demo.ts for the full note.
+// SIDE-EFFECT IMPORT — registers <activity-feed> (and, transitively, <data-table>, which it is built on).
 import '../src/ui/activity-feed.ts';
 import type { ActivityFeedElement, ActivityEntry } from '../src/ui/activity-feed.ts';
 import { mulberry32 } from './fake-data.ts';
@@ -39,8 +22,7 @@ const KINDS = [
   'env.unresolved',
   'git.pulled',
   'spool.parked',
-  // Families the severity rules have never heard of: they must still get a
-  // colour and a chip the first time they show up.
+  // Families the severity rules have never heard of: they must still get a colour.
   'weather.observed',
   'kettle.boiled',
 ];
@@ -72,12 +54,10 @@ export function mountActivityFeedDemo(now: number): void {
   entries.sort((a, b) => Number(b.time) - Number(a.time)); // newest first
 
   feed.entries = entries;
-  // Fold the plural spelling producers drift into, so "hooks.*" and
-  // "hook.*" share one family chip instead of splitting the colour.
+  // Fold the plural spelling producers drift into, so "hooks.*" and "hook.*" share one family chip instead.
   feed.familyAliases = { hooks: 'hook', runs: 'run' };
 
-  // The second instance shows the empty state — the honest one: a feed with
-  // nothing in it says so, and does not look like a broken component.
+  // The second instance shows the empty state — the honest one.
   const emptyFeed = document.getElementById('demo-feed-empty') as ActivityFeedElement | null;
   if (emptyFeed) emptyFeed.entries = [];
 }

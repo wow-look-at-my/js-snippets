@@ -21,7 +21,7 @@ func goldenBytes(t *testing.T) []byte {
 
 // The Go reader and the Go writer must agree on the fixture the BROWSER reads.
 // Decoding the golden payload rather than something freshly encoded is what
-// makes this a check on the FORMAT and not on two functions in this file.
+// makes this a check on the FORMAT and not on functions in this file.
 func TestDecodeGolden(t *testing.T) {
 	got, err := Decode(goldenBytes(t), goldenSchema())
 	require.NoError(t, err)
@@ -35,8 +35,7 @@ func TestDecodeGolden(t *testing.T) {
 	assert.Equal(t, want.Z, got.Z)
 	assert.Equal(t, want.P, got.P)
 	assert.Equal(t, want.B, got.B)
-	// Includes "detail", which no row used: it rides as a one-entry dictionary
-	// with no index run and must still read back as "" for every row.
+	// Includes "detail", which no row used: it rides as a one-entry dictionary with no index run and must still read back as "".
 	assert.Equal(t, want.S, got.S)
 }
 
@@ -55,8 +54,7 @@ func TestDecodeRejectsCorruptPayloads(t *testing.T) {
 	_, err = Decode(append(append([]byte(nil), good...), 0), goldenSchema())
 	require.ErrorContains(t, err, "trailing bytes")
 
-	// A schema naming fewer columns than the producer wrote is the realistic
-	// version of the same disagreement.
+	// A schema naming fewer columns than the producer wrote is the realistic version of the same disagreement.
 	short := goldenSchema()
 	short.Strings = short.Strings[:len(short.Strings)-1]
 	_, err = Decode(good, short)

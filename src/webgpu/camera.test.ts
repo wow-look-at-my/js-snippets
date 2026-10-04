@@ -1,9 +1,4 @@
 // Tests for the PURE camera helpers (orbitEye / dirFromAzEl / applyLookDrag).
-//
-// NOTE: createOrbitController and createLookController are intentionally NOT
-// tested here -- they wire pointer/wheel DOM events onto an element, so they
-// are DOM-bound and belong to browser/integration testing, not a node:test
-// unit. Only the pure helpers are unit-tested below.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -93,7 +88,7 @@ const DEG = Math.PI / 180;
 test('applyLookDrag: pointer up (dy < 0) raises elevation, pointer down lowers it', () => {
   const state: LookState = { azDeg: 0, elDeg: 0 };
   const up = applyLookDrag(state, 0, -40);
-  assert.equal(up.elDeg, 10, `pointer up: elDeg ${up.elDeg}`); // 40px * 0.25 deg/px
+  assert.equal(up.elDeg, 10, `pointer up: elDeg ${up.elDeg}`);
   assert.equal(up.azDeg, 0, 'pure vertical drag leaves azimuth alone');
   const down = applyLookDrag(state, 0, 40);
   assert.equal(down.elDeg, -10, `pointer down: elDeg ${down.elDeg}`);
@@ -108,9 +103,7 @@ test('applyLookDrag: invertY flips the pitch axis', () => {
 });
 
 test('applyLookDrag: pointer right yaws toward the camera right of dirFromAzEl', () => {
-  // Screen-right for a camera looking along `forward` with world up +Y is
-  // cross(forward, up) -- mat4.lookAt's side vector x = cross(up, backward).
-  // A rightward drag must rotate the view direction toward that side.
+  // Screen-right for a camera looking along `forward` with world up +Y is cross(forward, up).
   const worldUp: Vec3 = [0, 1, 0];
   for (const azDeg of [0, 45, 90, 179, -120, -170]) {
     const before = dirFromAzEl(azDeg * DEG, 0);
@@ -124,7 +117,7 @@ test('applyLookDrag: pointer right yaws toward the camera right of dirFromAzEl',
 
 test('applyLookDrag: elevation clamps at both limits', () => {
   const top = applyLookDrag({ azDeg: 0, elDeg: 80 }, 0, -100);
-  assert.equal(top.elDeg, 89, `default max: ${top.elDeg}`); // 80 + 25 -> clamp 89
+  assert.equal(top.elDeg, 89, `default max: ${top.elDeg}`);
   const bottom = applyLookDrag({ azDeg: 0, elDeg: -80 }, 0, 100);
   assert.equal(bottom.elDeg, -89, `default min: ${bottom.elDeg}`);
   const customTop = applyLookDrag({ azDeg: 0, elDeg: 40 }, 0, -100, { maxElDeg: 45 });
@@ -134,13 +127,10 @@ test('applyLookDrag: elevation clamps at both limits', () => {
 });
 
 test('applyLookDrag: azimuth wraps to (-180, 180]', () => {
-  // Pointer left (dx < 0) grows azimuth; +2deg from 179 crosses +180.
   const overPos = applyLookDrag({ azDeg: 179, elDeg: 0 }, -8, 0);
   assert.equal(overPos.azDeg, -179, `179 + 2 -> ${overPos.azDeg}`);
-  // Pointer right shrinks azimuth; -2deg from -179 crosses -180.
   const overNeg = applyLookDrag({ azDeg: -179, elDeg: 0 }, 8, 0);
   assert.equal(overNeg.azDeg, 179, `-179 - 2 -> ${overNeg.azDeg}`);
-  // The interval is half-open: exactly +180 stays, exactly -180 wraps to +180.
   const atPos = applyLookDrag({ azDeg: 178, elDeg: 0 }, -8, 0);
   assert.equal(atPos.azDeg, 180, `178 + 2 -> ${atPos.azDeg}`);
   const atNeg = applyLookDrag({ azDeg: -178, elDeg: 0 }, 8, 0);
@@ -153,7 +143,6 @@ test('applyLookDrag: sensitivity scales the step linearly', () => {
   assert.equal(applyLookDrag(state, 10, 0, { sensDegPerPx: 0.5 }).azDeg, -5);
   assert.equal(applyLookDrag(state, 10, 0, { sensDegPerPx: 1 }).azDeg, -10);
   assert.equal(applyLookDrag(state, 0, 10, { sensDegPerPx: 0.5 }).elDeg, -5);
-  // Default sensitivity is 0.25 deg/px.
   assert.equal(applyLookDrag(state, 10, 0).azDeg, -2.5);
 });
 

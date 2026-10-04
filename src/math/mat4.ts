@@ -1,5 +1,4 @@
-// Minimal mat4 utilities — column-major Float32Array(16).
-// All functions return new arrays, no mutation.
+// Minimal mat4 utilities — column-major Float32Array(16). All functions return new arrays, no mutation.
 
 import { subtract, cross, normalize, dot } from './vec3.ts';
 import type { Vec3 } from './vec3.ts';
@@ -27,11 +26,7 @@ export function perspective(fovY: number, aspect: number, near: number, far: num
   return m;
 }
 
-/**
- * Perspective projection with the OpenGL/WebGL clip-Z [-1, 1] convention.
- * Contrast `perspective()`, which maps to WebGPU clip-Z [0, 1]; use this one for
- * a WebGL2 pipeline (or remap [0,1] -> [-1,1] in the vertex shader instead).
- */
+/* */
 export function perspectiveGL(fovY: number, aspect: number, near: number, far: number): Mat4 {
   const f = 1 / Math.tan(fovY / 2);
   const nf = 1 / (near - far);
@@ -104,7 +99,7 @@ export function scale(m: Mat4, v: Vec3): Mat4 {
   return multiply(m, s);
 }
 
-/** Reflect about Y=0: S * V * S where S = diag(1,-1,1,1). */
+/* */
 export function reflectY(m: Mat4): Mat4 {
   const r = new Float32Array(m);
   r[1] = -r[1]; r[4] = -r[4]; r[6] = -r[6];
@@ -112,7 +107,7 @@ export function reflectY(m: Mat4): Mat4 {
   return r;
 }
 
-/** Reflect about Z=0: S * V * S where S = diag(1,1,-1,1). */
+/* */
 export function reflectZ(m: Mat4): Mat4 {
   const r = new Float32Array(m);
   r[2] = -r[2]; r[6] = -r[6]; r[8] = -r[8];

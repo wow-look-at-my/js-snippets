@@ -1,18 +1,4 @@
 // Pure signed-distance-field math -- no DOM, no WebGPU, no CDN imports.
-//
-// Signed-distance primitives, a column-major point transform, a CPU grid bake
-// of an arbitrary scene SDF, trilinear sampling with a continuous outside-the-box
-// extension, ray/AABB intersection, and the Inigo Quilez closest-approach soft
-// shadow march. The same formulas are typically mirrored in a WGSL/GLSL shader;
-// keep the GPU copies in sync with the math here.
-//
-// Conventions:
-//  - Primitives are evaluated in their own local frame, centred at the origin,
-//    Y up. Placement is a rigid transform (rotation + translation, no scale) so
-//    the local distance is already a true world distance -- feed a world point
-//    through the object's inverse model matrix with `transformPoint`.
-//  - mat4 is column-major (the layout produced by ./mat4 and consumed by WGSL's
-//    `mat4x4<f32>`): element (row r, col c) = m[c*4 + r].
 
 import type { Vec3 } from './vec3.ts';
 
@@ -25,8 +11,8 @@ export const SDF_TORUS = 3;
 /** A 4-component params vector; each primitive reads the components it needs. */
 export type SdfParams = readonly [number, number, number, number];
 
-// -- Primitive distance functions (local space) ------------------------------
-// `params` is a 4-vector; each primitive reads the components it needs.
+// -- Primitive distance functions (local space)
+// ------------------------------ `params` is a 4-vector.
 
 /** Signed distance to a sphere. params: [radius]. */
 export function sdSphere(p: Vec3, params: SdfParams): number {
@@ -132,7 +118,7 @@ function loadTexel(grid: SdfGrid, ix: number, iy: number, iz: number): number {
   return grid.data[(cz * ny + cy) * nx + cx];
 }
 
-/** Trilinear fetch at a clamped [0,1] coordinate (texel-centre convention). */
+/* */
 export function trilinear(grid: SdfGrid, q: Vec3): number {
   const [nx, ny, nz] = grid.dims;
   const gx = q[0] * nx - 0.5, gy = q[1] * ny - 0.5, gz = q[2] * nz - 0.5;
@@ -186,10 +172,7 @@ export function sampleGrid(grid: SdfGrid, p: Vec3): number {
 
 // -- Ray / box intersection --------------------------------------------------
 
-/**
- * Slab ray/AABB test. Returns [tNear, tFar]; the ray misses the box when
- * tFar < max(tNear, 0).
- */
+/** Slab ray/AABB test. */
 export function intersectAABB(ro: Vec3, rd: Vec3, bmin: Vec3, bmax: Vec3): [number, number] {
   const inv: Vec3 = [1 / rd[0], 1 / rd[1], 1 / rd[2]];
   const t0: Vec3 = [(bmin[0] - ro[0]) * inv[0], (bmin[1] - ro[1]) * inv[1], (bmin[2] - ro[2]) * inv[2]];
@@ -209,17 +192,17 @@ export interface SdfAabb {
 
 /** Options for `softShadow`. */
 export interface SoftShadowOptions {
-  /** Start of the march (avoids self-shadow at the surface). Default 0.02. */
+  /** Start of the march (avoids self-shadow at the surface). */
   tmin?: number;
-  /** End of the march. Default 20. */
+  /** End of the march. */
   tmax?: number;
-  /** Penumbra sharpness -- large k = sharp, small k = soft. Default 16. */
+  /** Penumbra sharpness -- large k = sharp, small k = soft. */
   k?: number;
-  /** Maximum step count. Default 64. */
+  /** Maximum step count. */
   maxSteps?: number;
-  /** Minimum advance per step. Default 0.01. */
+  /** Minimum advance per step. */
   minStep?: number;
-  /** Maximum advance per step. Default 5. */
+  /** Maximum advance per step. */
   maxStep?: number;
   /** Distance below which the ray is considered fully occluded. Default 1e-3. */
   eps?: number;
@@ -229,22 +212,17 @@ export interface SoftShadowOptions {
 
 /** Result of a `softShadow` march. */
 export interface SoftShadowResult {
-  /** Soft visibility in [0,1] (0 = fully shadowed, 1 = fully lit). */
+  /* */
   vis: number;
   /** Number of field samples taken (for cost visualisation). */
   steps: number;
 }
 
-/**
- * March from `ro` toward a light along unit `rd`, returning soft visibility in
- * [0,1] and the number of steps taken. `sampleFn(p)` returns the scene SDF at a
- * point. res = min(res, k*h/t): the closest the ray passes to the surface, scaled
- * by k, is the penumbra.
- *
- * If `aabb` is given, the march is clipped to that box and a ray that misses it
- * returns fully lit at zero cost. When the field has no occluder outside the
- * volume this is correctness-preserving, and it keeps large receivers cheap.
- */
+/*`sampleFn(p)` returns the scene SDF at a point. res = min(res, k*h/t): the
+ * closest the ray passes to the surface, scaled by k, is the penumbra. If `aabb`
+ * is given, the march is clipped to that box and a ray that misses it returns
+ * fully lit at zero cost. When the field has no occluder outside the volume this
+ * is correctness-preserving, and it keeps large receivers cheap. */
 export function softShadow(
   sampleFn: (p: Vec3) => number,
   ro: Vec3,

@@ -1,11 +1,4 @@
-// Tests for the PURE surface of webgpu/scan.ts: planScan's level hierarchy,
-// scratch sizing, and 2D dispatch clamping — plus a faithful JS emulation of
-// the WGSL block-scan/addback walk driven by the plan (the same absolute base
-// derivation GpuScan.prepare uses), asserted against a naive exclusive scan.
-// Imports go through scan-plan.ts (scan.ts re-exports it but ALSO imports the
-// .wgsl, which node cannot load); createScan/prepare/encode are GPU-bound and
-// are exercised by consumer browser harnesses (e.g. splat-webgpu's verify),
-// not under node.
+// Tests for the PURE surface of webgpu/scan.ts: planScan's level hierarchy, scratch sizing, and 2D dispatch clamping.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,7 +7,6 @@ import { planScan, SCAN_BLOCK_SIZE, SCAN_ADDBACK_SIZE } from './scan-plan.ts';
 import type { ScanPlan, ScanDispatch } from './scan-plan.ts';
 
 test('planScan: level structure for boundary counts', () => {
-  // count 0: one block still runs so the grand total (0) gets written.
   assert.deepEqual(
     planScan(0).levels.map((l) => ({ count: l.count, blocks: l.blocks, sumsBase: l.sumsBase })),
     [{ count: 0, blocks: 1, sumsBase: 0 }],
@@ -41,7 +33,7 @@ test('planScan: level structure for boundary counts', () => {
   assert.equal(p513.scratchElems, 3);
   assert.equal(p513.grandTotalElem, 2);
 
-  const p512sq = planScan(512 * 512); // 262144
+  const p512sq = planScan(512 * 512);
   assert.deepEqual(
     p512sq.levels.map((l) => ({ count: l.count, blocks: l.blocks, sumsBase: l.sumsBase })),
     [
@@ -152,7 +144,7 @@ function emulateScan(
       data[b.sums + block] = total;
     }
   }
-  // scan_addback, levels length-2 .. 0.
+  // scan_addback, levels length-2.
   for (let li = levels.length - 2; li >= 0; li--) {
     const l = levels[li];
     const b = bases[li];

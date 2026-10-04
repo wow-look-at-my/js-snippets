@@ -33,7 +33,8 @@
 				<p class="hint">
 					drag to pan &middot; ctrl/&#8984;+wheel or pinch to zoom &middot; shift+wheel or horizontal wheel to pan &middot;
 					vertical wheel scrolls the page &middot; hover anything for a tooltip &middot;
-					pan left for lazy-loaded history &middot; the feed is infinite and generated locally.
+					pan left for lazy-loaded history &middot; the feed is infinite and generated locally &middot;
+					the release lane hangs each run's stages under it as attached sub-spans, in darker shades of the run's color.
 				</p>
 				<timeline-view id="main" history-end-text="demo history ends here"></timeline-view>
 				<h3>same feed, compact + retheme <span class="sub">(auto-fit demotes lanes; <code>--timeline-*</code> custom properties)</span></h3>
@@ -44,6 +45,9 @@
 
 				<h3>static content <span class="sub">(<code>minTime</code> + <code>maxTime</code> &mdash; a finished window: no now line, no jump-to-live pill, no follow, and the bars that were still running at the end stop exactly at it)</span></h3>
 				<timeline-view id="static"></timeline-view>
+
+				<h3>sub-spans <span class="sub">(<code>parentId</code> &mdash; a run's stages hang attached under it, one shade darker per level; <code>test</code> carries its own nested pair, <code>approved</code> is an instant; a stage's tooltip names the run)</span></h3>
+				<timeline-view id="subspans" no-auto-fit no-minimap></timeline-view>
 			</section>
 
 			<section id="data-table">

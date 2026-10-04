@@ -76,7 +76,7 @@ test('selectTier: empty tiers are skipped', () => {
 test('clipToWidth: exact monospace boundaries', () => {
   const m = mono(6);
   assert.equal(clipToWidth('abcdef', 100, m), 'abcdef'); // fits whole
-  assert.equal(clipToWidth('abcdef', 24, m), 'abcd'); // 4 chars exactly
+  assert.equal(clipToWidth('abcdef', 24, m), 'abcd'); // Chars exactly
   assert.equal(clipToWidth('abcdef', 23, m), 'abc');
   assert.equal(clipToWidth('abcdef', 6, m), 'a');
   assert.equal(clipToWidth('abcdef', 5, m), '');
@@ -90,7 +90,7 @@ test('clipToWidth: works with a non-uniform measure', () => {
     for (const ch of s) w += ch === 'w' ? 10 : 4;
     return w;
   };
-  assert.equal(clipToWidth('awawa', 18, wide), 'awa'); // 4+10+4
+  assert.equal(clipToWidth('awawa', 18, wide), 'awa');
   assert.equal(clipToWidth('awawa', 17, wide), 'aw');
   const out = clipToWidth('awawaww', 25, wide);
   assert.ok(wide(out) <= 25);
@@ -119,8 +119,8 @@ test('fitTieredText: plain string input behaves as a single tier', () => {
 
 test('fitTieredText: suppresses below minClipChars', () => {
   const m = mono(6);
-  assert.equal(fitTieredText('abcdefgh', 12, m), null); // 2 chars < default 3
-  assert.notEqual(fitTieredText('abcdefgh', 18, m), null); // 3 chars fit
+  assert.equal(fitTieredText('abcdefgh', 12, m), null);
+  assert.notEqual(fitTieredText('abcdefgh', 18, m), null); // Chars fit
   assert.equal(fitTieredText('abcdefgh', 18, m, { minClipChars: 4 }), null);
   assert.deepEqual(fitTieredText('abcdefgh', 12, m, { minClipChars: 2 }), {
     text: 'ab',

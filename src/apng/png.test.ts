@@ -1,9 +1,4 @@
 // Tests for the PNG container primitives.
-//
-// The CRC is checked against published constants rather than against itself: a
-// self-consistent CRC that uses the wrong polynomial produces a file every
-// decoder rejects, and nothing else in the pipeline would notice. Filtering is
-// checked by round-tripping through the inverse, which is what a decoder does.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -65,13 +60,9 @@ test('concatBytes joins in order', () => {
 });
 
 test('paeth picks the neighbour closest to a+b-c, breaking ties a then b', () => {
-  // p = 10+20-15 = 15: |15-10|=5, |15-20|=5, |15-15|=0 -> c.
   assert.equal(paeth(10, 20, 15), 15);
-  // p = 0+255-0 = 255: b is exact.
   assert.equal(paeth(0, 255, 0), 255);
-  // p = 255+0-0 = 255: a is exact.
   assert.equal(paeth(255, 0, 0), 255);
-  // p = 20+10-10 = 20: a is exact, and a wins a tie anyway.
   assert.equal(paeth(20, 10, 10), 20);
   assert.equal(paeth(5, 5, 5), 5);
 });

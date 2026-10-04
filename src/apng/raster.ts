@@ -1,15 +1,4 @@
-// Turning drawable sources (an ImageBitmap decoded from a file, a video frame,
-// a canvas) into the RGBA8 the encoder wants — on whichever thread calls it.
-//
-// This exists so a browser consumer never has to touch pixels on the main
-// thread: hand `apng/worker.ts` ImageBitmaps and the rasterising happens beside
-// the encoding, in the worker. Doing it in the page with drawImage +
-// getImageData works, and it is exactly the kind of "just this bit" main-thread
-// work that adds up to a janky UI for a long frame list.
-//
-// The fit maths is pure and lives here so it can be tested and reused; only
-// `rasterizeToRgba` needs a canvas, and OffscreenCanvas gives it one in a
-// worker.
+// Turning drawable sources (an ImageBitmap decoded from a file, a video frame, a canvas) into the RGBA8 the encoder wants —.
 
 /** How a source of one aspect ratio is placed into a canvas of another. */
 export type FitMode = 'contain' | 'cover' | 'stretch';

@@ -3,7 +3,7 @@ Live-reload detection. Polls a `version.txt` file (e.g. commit SHA) at the site 
 
 Exports:
   - createAutoRefresh(options?: AutoRefreshOptions) → AutoRefreshHandle. Returns { start(), stop() }. Call start() to begin polling. Pauses automatically when the tab is hidden.
-    - options.interval     — ms between checks (default 30 000)
+    - options.interval — ms between checks (default 30 000)
     - options.refreshDelay — ms before reload after detection (default 2 000)
 
   - bustCacheAndReload() → void Navigate to the current page with a cache-busting _v query param.

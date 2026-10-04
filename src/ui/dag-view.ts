@@ -1,14 +1,4 @@
-// The <dag-view> custom element: a canvas-painted, pan/zoom directed
-// acyclic graph. The layout, the viewport transform and every hit test live
-// in ./dag-view-math.ts (pure, node-tested); this file is the canvas and
-// DOM half -- sizing, theming, painting, input, accessibility.
-//
-// WHY CANVAS. A dependency graph is the case where SVG stops being free: a
-// few hundred nodes with their edges is a few thousand elements, and every
-// pan and zoom then asks the engine to re-style and re-layout all of them.
-// Canvas turns that into one transform and a redraw of only what is on
-// screen, which is what makes a graph of a whole org's repositories usable
-// rather than technically possible.
+// The <dag-view> custom element: a canvas-painted, pan/zoom directed acyclic graph.
 
 import dagCss from './dag-view.css';
 import {
@@ -77,18 +67,13 @@ export const THEME_DEFAULTS = {
   fontSize: 11,
   /** --dag-node-radius — node corner radius in px. */
   nodeRadius: 5,
-  /** --dag-cat-lightness — oklch lightness for category fills (0..1). */
+  /* */
   catLightness: 0.62,
   /** --dag-cat-chroma — oklch chroma for category fills. */
   catChroma: 0.11,
   /** --dag-gap — cross-axis gap between nodes in a layer, px. */
   gap: 24,
-  /**
-   * --dag-layer-gap — gap between layers, px. Every layer costs this plus a
-   * node's height, so it sets how many layers fit legibly in a given box:
-   * generous spacing that pushes the fitted view under the label LOD buys
-   * air at the cost of the labels.
-   */
+  /** --dag-layer-gap — gap between layers, px. */
   layerGap: 48,
 };
 
@@ -218,17 +203,12 @@ export interface DagSnapshot {
 // -- Constants ---------------------------------------------------------------------
 
 const MAX_DPR = 3;
-/** World-space tolerance for grabbing an edge, in CSS px at scale 1. */
+/* */
 const EDGE_HIT_TOL = 6;
 
 /** How long the right-click's confirmation stays on screen, in ms. */
 const TOAST_MS = 2600;
-/**
- * Below this scale, node labels stop being drawn. The threshold is the
- * point where an 11px label is under ~4.5px and genuinely unreadable --
- * pitched deliberately low, because a graph whose fitted view lands just
- * under it shows a reader nothing but coloured boxes and reads as broken.
- */
+/** Below this scale, node labels stop being drawn. */
 const LOD_LABEL_SCALE = 0.4;
 /** Below this scale, nodes draw as plain filled marks with no border or text. */
 const LOD_MARK_SCALE = 0.22;
@@ -247,27 +227,11 @@ const HIGHLIGHT_CACHE_MAX = 64;
 
 // -- The element ---------------------------------------------------------------------
 
-/**
- * The DAG element. Auto-registered as `<dag-view>` when this module loads
- * (unless the name is taken). Data arrives via properties and methods --
- * `setData` / `nodes` / `edges` -- never attributes; the attributes are
- * scalar toggles: `orientation` ("TB" or "LR"), `no-search`, `no-toolbar`,
- * `no-fullscreen-button`, `no-minimap`, `empty-text`, and `fullscreen`
- * (reflected viewport-fill mode -- see the `fullscreen` property).
+/** The DAG element. Auto-registered as `<dag-view>` when this module loads (unless the name is taken). Data arrives via properties and methods -- `setData` / `nodes` / `edges` -- never attributes; the attributes are scalar toggles: `orientation` ("TB" or "LR"), `no-search`, `no-toolbar`, `no-fullscreen-button`, `no-minimap`, `empty-text`, and `fullscreen` (reflected viewport-fill mode -- see the `fullscreen` property).
  *
- * INPUT. Drag pans. Ctrl/Cmd + wheel and pinch zoom; a PLAIN wheel pans
- * instead of zooming, so the element never swallows a page scroll that was
- * meant for the page -- the zoom buttons and the +/- keys are the
- * discoverable path. Clicking a node selects it; hovering one fades
- * everything outside its dependency neighbourhood, which is the question a
- * dependency graph exists to answer and the one thing you cannot do by
- * following lines with your eyes.
+ * INPUT. Drag pans. Ctrl/Cmd + wheel and pinch zoom; a PLAIN wheel pans instead of zooming, so the element never swallows a page scroll that was meant for the page -- the zoom buttons and the +/- keys are the discoverable path. Clicking a node selects it; hovering one fades everything outside its dependency neighbourhood, which is the question a dependency graph exists to answer and the thing you cannot do by following lines with your eyes.
  *
- * WHAT THE LAYOUT COULD NOT HONOUR IS SHOWN, NOT SWALLOWED. A circular
- * dependency is drawn in the emphasis color with its arrow still pointing
- * the true way, and the notice strip names the count of cycles, dropped
- * edges and overruled layer hints. Read `info` for the same facts as data.
- */
+ * WHAT THE LAYOUT COULD NOT HONOUR IS SHOWN, NOT SWALLOWED. A circular dependency is drawn in the emphasis color with its arrow still pointing the true way, and the notice strip names the count of cycles, dropped edges and overruled layer hints. Read `info` for the same facts as data. */
 export class DagViewElement extends HTMLElement {
   static get observedAttributes(): string[] {
     return ['orientation', 'no-search', 'no-toolbar', 'no-fullscreen-button', 'no-minimap', 'empty-text', 'fullscreen'];
@@ -326,8 +290,7 @@ export class DagViewElement extends HTMLElement {
   private highlight: Neighbourhood | null = null;
   private highlightCache = new Map<number, Neighbourhood>();
   private searchQuery = '';
-  // NOT `matches`: HTMLElement already owns that name, and shadowing it
-  // makes the class stop being an Element as far as the type system cares.
+  // NOT `matches`: HTMLElement already owns that name.
   private searchMatches = new Set<number>();
   private noticeDismissed = '';
 
@@ -376,15 +339,13 @@ export class DagViewElement extends HTMLElement {
     this.tooltipEl.className = 'tooltip';
     shadow.appendChild(this.tooltipEl);
 
-    // Says what the right-click did. Separate from the notice, which carries
-    // layout findings a reader dismisses on their own terms.
+    // Says what the right-click did.
     this.toastEl = document.createElement('div');
     this.toastEl.className = 'toast';
     this.toastEl.hidden = true;
     shadow.appendChild(this.toastEl);
 
-    // The right-click menu. A canvas has no default menu worth keeping, and
-    // an action that fires with nothing on screen reads as a dead click.
+    // The right-click menu.
     this.menuEl = document.createElement('div');
     this.menuEl.className = 'menu';
     this.menuEl.setAttribute('role', 'menu');
@@ -398,8 +359,7 @@ export class DagViewElement extends HTMLElement {
     this.fsBtn = this.makeButton('⤡', 'fs-btn', 'Fullscreen');
     for (const b of [this.fitBtn, this.zoomInBtn, this.zoomOutBtn, this.orientBtn, this.fsBtn]) shadow.appendChild(b);
 
-    // The announcement channel for screen readers: selection changes are
-    // visual by nature, so they are also said out loud.
+    // The announcement channel for screen readers: selection changes are visual by nature.
     this.liveEl = document.createElement('div');
     this.liveEl.setAttribute('aria-live', 'polite');
     this.liveEl.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap';
@@ -410,8 +370,7 @@ export class DagViewElement extends HTMLElement {
 
   private makeButton(text: string, cls: string, title: string): HTMLButtonElement {
     const b = document.createElement('button');
-    // tool-btn carries the floating pill treatment. It is a class rather than
-    // a bare `button` rule, or every other button in here is placed by it.
+    // tool-btn carries the floating pill treatment.
     b.className = `tool-btn ${cls}`;
     b.textContent = text;
     b.title = title;
@@ -598,18 +557,14 @@ export class DagViewElement extends HTMLElement {
     };
   }
 
-  /**
-   * The whole drawn state, in both coordinate systems, as a plain object.
-   *
+  /** The whole drawn state, in both coordinate systems, as a plain object.
    * `world` is what the layout decided. `screen` is where that landed on the
    * canvas in CSS pixels, with the origin at the canvas top-left, so a reader
-   * can measure what they are looking at: an empty band between two columns,
-   * a node parked off screen, a row that did not line up with the one above.
-   * A description of a gap is a guess. These numbers are the gap.
-   *
+   * can measure what they are looking at: an empty band between a couple of
+   * columns, a node parked off screen, a row that did not line up with the
+   * one above. A description of a gap is a guess. These numbers are the gap.
    * `visible` says whether a node's box overlaps the canvas at all, so
-   * everything scrolled out of view is countable rather than merely missing.
-   */
+   * everything scrolled out of view is countable rather than merely missing. */
   get snapshot(): DagSnapshot {
     this.ensureLayout();
     const toScreen = (p: { x: number; y: number }): { x: number; y: number } => {
@@ -663,21 +618,12 @@ export class DagViewElement extends HTMLElement {
     if (v === this.fullscreen) return;
     if (v) this.setAttribute('fullscreen', '');
     else this.removeAttribute('fullscreen');
-    // The host box changed size; the observer confirms asynchronously, but
-    // resizing now keeps the first frame after the toggle correct.
+    // The host box changed size; the observer confirms asynchronously.
     this.resizeBackingStore();
     this.dispatchEvent(new CustomEvent('fullscreenchange', { detail: { fullscreen: v } }));
   }
 
-  /**
-   * Fit the whole graph on screen, never magnified past 1:1.
-   *
-   * A graph small enough to fit already is not improved by being blown up:
-   * the boxes turn into slabs and the labels into headlines. Fit means
-   * "show me everything", and once everything is showing there is nothing
-   * left for more zoom to do. Use `focusNode(id, zoom)` to magnify
-   * deliberately.
-   */
+  /* */
   fit(pad = 32): void {
     this.ensureLayout();
     if (this.layout.nodes.length === 0) return;
@@ -801,8 +747,7 @@ export class DagViewElement extends HTMLElement {
    * node also offers the one thing that node can give.
    */
   private openMenu(x: number, y: number, node: string | null): void {
-    // The tooltip sits where the menu is about to, and it describes the node
-    // the menu now names. Two panels saying the same thing is one too many.
+    // The tooltip sits where the menu is about to, and it describes the node the menu now names.
     this.hideTooltip();
     this.menuEl.textContent = '';
     const items: { label: string; run: () => void }[] = [
@@ -824,8 +769,7 @@ export class DagViewElement extends HTMLElement {
       this.menuEl.appendChild(btn);
     }
 
-    // Placed, then nudged back inside: the size is not known until it is in
-    // the document, and a menu half off the element cannot be clicked.
+    // Placed, then nudged back inside: the size is not known until it is in the document.
     this.menuEl.hidden = false;
     this.menuEl.style.left = `${x}px`;
     this.menuEl.style.top = `${y}px`;
@@ -849,8 +793,7 @@ export class DagViewElement extends HTMLElement {
         this.dispatchEvent(new CustomEvent('snapshotcopy', { detail: { text }, bubbles: true }));
       },
       (err: unknown) => {
-        // Never silent. A reader who thinks they copied and pasted nothing
-        // reports the wrong problem next.
+        // Never silent. A reader who thinks they copied and pasted nothing reports the wrong problem next.
         this.toast('Could not reach the clipboard. The state is in the console.');
         console.error('dag-view: copying the state failed', err);
         console.log(text);
@@ -865,25 +808,13 @@ export class DagViewElement extends HTMLElement {
     );
   }
 
-  /**
-   * The clipboard, by whichever route this context allows.
-   *
-   * Two ways the async API comes to nothing, and they need different
-   * handling. A page served over plain http has no `navigator.clipboard` at
-   * all, because it is not a secure context. And a page that HAS it can still
-   * be refused: the write permission is the user's to withhold, and Chromium
-   * denies it outright to a page nobody has interacted with in the way it
-   * wants. Only the second was missed here, which left the failure path
-   * reachable in an ordinary browser. So the selection route runs after a
-   * rejection as well as after an absence.
-   */
+  /** The clipboard, by whichever route this context allows. */
   private async copyText(text: string): Promise<void> {
     if (navigator.clipboard !== undefined) {
       try {
         await navigator.clipboard.writeText(text);
         return;
       } catch {
-        // Fall through to the selection route below.
       }
     }
     const area = document.createElement('textarea');
@@ -971,9 +902,7 @@ export class DagViewElement extends HTMLElement {
 
   private onPointerDown = (e: PointerEvent): void => {
     this.lastInputTs = performance.now();
-    // Any press on the canvas dismisses it, including the press that opens a
-    // second one. A menu left floating over a graph the reader has moved
-    // points at a node that is no longer under it.
+    // Any press on the canvas dismisses it, including the press that opens a second one.
     this.closeMenu();
     const p = this.localPoint(e);
     this.pointers.set(e.pointerId, p);
@@ -1050,8 +979,7 @@ export class DagViewElement extends HTMLElement {
       );
       return;
     }
-    // A click on empty canvas clears the selection: the way out of a
-    // highlight has to be as easy as the way in.
+    // A click on empty canvas clears the selection: the way out of a highlight has to be as easy as the way in.
     this.select(-1, true);
   };
 
@@ -1072,8 +1000,7 @@ export class DagViewElement extends HTMLElement {
       this.fit();
       return;
     }
-    // Zoom to the node AND everything it touches -- on a large graph the
-    // useful frame is the neighbourhood, not the box.
+    // Zoom to the node AND everything it touches -- on a large graph the useful frame is the neighbourhood.
     const nb = this.neighbourhoodOf(ni);
     const members = [ni, ...nb.ancestors, ...nb.descendants];
     let x0 = Infinity;
@@ -1115,9 +1042,7 @@ export class DagViewElement extends HTMLElement {
       return;
     }
     const dx = normalizeWheel(e.deltaX, e.deltaMode);
-    // Only claim the gesture when there is somewhere to go in that
-    // direction; otherwise it chains to the page, which is what the reader
-    // meant by scrolling past a graph.
+    // Only claim the gesture when there is somewhere to go in that direction.
     const next = clampViewport(panViewport(this.view, -dx, -px), this.bounds, this.cssW, this.cssH);
     if (next.x !== this.view.x || next.y !== this.view.y) {
       e.preventDefault();
@@ -1189,8 +1114,7 @@ export class DagViewElement extends HTMLElement {
         }
         break;
       case 'Tab':
-        // Tab is the browser's, not ours -- trapping focus inside a graph
-        // is how a keyboard user gets stuck on a page.
+        // Tab is the browser's, not ours -- trapping focus inside a graph is how a keyboard user gets stuck on a page.
         break;
       default:
         break;
@@ -1212,8 +1136,7 @@ export class DagViewElement extends HTMLElement {
         .filter((e) => (forward ? e.from === cur.index : e.to === cur.index))
         .map((e) => (forward ? e.to : e.from));
       if (candidates.length === 0) return;
-      // Nearest on the cross axis: the visually adjacent one is the one the
-      // reader means, not the first in edge order.
+      // Nearest on the cross axis: the visually adjacent one is the one the reader means, not the first in edge order.
       const center = this.orientationValue === 'TB' ? cur.x + cur.w / 2 : cur.y + cur.h / 2;
       let best = candidates[0];
       let bestD = Infinity;
@@ -1299,11 +1222,8 @@ export class DagViewElement extends HTMLElement {
     this.showTooltip(hit, px, py);
   }
 
-  /**
-   * The highlight follows the HOVER when there is one and the SELECTION
-   * otherwise, so a reader can pin a neighbourhood by clicking and then
-   * move the pointer away to read it.
-   */
+  /** The highlight follows the HOVER when there is one and the SELECTION
+   * otherwise. */
   private applyHighlight(): void {
     const i = this.hoverIndex >= 0 ? this.hoverIndex : this.selectedIndex;
     this.highlight = i >= 0 ? this.neighbourhoodOf(i) : null;
@@ -1313,8 +1233,7 @@ export class DagViewElement extends HTMLElement {
     const hit = this.highlightCache.get(i);
     if (hit !== undefined) return hit;
     const nb = neighbourhood(this.layout, i);
-    // Bounded: a pointer sweeping a large graph would otherwise cache one
-    // traversal per node it crossed.
+    // Bounded: a pointer sweeping a large graph would otherwise cache one traversal per node it crossed.
     if (this.highlightCache.size >= HIGHLIGHT_CACHE_MAX) this.highlightCache.clear();
     this.highlightCache.set(i, nb);
     return nb;
@@ -1403,12 +1322,8 @@ export class DagViewElement extends HTMLElement {
     this.invalidate();
   }
 
-  /**
-   * The 2d context is OPAQUE (alpha: false) on purpose: the graph paints its
-   * own background every frame, and an opaque canvas lets the engine use
-   * subpixel text antialiasing (alpha canvases get grayscale only) -- a real
-   * legibility win at 11px. Consequence: --dag-bg must be an opaque color.
-   */
+  /** The 2d context is OPAQUE (alpha: false) on purpose: the graph paints its
+   * own background every frame. */
   private ctx2d(): CanvasRenderingContext2D | null {
     return (this.ctx ??= this.canvas.getContext('2d', { alpha: false }));
   }
@@ -1443,8 +1358,7 @@ export class DagViewElement extends HTMLElement {
     }
     this.colorCache.clear();
     this.patternCache.clear();
-    // Box sizes come from charW and the layer gaps, so a theme change is a
-    // layout change, not just a repaint.
+    // Box sizes come from charW and the layer gaps, so a theme change is a layout change, not a repaint.
     this.layoutStale = true;
   }
 
@@ -1485,9 +1399,7 @@ export class DagViewElement extends HTMLElement {
 
   private onFrame(ts: number): void {
     this.raf = 0;
-    // Full rate while the reader is interacting, throttled to ~30fps when
-    // they are not: a graph is a static picture most of the time, and
-    // repainting one at 120fps for nobody is pure heat.
+    // Full rate while the reader is interacting, throttled to ~30fps when they are not: a graph is a static picture most of the time.
     const interacting = ts - this.lastInputTs < INTERACT_GRACE_MS;
     if (!interacting && ts - this.lastRenderTs < IDLE_FRAME_MS) {
       this.raf = requestAnimationFrame(this.onFrame);
@@ -1525,12 +1437,8 @@ export class DagViewElement extends HTMLElement {
     for (const i of visibleNodes(this.layout, view)) this.drawNode(ctx, i);
   }
 
-  /**
-   * The background dot grid, drawn in SCREEN space at a pitch that steps by
-   * powers of two as you zoom. Without it a pan across empty canvas gives
-   * no motion cue at all, and the reader cannot tell a slow drag from a
-   * frozen frame.
-   */
+  /*Without it a pan across empty canvas gives no motion cue at all, and the
+   * reader cannot tell a slow drag from a frozen frame. */
   private drawGrid(ctx: CanvasRenderingContext2D, view: WorldRect): void {
     if (this.theme.grid === 'none') return;
     let pitch = 40 * this.view.scale;
@@ -1555,8 +1463,7 @@ export class DagViewElement extends HTMLElement {
     ctx.globalAlpha = faded ? FADE_ALPHA : 1;
     ctx.strokeStyle = e.reversed ? t.emphasis : style?.color ?? t.edge;
     ctx.lineWidth = (e.reversed || this.hoverEdgeIndex === index ? 2 : 1.25) / this.view.scale;
-    // A cycle edge is dashed as well as colored: color alone is not a
-    // signal a colorblind reader can act on.
+    // A cycle edge is dashed as well as colored: color alone is not a signal a colorblind reader can act on.
     if (e.reversed || style?.dashed === true) ctx.setLineDash([6 / this.view.scale, 4 / this.view.scale]);
 
     ctx.beginPath();
@@ -1564,9 +1471,7 @@ export class DagViewElement extends HTMLElement {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // The arrowhead carries the direction, so it is drawn at a fixed SCREEN
-    // size: it must stay readable at every zoom, which a world-space
-    // triangle does not.
+    // The arrowhead carries the direction, so it is drawn at a fixed SCREEN size: it must stay readable at every zoom.
     const last = e.points[e.points.length - 1];
     const prev = e.points[e.points.length - 2] ?? last;
     drawArrowhead(ctx, prev, last, 8 / this.view.scale, ctx.strokeStyle as string);
@@ -1670,16 +1575,13 @@ export class DagViewElement extends HTMLElement {
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
 
-    // The halo is what makes a label survive a hatched or stippled fill,
-    // and a fill in any category hue, without picking a text color per
-    // node.
+    // The halo is what makes a label survive a hatched or stippled fill, and
+    // a fill in any category hue, without picking a text color per node.
     const paint = (text: string, font: string, px: number, cy: number, color: string): void => {
       ctx.font = font;
       const fitted = fitToWidth(ctx, text, avail);
       if (fitted === '') return;
-      // The halo width tracks the GLYPH size. A fixed 3px rim is a rim on a
-      // 14px label and a blot that swallows a 6px one, and small is exactly
-      // where a label needs the help.
+      // The halo width tracks the GLYPH size.
       ctx.lineWidth = Math.max(1.5, px * 0.26);
       ctx.strokeStyle = this.labelHalo;
       ctx.lineJoin = 'round';
@@ -1698,11 +1600,7 @@ export class DagViewElement extends HTMLElement {
       return;
     }
     paint(label, labelFont, labelPx, y + h * 0.36, t.fg);
-    // The sublabel is the FOREGROUND colour at reduced alpha, never
-    // --dag-muted. Muted is chosen to sit on the page background; a node is
-    // painted in a saturated category hue, and a mid-grey on top of one is
-    // simply unreadable. Alpha keeps it secondary without picking a second
-    // colour per category.
+    // The sublabel is the FOREGROUND colour at reduced alpha, never --dag-muted.
     const prevAlpha = ctx.globalAlpha;
     ctx.globalAlpha = prevAlpha * 0.72;
     paint(sub, subFont, subPx, y + h * 0.7, t.fg);
@@ -1745,11 +1643,7 @@ export class DagViewElement extends HTMLElement {
 
 // -- Drawing helpers -----------------------------------------------------------------
 
-/** A polyline with its corners rounded, appended to the current path. */
-/**
- * A coordinate, to two decimals. The snapshot is read by a person, and a
- * layout float carries seventeen digits of noise past the part that matters.
- */
+/** A coordinate to decimals: a person reads the snapshot. */
 function round(v: number): number {
   return Math.round(v * 100) / 100;
 }
@@ -1761,8 +1655,7 @@ function roundedPolyline(ctx: CanvasRenderingContext2D, pts: readonly { x: numbe
     const prev = pts[i - 1];
     const cur = pts[i];
     const next = pts[i + 1];
-    // The radius shrinks to fit the shorter of the two legs, so a tight
-    // bend rounds less rather than overshooting into the neighbouring one.
+    // The radius shrinks to fit the shorter of both legs.
     const r1 = Math.min(r, Math.hypot(cur.x - prev.x, cur.y - prev.y) / 2);
     const r2 = Math.min(r, Math.hypot(next.x - cur.x, next.y - cur.y) / 2);
     const rr = Math.min(r1, r2);
@@ -1837,7 +1730,7 @@ function fitToWidth(ctx: CanvasRenderingContext2D, text: string, avail: number):
   return lo <= 0 ? '' : text.slice(0, lo) + ell;
 }
 
-/** Wheel deltas in the three deltaModes, normalized to CSS px. */
+/** Wheel deltas in the deltaModes, normalized to CSS px. */
 function normalizeWheel(delta: number, deltaMode: number): number {
   if (deltaMode === 1) return delta * 16;
   if (deltaMode === 2) return delta * 800;

@@ -1,31 +1,4 @@
-// Pure markdown parsing and the safety transform: source text -> a SAFE
-// mdast tree.
-//
-// This is the node-testable half of ui/markdown.ts, split the way
-// perf-graph-math is split out of perf-graph. It touches no DOM, so every
-// decision that matters for safety is testable under `node --test`.
-//
-// Parsing is micromark via mdast-util-from-markdown, with GFM enabled --
-// CommonMark plus tables, task lists, strikethrough and literal autolinks.
-// Correctness is therefore somebody else's full-time job, not a pile of
-// regexes here.
-//
-// What IS this module's job is the step after parsing. A markdown renderer
-// is usually handed text somebody else wrote -- a PR description, an issue
-// body, a comment -- and there are exactly two ways that hurts you:
-//
-//   1. Raw HTML. CommonMark says `<script>alert(1)</script>` in the source
-//      is HTML, and mdast faithfully reports it as an `html` node. Render
-//      that as markup and you have handed the author script execution.
-//   2. Link destinations. `[click](javascript:alert(1))` is a perfectly
-//      well-formed CommonMark link; the danger is entirely in its URL.
-//
-// sanitizeTree() closes both, in the tree, before anything reaches a DOM:
-// `html` nodes become literal text, and unsafe URLs lose their link. The
-// renderer downstream is then mechanical -- it cannot reintroduce either
-// problem, because no node reaching it can express markup and no URL
-// reaching it has an unsafe scheme. That is why there is no HTML string and
-// no sanitizer pass anywhere in this module pair.
+// Pure markdown parsing and the safety transform: source text -> a SAFE mdast tree.
 
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { gfm } from 'micromark-extension-gfm';
@@ -37,20 +10,7 @@ export type { Nodes, Root, RootContent } from 'mdast';
 /** Schemes a link may use. Everything else is refused outright. */
 const SAFE_SCHEMES = new Set(['http:', 'https:', 'mailto:']);
 
-/**
- * The href to use for `raw`, or null if it must not become a link.
- *
- * Absolute URLs are allowed only on SAFE_SCHEMES -- this is what keeps
- * `javascript:`, `data:`, `vbscript:` and `file:` out of an href. Relative
- * URLs (including protocol-relative `//host/path`) have no scheme of their
- * own and inherit the page's, so they pass through.
- *
- * Scheme detection is the URL parser's, not a string match, so the usual
- * evasions are already handled: it lowercases the scheme and strips leading
- * whitespace and embedded tab/newline/CR before parsing, making
- * `JaVaScRiPt:`, ` javascript:` and `java&#9;script:` all resolve to the
- * javascript: protocol and be refused.
- */
+/** The href to use for `raw`, or null if it must not become a link. */
 export function safeHref(raw: string | null | undefined): string | null {
   if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
@@ -80,22 +40,8 @@ export function parseMarkdown(source: string | null | undefined): Root | null {
   return tree.children.length > 0 ? tree : null;
 }
 
-/**
- * Rewrites a tree in place so nothing in it can express markup or an unsafe
- * URL. Exported (and separately tested) because it IS the safety boundary:
- *
- *   - `html` nodes -- raw HTML, block or inline -- become `text` nodes
- *     carrying the same characters, so the source shows up as the literal
- *     text it was written as rather than as markup. Nothing is dropped: a
- *     reader still sees exactly what the author typed.
- *   - `link` / `image` / `definition` URLs go through safeHref. A refused
- *     link is REPLACED BY ITS OWN CHILDREN (its visible label survives,
- *     unlinked); a refused image becomes its alt text. Removing the node
- *     entirely would silently swallow content.
- *   - Reference-style links and images (`[a][b]`) whose definition is
- *     refused resolve to nothing linkable, so they are flattened the same
- *     way.
- */
+/** Rewrites a tree in place so nothing in it can express markup or an unsafe
+ * URL. */
 export function sanitizeTree(tree: Root): Root {
   // A definition whose URL is refused must not be reachable by reference.
   const refusedDefinitions = new Set<string>();

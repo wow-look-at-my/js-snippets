@@ -100,7 +100,7 @@ test('buildGraph: every unusable edge is REPORTED, never silently dropped', () =
     g.rejected.map((r) => r.reason),
     ['unknown-from', 'unknown-to', 'self-loop', 'duplicate'],
   );
-  // The original edge object comes back, so a consumer can name what it lost.
+  // The edge object comes back, so a consumer can name what it lost.
   assert.deepEqual(g.rejected[0].edge, { from: 'ghost', to: 'b' });
 });
 
@@ -152,8 +152,7 @@ test('breakCycles: a cycle is broken, and the cut edge is NAMED', () => {
   const c = breakCycles(g);
   assert.equal(c.reversed.length, 1, 'one cut is enough for a 3-cycle');
   assert.equal(hasCycle(c.out), false);
-  // The reported index points at a real input edge, so the element can draw
-  // exactly the line that closes the loop.
+  // The reported index points at a real input edge, so the element can draw exactly the line that closes the loop.
   const cut = g.edges[c.reversed[0]];
   assert.deepEqual({ from: cut.edge.from, to: cut.edge.to }, { from: 'c', to: 'a' });
 });
@@ -226,8 +225,7 @@ test('assignLayers: a layer pin can push a node down', () => {
 });
 
 test('assignLayers: a pin that contradicts an edge is overruled AND reported', () => {
-  // The hint is a preference; the edge is a fact. A silently honoured pin
-  // would draw b above its own dependency.
+  // The hint is a preference; the edge is a fact. A silently honoured pin would draw b above its own dependency.
   const g = buildGraph([{ id: 'a' }, { id: 'b', layer: 0 }], [{ from: 'a', to: 'b' }]);
   const l = assignLayers(g, breakCycles(g));
   assert.deepEqual([...l.layers], [0, 1]);
@@ -235,8 +233,7 @@ test('assignLayers: a pin that contradicts an edge is overruled AND reported', (
 });
 
 test("assignLayers: align 'sinks' bottom-aligns the leaves", () => {
-  // a -> b -> d, a -> c -> ... nothing. Under 'sources' c sits at layer 1;
-  // under 'sinks' it drops to the last layer with the other leaf.
+  // a -> b -> d, a -> c -> ... nothing.
   const g = buildGraph(nodesFrom(['a', 'b', 'c', 'd']), [
     { from: 'a', to: 'b' },
     { from: 'b', to: 'd' },
@@ -269,15 +266,12 @@ test('wrapWideLayers: a layer too wide to read is split into consecutive rows', 
   for (const l of wrapped.layers) counts.set(l, (counts.get(l) ?? 0) + 1);
   assert.equal(counts.size, 3, '30 nodes at a cap of 14 need three rows');
   for (const [layer, n] of counts) assert.ok(n <= 14, `layer ${layer} holds ${n}`);
-  // Evened out rather than filled to the cap with a remainder of two.
   assert.deepEqual([...counts.values()], [10, 10, 10]);
   assert.equal(wrapped.maxLayer, 2);
 });
 
 test('wrapWideLayers: splitting a layer keeps every edge pointing forward', () => {
-  // The property that makes this safe: longest-path layering never puts an
-  // edge's two ends on one layer, so rows carved out of a layer cannot
-  // contain one.
+  // The property that makes this safe: longest-path layering never puts an edge's ends on one layer.
   const names = Array.from({ length: 40 }, (_, i) => `n${i}`);
   const edges: DagEdge[] = [];
   for (let i = 0; i < 20; i++) edges.push({ from: `n${i}`, to: `n${i + 20}` });
@@ -298,10 +292,6 @@ test('wrapWideLayers: a cap of 0 leaves the layering exactly as it was', () => {
 });
 
 test('layoutDag: a fleet of mostly-unconnected nodes does not draw as one long line', () => {
-  // The failure this exists for: 118 repositories with 53 dependencies
-  // between them left about 70 on layer 0, one row packed them into a
-  // drawing 12 times wider than it was tall, and `fit` answered that by
-  // shrinking every box to a speck.
   const nodes = nodesFrom(Array.from({ length: 118 }, (_, i) => `r${i}`));
   const edges: DagEdge[] = [];
   for (let i = 0; i < 45 && edges.length < 53; i++) {
@@ -316,16 +306,12 @@ test('layoutDag: a fleet of mostly-unconnected nodes does not draw as one long l
   );
   assert.equal(layout.nodes.length, 118, 'no node is lost');
 
-  // The negative control is the SHAPE this fixture used to draw as. It came
-  // out 9 times wider than it was tall, so a passing aspect here is a real
-  // measurement rather than a test that cannot fail.
+  // The negative control is the SHAPE this fixture used to draw as.
   assert.ok(layout.width > 0 && layout.height > 0);
 });
 
 test('wrapWideLayers: a layer too wide to read is broken into rows', () => {
-  // Kept at the layering level on purpose. Measuring the finished drawing
-  // instead would confound wrapping with the long edges wrapping creates,
-  // since a row moved down is a row every edge into it now has to reach.
+  // Kept at the layering level on purpose.
   const fan = nodesFrom(['root', ...Array.from({ length: 90 }, (_, i) => `leaf${i}`)]);
   const fanEdges: DagEdge[] = Array.from({ length: 90 }, (_, i) => ({ from: 'root', to: `leaf${i}` }));
   const g = buildGraph(fan, fanEdges);
@@ -348,8 +334,7 @@ test('fitToDesired: desires that already fit are left exactly alone', () => {
 });
 
 test('fitToDesired: a collision settles on the median, never by pushing right', () => {
-  // The whole defect this replaced: pulling to a median and then shoving
-  // overlaps apart can only ADD space, so every pass made the drawing wider.
+  // The whole defect this replaced: pulling to a median and then shoving overlaps apart can only ADD space.
   const got = fitToDesired([100, 100, 100], [0, 10, 10]);
   assert.deepEqual(got, [90, 100, 110], 'the block centres on what its members wanted');
   const span = got[got.length - 1] - got[0];
@@ -377,10 +362,7 @@ test('fitToDesired: it beats pull-then-shove on the total distance from the desi
 });
 
 test('layoutDag: an edgeless node is packed into the block, not left floating', () => {
-  // The original defect: nothing enforced a MAXIMUM distance, so a node with
-  // no edge kept whatever the initial packing gave it while its neighbours
-  // were pulled away, leaving a hole. Those nodes now sit in a block of their
-  // own, and the same property has to hold there.
+  // The defect: nothing enforced a MAXIMUM distance.
   const names = ['dep', 'user', ...Array.from({ length: 8 }, (_, i) => `lone${i}`)];
   const layout = layoutDag(nodesFrom(names), [{ from: 'dep', to: 'user' }]);
   const block = layout.nodes.filter((n) => n.layer < 0);
@@ -412,7 +394,6 @@ test('insertDummies: a long edge gets one bend point per layer it crosses', () =
   const acyclic = breakCycles(g);
   const layered = assignLayers(g, acyclic);
   const proper = insertDummies(g, acyclic, layered);
-  // a -> d spans layers 0..3, so it crosses layers 1 and 2.
   const longEdge = g.edges.findIndex((e) => e.edge.from === 'a' && e.edge.to === 'd');
   assert.equal((proper.chains.get(longEdge) ?? []).length, 2);
   // Its short neighbours need no bend at all.
@@ -523,7 +504,7 @@ test('orderLayers: identical input gives an identical arrangement', () => {
 // -- assignCoordinates ------------------------------------------------------------------
 
 test('assignCoordinates: boxes in a layer never overlap', () => {
-  // Two boxes drawn on top of each other is worse than any crookedness.
+  // Boxes drawn on top of each other is worse than any crookedness.
   const names = ['r', 'a', 'b', 'c', 'd'];
   const g = buildGraph(nodesFrom(names), names.slice(1).map((id) => ({ from: 'r', to: id })));
   const acyclic = breakCycles(g);
@@ -541,7 +522,7 @@ test('assignCoordinates: boxes in a layer never overlap', () => {
 });
 
 test('assignCoordinates: a straight chain draws as a straight line', () => {
-  // The staircase this prevents is the single most obvious layout defect.
+  // The staircase this prevents is the most obvious layout defect.
   const g = buildGraph(CHAIN_NODES.slice(0, 3), [
     { from: 'a', to: 'b' },
     { from: 'b', to: 'c' },
@@ -604,8 +585,7 @@ test('layoutDag: an empty graph is a valid, empty layout', () => {
 test('layoutDag: a graph with no edges at all still lays out', () => {
   const layout = layoutDag(nodesFrom(['a', 'b', 'c']), []);
   assert.equal(layout.nodes.length, 3);
-  // An edgeless node is set as a block rather than layered, and says so with
-  // -1 instead of claiming a depth it was never measured for.
+  // An edgeless node is set as a block rather than layered.
   assert.deepEqual(Object.values(layerMap(layout)), [-1, -1, -1]);
   assert.equal(layout.crossings, 0);
   assert.ok(layout.width > 0 && layout.height > 0, 'the block still occupies the drawing');
@@ -643,7 +623,6 @@ test("layoutDag: 'LR' swaps the axes and keeps the direction", () => {
   const tb = layoutDag(CHAIN_NODES, CHAIN_EDGES);
   const lr = layoutDag(CHAIN_NODES, CHAIN_EDGES, { orientation: 'LR' });
   assert.equal(lr.orientation, 'LR');
-  // A four-layer chain is tall in TB and wide in LR.
   assert.ok(tb.height > tb.width || tb.nodes.length === 0);
   assert.ok(lr.width > lr.height);
   for (const e of lr.edges) {
@@ -880,8 +859,8 @@ test('hitTestNodes: inside hits, outside misses, edges are inclusive', () => {
 });
 
 test('hitTestEdges: the NEAREST edge wins, not the first one within tolerance', () => {
-  // With several lines converging on a box, "the one I am pointing at" is
-  // the closest one -- and the answer must not depend on edge order.
+  // With several lines converging on a box, "the I am pointing at" is the
+  // closest one -- and the answer must not depend on edge order.
   const layout = layoutDag(nodesFrom(['a', 'b', 't']), [
     { from: 'a', to: 't' },
     { from: 'b', to: 't' },
@@ -893,8 +872,7 @@ test('hitTestEdges: the NEAREST edge wins, not the first one within tolerance', 
   const m0 = midOf(0);
   const m1 = midOf(1);
   assert.equal(hitTestEdges(layout, m0.x, m0.y, 6), 0);
-  // Sitting on the SECOND edge must return the second edge, with a
-  // tolerance wide enough that the first one also qualifies.
+  // Sitting on the SECOND edge must return the second edge.
   const wide = Math.hypot(m1.x - m0.x, m1.y - m0.y) + 10;
   assert.equal(hitTestEdges(layout, m1.x, m1.y, wide), 1);
   assert.equal(hitTestEdges(layout, m0.x, m0.y + 100000, 6), -1, 'beyond tolerance is a miss');
