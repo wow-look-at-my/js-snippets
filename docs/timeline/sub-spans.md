@@ -1,13 +1,11 @@
 # Sub-spans: a span attached under the span it belongs to
 
-An interval names the interval it is part of through `parentId`. The chart then draws the two as one block. The parent sits on the block's top row. Its sub-spans hang directly under it, attached with no gap, in a darker shade of the parent's color.
+An interval names the interval it is part of through `parentId`. The chart then draws the family as a flame chart. The parent sits on the block's top row. Its sub-spans hang directly under it, attached with no gap, in a darker shade of the parent's color. Each row is one depth.
 
 ```
-▛▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ release v2.32.0 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▜
-  ▙ build ▟  ▙ test ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▟       ◆ ▙ promote ▟
-              ▙ unit ▄▄▄▟
-               ▙ e2e ▄▄▄▄▄▄▄▄▄▄▄▄▟
-                               ▙ canary ▄▄▄▄▄▟
+▛▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ release v2.32.0 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▜
+  ▙ build ▟ ▙ test ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▟ ▙ canary ▄▄▄▄▄▟ ◆ ▙ promote ▟
+             ▙ unit ▄▄▟▙ e2e ▄▄▄▄▟
 ```
 
 ## What a reader gets
@@ -23,11 +21,13 @@ A sub-span nests only under a parent in the same lane. A parent in another lane,
 
 A sub-span takes its root's category for its hue. Its own `category` does not change the color. Its `state` still applies, so a failed sub-span keeps the failed treatment in the family's shade. A `colorFor` override still wins.
 
-A sub-span bar reaches up through the track gap to the row above it. Its top corners are square. The bar above casts a short shadow onto its top edge. As a result, the join reads as tucked under and not as missing padding. A span with sub-spans has square bottom corners. An instant sub-span stays a pip.
+Siblings run one after another. A sub-span that overlaps a sibling is invalid data. The chart draws it on the same row and reports it once with `console.error`. It never adds a row to hide the overlap.
+
+A sub-span bar reaches up through the track gap to its parent. Its top corners are square. The bar above casts a short shadow onto its top edge. As a result, the join reads as tucked under and not as missing padding. A span with sub-spans has square bottom corners. An instant sub-span stays a pip.
 
 The block's extent is the union of every member. The block is ongoing while the parent or any member is ongoing.
 
-Row order inside the block is the ordinary first-fit packing of `packTracks`. A sub-span with sub-spans of its own is one item several rows tall. The lane packer sees the whole family the same way. The sticky `TrackAllocator` keeps the block's top row where it was while the block stays on screen, as it does for any bar.
+A member's row inside the block is its depth. The block is as tall as its deepest branch. The lane packer sees the whole family as one item several rows tall. The sticky `TrackAllocator` keeps the block's top row where it was while the block stays on screen, as it does for any bar.
 
 ## Where it lives
 
@@ -36,6 +36,6 @@ Row order inside the block is the ordinary first-fit packing of `packTracks`. A 
 - `src/ui/timeline-view-math.test.ts` pins the packing. `scripts/check-timeline-bounds.mjs` drives the real element. It reads the canvas back to prove the sub-span fills the gap, keeps the parent's hue and is darker.
 - `showcase/` carries the release lane and the `#subspans` instance.
 
-## What this is not
+## What a sub-span keeps
 
-The chart is still not a flame chart. A sub-span is an ordinary interval with an ordinary row. It keeps its state, its segments and its label. Only its color comes from the family.
+A sub-span is an ordinary interval. It keeps its state, its segments and its label. Only its color and its row come from the family.

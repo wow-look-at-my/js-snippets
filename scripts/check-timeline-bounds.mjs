@@ -178,39 +178,21 @@ if (parentRow && hits.some((r) => r.parentId === parentRow.id)) {
 	check(lum(px.kid) < lum(px.parent) - 8, `subspans: the sub-span is a darker shade than its parent (sub-span ${px.kid} vs parent ${px.parent})`);
 	check(hueGap <= 20, `subspans: the sub-span keeps its parent's hue (${Math.round(hueGap)} degrees apart)`);
 
-	// e2e overlaps its sibling unit, so it packs a row lower than its parent's first child row.
-	const e2e = hits.filter((r) => r.id.endsWith(':test:e2e'));
-	check(e2e.length > 0, 'subspans: the sweep finds the e2e sub-span, which sits below a sibling');
-	if (e2e.length > 0) {
-		const e2eY = e2e[Math.floor(e2e.length / 2)].y;
-		const e2eTop = Math.min(...e2e.map((r) => r.y));
-		let right = sx;
-		for (let xx = sx; xx < sbox.x + sbox.width - 4; xx += 4) {
-			const h = await hoverAt(xx, e2eY);
-			if (h?.id !== e2e[0].id) break;
-			right = xx;
+	// A flame chart: test's children run one after another on the row under test. Scan that row left to right.
+	const testRow = hits.find((r) => r.id.endsWith(':test'));
+	check(testRow !== undefined, 'subspans: the sweep crosses the test stage');
+	if (testRow !== undefined) {
+		const testYs = hits.filter((r) => r.id === testRow.id).map((r) => r.y);
+		const childY = (Math.min(...testYs) + Math.max(...testYs)) / 2 + (Math.min(...kidYs) - Math.min(...parentYs));
+		const seen = [];
+		for (let xx = sbox.x + 4; xx < sbox.x + sbox.width - 4; xx += 3) {
+			const h = await hoverAt(xx, childY);
+			if (h?.id && seen[seen.length - 1]?.id !== h.id) seen.push({ id: h.id, x: xx });
 		}
-		// e2e attaches to unit, the bar on the row directly above it: its color fills the gap, and unit's shadow darkens it.
-		let underUnit = null;
-		for (let xx = right; xx > sbox.x + 4; xx -= 4) {
-			if ((await hoverAt(xx, e2eTop - 6))?.id?.endsWith(':test:unit')) { underUnit = xx; break; }
-		}
-		check(underUnit !== null, 'subspans: unit sits directly above part of e2e');
-		if (underUnit !== null) {
-			const e2eBottom = Math.max(...e2e.map((r) => r.y));
-			const pair = await page.evaluate(([x, gy, by]) => {
-				const el = document.getElementById('subspans');
-				const canvas = el.shadowRoot.querySelector('canvas');
-				const r = canvas.getBoundingClientRect();
-				const dpr = canvas.width / r.width;
-				const ctx = canvas.getContext('2d');
-				const read = (yy) => Array.from(ctx.getImageData(Math.round((x - r.left) * dpr), Math.round((yy - r.top) * dpr), 1, 1).data).slice(0, 3);
-				return { gap: read(gy), body: read(by) };
-			}, [underUnit, e2eTop - 1, e2eBottom - 2]);
-			const pairHue = Math.min(Math.abs(hue(pair.gap) - hue(pair.body)), 360 - Math.abs(hue(pair.gap) - hue(pair.body)));
-			check(pairHue <= 20 && lum(pair.gap) > 30, `subspans: e2e is attached to unit, its color fills the gap (gap ${pair.gap} vs e2e ${pair.body})`);
-			check(lum(pair.gap) < lum(pair.body) - 15, `subspans: unit casts a shadow onto e2e (gap ${pair.gap} vs e2e ${pair.body})`);
-		}
+		const unitAt = seen.findIndex((s) => s.id.endsWith(':test:unit'));
+		const e2eAt = seen.findIndex((s) => s.id.endsWith(':test:e2e'));
+		check(unitAt >= 0 && e2eAt >= 0, `subspans: unit and e2e share the row under test (${seen.map((s) => s.id.split(':').slice(2).join(':')).join(', ') || 'nothing'})`);
+		check(unitAt >= 0 && e2eAt > unitAt, 'subspans: e2e runs after unit, never beside it');
 	}
 
 	// Hover a sub-span: the gallery's tooltip names the parent from hit.parent.

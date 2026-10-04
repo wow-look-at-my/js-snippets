@@ -820,35 +820,40 @@ export interface FamilyLayout {
   /** null while the root or any descendant is ongoing. */
   end: number | null;
   tops: Map<string, number>;
+  /** Members whose span overlaps an earlier sibling's. A flame chart cannot draw them apart. */
+  overlaps: string[];
 }
 
-/* The extent is the union of every member, so a child that overruns its
- * parent still has the block cover it. The block is what the lane packer
- * sees: one PackItem with `rows` set. */
+/* A flame chart: a member's row is its depth, so siblings share the row
+ * under their parent. Siblings must run one after another. One that
+ * overlaps an earlier sibling is drawn on the same row and listed in
+ * `overlaps`. The extent is the union of every member. */
 export function packFamily(node: PackNode): FamilyLayout {
   const tops = new Map<string, number>();
   tops.set(node.id, 0);
+  const overlaps: string[] = [];
   let start = node.start;
   let end: number | null = node.end == null ? null : node.end;
   let ongoing = end === null;
   const children = node.children;
-  if (!children || children.length === 0) return { rows: 1, start, end, tops };
-  const subs: FamilyLayout[] = new Array(children.length);
-  const items: PackItem[] = new Array(children.length);
-  for (let k = 0; k < children.length; k++) {
-    const sub = packFamily(children[k]);
-    subs[k] = sub;
-    items[k] = { id: children[k].id, start: sub.start, end: sub.end, rows: sub.rows };
+  if (!children || children.length === 0) return { rows: 1, start, end, tops, overlaps };
+  let deepest = 0;
+  const subs = children.map((c) => ({ c, sub: packFamily(c) }));
+  for (const { sub } of subs) {
+    if (sub.rows > deepest) deepest = sub.rows;
     if (sub.start < start) start = sub.start;
     if (sub.end === null) ongoing = true;
     else if (end !== null && sub.end > end) end = sub.end;
+    for (const [id, t] of sub.tops) tops.set(id, 1 + t);
+    overlaps.push(...sub.overlaps);
   }
-  const packed = packTracks(items);
-  for (let k = 0; k < children.length; k++) {
-    const off = 1 + packed.tracks[k];
-    for (const [id, t] of subs[k].tops) tops.set(id, off + t);
+  subs.sort((a, b) => a.sub.start - b.sub.start);
+  let reach = -Infinity;
+  for (const { c, sub } of subs) {
+    if (sub.start < reach) overlaps.push(c.id);
+    reach = Math.max(reach, sub.end ?? Infinity);
   }
-  return { rows: 1 + packed.trackCount, start, end: ongoing ? null : end, tops };
+  return { rows: 1 + deepest, start, end: ongoing ? null : end, tops, overlaps };
 }
 
 // -- Lane layout --------------------------------------------------------------------

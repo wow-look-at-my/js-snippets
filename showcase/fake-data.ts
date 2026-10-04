@@ -375,10 +375,9 @@ const retry: LaneSpec = {
   },
 };
 
-// One release run per cycle, its stages nested under it. The stage times are
-// fixed offsets so every treatment lands in view: stages overlap (test runs
-// while canary warms), test carries its own nested pair, and the approval is
-// an instant child.
+// One release run per cycle, its stages nested under it as in a flame chart:
+// siblings run one after another and never overlap. Test carries its own
+// nested pair, and the approval is an instant child.
 const release: LaneSpec = {
   lane: { id: 'release', label: 'release · pipeline' },
   period: 240 * SEC,
@@ -392,9 +391,9 @@ const release: LaneSpec = {
     const build = { s: start + 4 * SEC, e: start + between(rnd, 30 * SEC, 42 * SEC) };
     const test = { s: build.e + 2 * SEC, e: build.e + between(rnd, 60 * SEC, 75 * SEC) };
     const unit = { s: test.s + 2 * SEC, e: test.s + between(rnd, 20 * SEC, 30 * SEC) };
-    const e2e = { s: test.s + 3 * SEC, e: e2eFailed ? test.s + between(rnd, 25 * SEC, 40 * SEC) : test.e - 2 * SEC };
+    const e2e = { s: unit.e + 1 * SEC, e: e2eFailed ? unit.e + between(rnd, 10 * SEC, 20 * SEC) : test.e - 2 * SEC };
     if (e2eFailed) test.e = e2e.e + 1 * SEC;
-    const canary = { s: test.e - 12 * SEC, e: test.e + between(rnd, 14 * SEC, 24 * SEC) };
+    const canary = { s: test.e + 2 * SEC, e: test.e + between(rnd, 16 * SEC, 26 * SEC) };
     if (canaryCancelled) canary.e = canary.s + between(rnd, 6 * SEC, 10 * SEC);
     // A failed test or an aborted canary ends the release there: nothing is approved or promoted.
     const approve = e2eFailed || canaryCancelled ? null : canary.e + 3 * SEC;

@@ -481,6 +481,7 @@ export class TimelineViewElement extends HTMLElement {
   private laneUnclustered: NInterval[][] = [];
   // Per lane: the intervals with no same-lane parent, in (start, id) order.
   private laneRoots: NInterval[][] = [];
+  private reportedOverlaps = new Set<string>();
   // Sticky row state, one allocator per lane ID.
   private allocators = new Map<string, TrackAllocator>();
   private targetCounts: number[] = []; // visible track count per lane
@@ -1480,6 +1481,17 @@ export class TimelineViewElement extends HTMLElement {
    * into its block (packFamily). Writes parent/children/rows/famStart/
    * famEnd on each node and the root's famTops, and rebuilds laneRoots.
    */
+  /** Sub-spans that overlap a sibling break the flame-chart contract. Each one is reported once, by id. */
+  private reportOverlaps(ids: readonly string[]): void {
+    for (const id of ids) {
+      if (this.reportedOverlaps.has(id)) continue;
+      this.reportedOverlaps.add(id);
+      const n = this.byId.get(id);
+      const parent = n?.parent?.id ?? '?';
+      console.error(`<timeline-view>: sub-span "${id}" overlaps a sibling under "${parent}". Siblings must run one after another. The chart draws them on one row.`);
+    }
+  }
+
   private resolveFamilies(laneIdx: number): void {
     const per = this.perLane[laneIdx];
     const parentOf = resolveParents(per.map((n) => ({ id: n.id, parentId: n.src.parentId })));
@@ -1511,7 +1523,10 @@ export class TimelineViewElement extends HTMLElement {
       n.rows = fam.rows;
       n.famStart = fam.start;
       n.famEnd = fam.end;
-      if (n.parent === null) n.famTops = fam.tops;
+      if (n.parent === null) {
+        n.famTops = fam.tops;
+        this.reportOverlaps(fam.overlaps);
+      }
     }
     // Depth and root by walking up: the forest is acyclic (resolveParents).
     for (const n of per) {
@@ -3871,22 +3886,18 @@ export class TimelineViewElement extends HTMLElement {
     }
   }
 
-  /** The x ranges, clipped to [x0, x1], where a bar of n's family sits on the given row. */
-  private familyOverlaps(n: NInterval, track: number, x0: number, x1: number, now: number): [number, number][] {
+  /** The x ranges, clipped to [x0, x1], that the bars of `members` cover. Instants cover nothing. */
+  private barOverlaps(members: readonly NInterval[], x0: number, x1: number, now: number): [number, number][] {
     const out: [number, number][] = [];
-    if (n.parent === null && n.children === null) return out;
     const rv = this.renderView();
     const plotW = this.plotWidth();
-    const walk = (m: NInterval): void => {
-      if (m !== n && m.track === track && !isInstantWidth(durationWidthPx(m.start, m.end ?? now, rv, plotW))) {
-        const mr = this.rectForInto(m, now, { x: 0, y: 0, w: 0, h: 0 });
-        const a = Math.max(x0, mr.x);
-        const b = Math.min(x1, mr.x + Math.max(mr.w, MIN_BAR_PX));
-        if (b > a) out.push([a, b]);
-      }
-      if (m.children) for (const c of m.children) walk(c);
-    };
-    walk(n.root);
+    for (const m of members) {
+      if (isInstantWidth(durationWidthPx(m.start, m.end ?? now, rv, plotW))) continue;
+      const mr = this.rectForInto(m, now, { x: 0, y: 0, w: 0, h: 0 });
+      const a = Math.max(x0, mr.x);
+      const b = Math.min(x1, mr.x + Math.max(mr.w, MIN_BAR_PX));
+      if (b > a) out.push([a, b]);
+    }
     return out;
   }
 
@@ -3907,9 +3918,9 @@ export class TimelineViewElement extends HTMLElement {
       return;
     }
 
-    // A sub-span attaches to whatever bar of its family sits on the row directly above it.
+    // A sub-span hangs from its parent, which sits on the row directly above it.
     const xEnd = r.x + Math.max(r.w, MIN_BAR_PX);
-    const above = n.parent !== null ? this.familyOverlaps(n, n.track - 1, r.x, xEnd, now) : [];
+    const above = n.parent !== null ? this.barOverlaps([n.parent], r.x, xEnd, now) : [];
     const attached = above.length > 0;
     if (attached) {
       const gap = this.metrics().trackGap;
@@ -3928,7 +3939,7 @@ export class TimelineViewElement extends HTMLElement {
     const radius = Math.min(3, bh / 3, bw / 2);
     // Square the edges where a family joins: the top of a sub-span, the bottom of a span that has sub-spans.
     const top = attached ? 0 : radius;
-    const bottom = this.familyOverlaps(n, n.track + 1, x0, x1, now).length > 0 ? 0 : radius;
+    const bottom = n.children !== null && this.barOverlaps(n.children, x0, x1, now).length > 0 ? 0 : radius;
     const path = new Path2D();
     path.roundRect(x0, y, bw, bh, [top, top, bottom, bottom]);
 

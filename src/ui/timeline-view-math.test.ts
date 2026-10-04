@@ -2220,57 +2220,75 @@ test('resolveParents: a cycle is cut so the result is a forest', () => {
   }
 });
 
-test('packFamily: the root sits on row 0, children first-fit under it, the block is 1 + child rows tall', () => {
+test('packFamily: a flame chart — every child sits on the row under its parent, and the block is one row per depth', () => {
   const fam = packFamily({
     id: 'run',
     start: 0,
     end: 100,
     children: [
       { id: 'build', start: 5, end: 40 },
-      { id: 'test-a', start: 40, end: 80 },
-      { id: 'test-b', start: 42, end: 70 }, // overlaps test-a → second child row
+      {
+        id: 'test',
+        start: 40,
+        end: 80,
+        children: [
+          { id: 'unit', start: 41, end: 60 },
+          { id: 'e2e', start: 60, end: 79 },
+        ],
+      },
       { id: 'promote', start: 85, end: 95 },
     ],
   });
   assert.equal(fam.rows, 3);
   assert.equal(fam.start, 0);
   assert.equal(fam.end, 100);
-  assert.equal(fam.tops.get('run'), 0);
-  assert.equal(fam.tops.get('build'), 1);
-  assert.equal(fam.tops.get('test-a'), 1);
-  assert.equal(fam.tops.get('test-b'), 2);
-  assert.equal(fam.tops.get('promote'), 1);
+  assert.deepEqual(
+    ['run', 'build', 'test', 'promote', 'unit', 'e2e'].map((id) => fam.tops.get(id)),
+    [0, 1, 1, 1, 2, 2],
+  );
+  assert.deepEqual(fam.overlaps, []);
 });
 
-test('packFamily: a child with no siblings overlapping packs on the row right under its parent', () => {
-  const fam = packFamily({ id: 'p', start: 0, end: 10, children: [{ id: 'c', start: 2, end: 8 }] });
-  assert.equal(fam.rows, 2);
-  assert.deepEqual([...fam.tops], [['p', 0], ['c', 1]]);
-});
-
-test('packFamily: nested families stack — a grandchild sits under its parent, offset by where that parent packed', () => {
+test('packFamily: the block is as tall as its deepest branch', () => {
   const fam = packFamily({
-    id: 'run',
+    id: 'p',
     start: 0,
     end: 100,
     children: [
-      { id: 'build', start: 0, end: 50 },
-      {
-        id: 'test',
-        start: 10,
-        end: 90,
-        children: [
-          { id: 'unit', start: 12, end: 40 },
-          { id: 'e2e', start: 15, end: 85 },
-        ],
-      },
+      { id: 'a', start: 0, end: 50, children: [{ id: 'a1', start: 0, end: 50, children: [{ id: 'a11', start: 0, end: 10 }] }] },
+      { id: 'b', start: 50, end: 100 },
     ],
   });
-  assert.equal(fam.tops.get('build'), 1);
-  assert.equal(fam.tops.get('test'), 2);
-  assert.equal(fam.tops.get('unit'), 3);
-  assert.equal(fam.tops.get('e2e'), 4);
-  assert.equal(fam.rows, 5);
+  assert.equal(fam.rows, 4);
+  assert.equal(fam.tops.get('a11'), 3);
+  assert.equal(fam.tops.get('b'), 1);
+});
+
+test('packFamily: overlapping siblings are not valid flame-chart data — they share the row and are reported', () => {
+  const fam = packFamily({
+    id: 'p',
+    start: 0,
+    end: 100,
+    children: [
+      { id: 'b', start: 30, end: 60 },
+      { id: 'a', start: 0, end: 40 },
+      { id: 'c', start: 60, end: 90 },
+      { id: 'live', start: 92, end: null },
+      { id: 'late', start: 95, end: 99 },
+    ],
+  });
+  assert.equal(fam.rows, 2, 'no extra row is made to hide the overlap');
+  assert.deepEqual(fam.overlaps, ['b', 'late'], 'b starts inside a; late starts while live still runs; c starts as b ends');
+});
+
+test('packFamily: an overlap deep in the tree reaches the root', () => {
+  const fam = packFamily({
+    id: 'p',
+    start: 0,
+    end: 100,
+    children: [{ id: 't', start: 0, end: 100, children: [{ id: 'x', start: 0, end: 50 }, { id: 'y', start: 10, end: 20 }] }],
+  });
+  assert.deepEqual(fam.overlaps, ['y']);
 });
 
 test('packFamily: the extent is the union, and any ongoing member makes the block ongoing', () => {
@@ -2283,7 +2301,7 @@ test('packFamily: the extent is the union, and any ongoing member makes the bloc
   assert.equal(liveRoot.end, null);
 });
 
-test('packFamily: instant children (end == start) still get a row each when coincident', () => {
+test('packFamily: back-to-back instants at one time are sequential, not overlapping', () => {
   const fam = packFamily({
     id: 'p',
     start: 0,
@@ -2293,8 +2311,8 @@ test('packFamily: instant children (end == start) still get a row each when coin
       { id: 'i2', start: 5, end: 5 },
     ],
   });
-  assert.equal(fam.rows, 3);
-  assert.notEqual(fam.tops.get('i1'), fam.tops.get('i2'));
+  assert.equal(fam.rows, 2);
+  assert.deepEqual(fam.overlaps, []);
 });
 
 test('packFamily + packTracks: a family block keeps unrelated bars out of its rows', () => {
