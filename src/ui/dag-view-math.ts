@@ -19,6 +19,10 @@ export interface DagNode {
   state?: string;
   /** Pins the node to a layer. */
   layer?: number;
+  /** Multi-line explanation: why the node is in its state. The tooltip and the selected-node panel show it in full. */
+  detail?: string;
+  /** A link for the node. The selected-node panel and Ctrl/Cmd-click open it. Only http(s) and relative links open. */
+  href?: string;
   /** Consumer payload, passed back untouched on every event and callback. */
   meta?: unknown;
 }
@@ -1175,19 +1179,88 @@ export interface MeasureOptions {
   maxW?: number;
   /** Floor on the box width, so a one-character node is still a target. */
   minW?: number;
+  /** Most lines the label wraps to. The last line ends in an ellipsis when text is left over. */
+  labelLines?: number;
+  /** Most lines the sublabel wraps to. */
+  subLines?: number;
 }
 
-export const DEFAULT_NODE_MAX_W = 240;
+export const DEFAULT_NODE_MAX_W = 300;
 export const DEFAULT_NODE_MIN_W = 72;
+export const DEFAULT_LABEL_LINES = 2;
+export const DEFAULT_SUB_LINES = 2;
+/** The sublabel font is one px smaller, so its glyphs run this much narrower. */
+const SUB_CHAR_RATIO = 0.9;
+/** Glyph widths of padding inside a state badge, both sides together. */
+const BADGE_PAD_CHARS = 2;
+/** Gap between the label and the state badge, in glyph widths. */
+const BADGE_GAP_CHARS = 1;
+
+/** Text wrapped to a line budget. */
+export interface WrappedText {
+  lines: string[];
+  /** True when the text did not fit and the last line was cut. */
+  truncated: boolean;
+}
+
+/** A character after which a line may break: a space, or a separator in an identifier such as a branch or a path. */
+function breaksAfter(ch: string): boolean {
+  return ch === ' ' || ch === '/' || ch === '-' || ch === '_' || ch === '.' || ch === ':' || ch === ',';
+}
 
 /**
- * A default box size from a node's text. Rough by construction: it works off
- * an average glyph advance rather than a real text measurement, because the
- * layout runs before anything has a canvas context. `<dag-view>` passes its
- * own measured `charW` from the live font, which is what makes the estimate
- * track the actual rendering.
+ * Wrap `text` to lines of at most `maxChars` characters, breaking after a space or an identifier separator.
+ * A token longer than a line breaks mid-token. The last line ends in an ellipsis when text is left over.
  */
-export function measureNode(node: DagNode, opts: MeasureOptions = {}): NodeSize {
+export function wrapText(text: string, maxChars: number, maxLines: number): WrappedText {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  const width = Math.max(1, Math.floor(maxChars));
+  if (clean === '' || maxLines <= 0) return { lines: [], truncated: clean !== '' };
+  const lines: string[] = [];
+  let rest = clean;
+  while (rest !== '' && lines.length < maxLines) {
+    if (rest.length <= width) {
+      lines.push(rest);
+      rest = '';
+      break;
+    }
+    let cut = -1;
+    for (let pos = width; pos > 0; pos--) {
+      if (breaksAfter(rest[pos - 1])) {
+        cut = pos;
+        break;
+      }
+    }
+    // No break point in the first half: a mid-token cut keeps the line full.
+    if (cut < width / 2) cut = width;
+    lines.push(rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest === '') return { lines, truncated: false };
+  const last = lines[lines.length - 1];
+  lines[lines.length - 1] = (last.length >= width ? last.slice(0, width - 1) : last).trimEnd() + '…';
+  return { lines, truncated: true };
+}
+
+/** A node's box and the text the box holds, line by line. */
+export interface NodeText extends NodeSize {
+  label: string[];
+  sub: string[];
+  /** The state word drawn as a badge on the first label line, or '' for none. */
+  badge: string;
+  /** Characters per label line that the box holds beside the badge. */
+  labelChars: number;
+  /** Characters per sublabel line. */
+  subChars: number;
+}
+
+/**
+ * The box size and the wrapped lines of a node. Rough by construction: it works off an average glyph advance
+ * rather than a real text measurement, because the layout runs before anything has a canvas context.
+ * `<dag-view>` passes its own measured `charW` from the live font, which is what makes the estimate track the
+ * actual rendering. The state word takes room on the first label line, so it never covers the label.
+ */
+export function layoutNodeText(node: DagNode, opts: MeasureOptions = {}): NodeText {
   const charW = opts.charW ?? 6.2;
   const padX = opts.padX ?? 10;
   const padY = opts.padY ?? 7;
@@ -1195,12 +1268,39 @@ export function measureNode(node: DagNode, opts: MeasureOptions = {}): NodeSize 
   const subLineH = opts.subLineH ?? 13;
   const maxW = opts.maxW ?? DEFAULT_NODE_MAX_W;
   const minW = opts.minW ?? DEFAULT_NODE_MIN_W;
-  const label = node.label ?? node.id;
-  const sub = node.sublabel ?? '';
-  const textW = Math.max(label.length * charW, sub.length * charW * 0.88);
-  const w = Math.max(minW, Math.min(maxW, Math.ceil(textW + padX * 2)));
-  const h = padY * 2 + lineH + (sub !== '' ? subLineH : 0);
-  return { w, h };
+  const labelText = node.label ?? node.id;
+  const subText = node.sublabel ?? '';
+  const badge = node.state ?? '';
+  const badgeChars = badge === '' ? 0 : badge.length + BADGE_PAD_CHARS + BADGE_GAP_CHARS;
+  const subW = charW * SUB_CHAR_RATIO;
+  const wantW = Math.max((labelText.length + badgeChars) * charW, subText.length * subW);
+  const w = Math.max(minW, Math.min(maxW, Math.ceil(wantW + padX * 2)));
+  const inner = w - padX * 2;
+  const labelChars = Math.max(1, Math.floor(inner / charW) - badgeChars);
+  const subChars = Math.max(1, Math.floor(inner / subW));
+  const label = wrapText(labelText, labelChars, opts.labelLines ?? DEFAULT_LABEL_LINES).lines;
+  const sub = wrapText(subText, subChars, opts.subLines ?? DEFAULT_SUB_LINES).lines;
+  const h = padY * 2 + Math.max(1, label.length) * lineH + sub.length * subLineH;
+  return { w, h, label, sub, badge, labelChars, subChars };
+}
+
+/** A default box size from a node's text: the size half of layoutNodeText. */
+export function measureNode(node: DagNode, opts: MeasureOptions = {}): NodeSize {
+  const t = layoutNodeText(node, opts);
+  return { w: t.w, h: t.h };
+}
+
+/**
+ * A node `href` the element may open, or null. Only http(s) and same-origin relative links pass. A
+ * `javascript:` or `data:` URL from a consumer's payload must never run on a click.
+ */
+export function safeNodeHref(href: string | undefined): string | null {
+  if (href === undefined) return null;
+  const h = href.trim();
+  if (h === '') return null;
+  if (/^https?:\/\//i.test(h)) return h;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(h) || h.startsWith('//')) return null;
+  return h;
 }
 
 // -- Viewport ------------------------------------------------------------------------

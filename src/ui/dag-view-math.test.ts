@@ -39,6 +39,9 @@ import {
   DEFAULT_GAP,
   fitToDesired,
   DEFAULT_NODE_MAX_W,
+  wrapText,
+  layoutNodeText,
+  safeNodeHref,
   DEFAULT_NODE_MIN_W,
 } from './dag-view-math.ts';
 import type { DagNode, DagEdge, DagLayout, DagViewport } from './dag-view-math.ts';
@@ -742,6 +745,75 @@ test('measureNode: a one-character node is still a clickable target', () => {
 
 test('measureNode: the id stands in for a missing label', () => {
   assert.deepEqual(measureNode({ id: 'some-identifier' }), measureNode({ id: 'q', label: 'some-identifier' }));
+});
+
+// -- wrapText / layoutNodeText -------------------------------------------------------------
+
+test('wrapText: short text is one line, untouched', () => {
+  assert.deepEqual(wrapText('hello', 20, 2), { lines: ['hello'], truncated: false });
+});
+
+test('wrapText: a branch name breaks after its separators, not mid-word', () => {
+  const w = wrapText('#125 claude/serial-reason-validation-3a7xe4', 24, 2);
+  assert.equal(w.truncated, false);
+  assert.deepEqual(w.lines, ['#125 claude/serial-', 'reason-validation-3a7xe4']);
+  for (const l of w.lines) assert.ok(l.length <= 24, l);
+});
+
+test('wrapText: text past the line budget ends in an ellipsis inside the width', () => {
+  const w = wrapText('one two three four five six seven eight nine ten', 10, 2);
+  assert.equal(w.truncated, true);
+  assert.equal(w.lines.length, 2);
+  assert.ok(w.lines[1].endsWith('…'));
+  for (const l of w.lines) assert.ok(l.length <= 10, l);
+});
+
+test('wrapText: a token with no break point is cut mid-token', () => {
+  assert.deepEqual(wrapText('x'.repeat(25), 10, 3), { lines: ['x'.repeat(10), 'x'.repeat(10), 'x'.repeat(5)], truncated: false });
+});
+
+test('wrapText: blank text has no lines', () => {
+  assert.deepEqual(wrapText('   ', 10, 2), { lines: [], truncated: false });
+});
+
+test('layoutNodeText: a long title wraps to two lines instead of one clipped line', () => {
+  const t = layoutNodeText({ id: 'n', label: '#125 claude/serial-reason-validation-3a7xe4', sublabel: 'wow-look-at-my/gosmopolitan', state: 'blocked' });
+  assert.equal(t.label.join('').replace(/\s/g, ''), '#125claude/serial-reason-validation-3a7xe4');
+  assert.deepEqual(t.sub, ['wow-look-at-my/gosmopolitan']);
+  assert.equal(t.badge, 'blocked');
+  const one = layoutNodeText({ id: 'n', label: 'short', sublabel: 'wow-look-at-my/gosmopolitan', state: 'blocked' });
+  assert.ok(t.h >= one.h);
+});
+
+test('layoutNodeText: the state badge takes room on the label line', () => {
+  const plain = layoutNodeText({ id: 'n', label: 'build' });
+  const badged = layoutNodeText({ id: 'n', label: 'build', state: 'blocked' });
+  assert.ok(badged.w > plain.w, 'the badge widens the box');
+  assert.equal(plain.badge, '');
+});
+
+test('layoutNodeText: every wrapped line fits the characters the box holds', () => {
+  const t = layoutNodeText({ id: 'n', label: 'a '.repeat(200), sublabel: 'b-'.repeat(200), state: 'failed' });
+  assert.equal(t.w, DEFAULT_NODE_MAX_W);
+  for (const l of t.label) assert.ok(l.length <= t.labelChars, l);
+  for (const l of t.sub) assert.ok(l.length <= t.subChars, l);
+});
+
+// -- safeNodeHref ----------------------------------------------------------------------------
+
+test('safeNodeHref: http(s) and relative links pass', () => {
+  assert.equal(safeNodeHref('https://example.com/x'), 'https://example.com/x');
+  assert.equal(safeNodeHref(' /dashboard#task=1 '), '/dashboard#task=1');
+  assert.equal(safeNodeHref('#run=abc'), '#run=abc');
+});
+
+test('safeNodeHref: a script or data URL never opens', () => {
+  assert.equal(safeNodeHref('javascript:alert(1)'), null);
+  assert.equal(safeNodeHref('JavaScript:alert(1)'), null);
+  assert.equal(safeNodeHref('data:text/html,x'), null);
+  assert.equal(safeNodeHref('//evil.example'), null);
+  assert.equal(safeNodeHref(''), null);
+  assert.equal(safeNodeHref(undefined), null);
 });
 
 // -- Viewport ---------------------------------------------------------------------------
