@@ -34,6 +34,8 @@ import {
   hitTestGroupHeader,
   groupOfNode,
   groupMatches,
+  classifyWheel,
+  newWheelState,
   MIN_SCALE,
   MAX_SCALE,
 } from './dag-view-math.ts';
@@ -48,6 +50,8 @@ import type {
   Neighbourhood,
   NodeText,
   WorldRect,
+  WheelState,
+  WheelSource,
   DagGroup,
   PlacedGroup,
 } from './dag-view-math.ts';
@@ -237,6 +241,10 @@ const MAX_DPR = 3;
 /* */
 const EDGE_HIT_TOL = 6;
 
+/** How long the mouse-wheel hint stays before it fades, in ms. */
+const WHEEL_HINT_MS = 1400;
+/** The mouse-wheel hint shows at most once per this many ms. */
+const WHEEL_HINT_EVERY_MS = 4000;
 /** How long the right-click's confirmation stays on screen, in ms. */
 const TOAST_MS = 2600;
 /** Below this scale, node labels stop being drawn. */
@@ -287,6 +295,12 @@ export class DagViewElement extends HTMLElement {
   private ctx: CanvasRenderingContext2D | null = null;
   private tooltipEl: HTMLDivElement;
   private toastEl: HTMLDivElement;
+  private wheelHintEl: HTMLDivElement;
+  private wheelState: WheelState = newWheelState();
+  private wheelHintAt = -Infinity;
+  private wheelHintTimer = 0;
+  /** The source the last wheel event was classified as, for a test to read. Null before any wheel. */
+  lastWheelSource: WheelSource | null = null;
   private menuEl: HTMLDivElement;
   private toastTimer = 0;
   private emptyEl: HTMLDivElement;
@@ -407,6 +421,11 @@ export class DagViewElement extends HTMLElement {
     this.toastEl.className = 'toast';
     this.toastEl.hidden = true;
     shadow.appendChild(this.toastEl);
+    this.wheelHintEl = document.createElement('div');
+    this.wheelHintEl.className = 'wheel-hint';
+    this.wheelHintEl.setAttribute('aria-hidden', 'true');
+    this.wheelHintEl.textContent = /Mac|iPhone|iPad/.test(navigator.userAgent) ? '⌘ + scroll to zoom' : 'Ctrl + scroll to zoom';
+    shadow.appendChild(this.wheelHintEl);
 
     // The right-click menu.
     this.menuEl = document.createElement('div');
@@ -499,6 +518,7 @@ export class DagViewElement extends HTMLElement {
     this.canvas.removeEventListener('dblclick', this.onDoubleClick);
     this.canvas.removeEventListener('contextmenu', this.onContextMenu);
     clearTimeout(this.toastTimer);
+    clearTimeout(this.wheelHintTimer);
     this.removeEventListener('keydown', this.onKeyDown);
     this.searchEl.removeEventListener('input', this.onSearchInput);
     this.noticeEl.removeEventListener('click', this.onNoticeDismiss);
@@ -1294,12 +1314,26 @@ export class DagViewElement extends HTMLElement {
     this.lastInputTs = performance.now();
     this.closeMenu();
     const px = normalizeWheel(e.deltaY, e.deltaMode);
+    // Ctrl or Meta zooms, whatever sent it. A trackpad pinch arrives as a wheel with ctrlKey set.
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
       const p = this.localPoint(e);
       this.view = zoomViewportAt(this.view, p.x, p.y, zoomFactorForWheel(px));
       this.viewTouched = true;
       this.invalidate();
+      return;
+    }
+    const judged = classifyWheel(this.wheelState, {
+      deltaX: e.deltaX,
+      deltaY: e.deltaY,
+      deltaMode: e.deltaMode,
+      time: e.timeStamp,
+    });
+    this.wheelState = judged.state;
+    this.lastWheelSource = judged.source;
+    if (judged.source === 'mouse') {
+      // A plain mouse wheel belongs to the page: the graph must not catch a scroll that is only passing by.
+      this.showWheelHint();
       return;
     }
     const dx = normalizeWheel(e.deltaX, e.deltaMode);
@@ -1313,6 +1347,16 @@ export class DagViewElement extends HTMLElement {
       this.invalidate();
     }
   };
+
+  /** Says once in a while how to zoom with a mouse wheel, and fades. */
+  private showWheelHint(): void {
+    const now = performance.now();
+    if (now - this.wheelHintAt < WHEEL_HINT_EVERY_MS) return;
+    this.wheelHintAt = now;
+    this.wheelHintEl.classList.add('show');
+    clearTimeout(this.wheelHintTimer);
+    this.wheelHintTimer = window.setTimeout(() => this.wheelHintEl.classList.remove('show'), WHEEL_HINT_MS);
+  }
 
   private onKeyDown = (e: KeyboardEvent): void => {
     if (e.target === this.searchEl) return;

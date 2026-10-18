@@ -380,6 +380,34 @@ button[hidden] {
   display: none;
 }
 
+/* The mouse-wheel hint: centred, out of the way of the pointer, and gone in a moment. */
+.wheel-hint {
+  position: absolute;
+  z-index: 3;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 6px 12px;
+  border: 1px solid var(--dag-line, #2a3040);
+  border-radius: 6px;
+  background: var(--dag-bg, #0d0f14);
+  color: var(--dag-fg, #c9d1d9);
+  font-size: var(--dag-font-size, 11px);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+.wheel-hint.show {
+  opacity: 0.92;
+  transition: opacity 0.12s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wheel-hint,
+  .wheel-hint.show {
+    transition: none;
+  }
+}
+
 /* -- Right-click menu ----------------------------------------------------------- */
 
 .menu {

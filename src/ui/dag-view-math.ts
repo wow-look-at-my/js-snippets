@@ -2015,3 +2015,57 @@ export function groupMatches(group: PlacedGroup, query: string): boolean {
   if (query === '') return false;
   return group.members.some((m) => `${m.id} ${m.label ?? ''} ${m.sublabel ?? ''}`.toLowerCase().includes(query));
 }
+
+// -- Wheel source --------------------------------------------------------------------
+
+/** What sent a wheel event: a notched mouse wheel, or a trackpad's two-finger scroll. */
+export type WheelSource = 'mouse' | 'trackpad';
+
+/** The part of a WheelEvent the classifier reads. */
+export interface WheelSample {
+  deltaX: number;
+  deltaY: number;
+  /** 0 = pixels, 1 = lines, 2 = pages. */
+  deltaMode: number;
+  /** ms, from the event's timeStamp. */
+  time: number;
+}
+
+/** A gap longer than this starts a new gesture, which is classified afresh. */
+export const WHEEL_BURST_GAP_MS = 300;
+/** An integer pixel delta this large, with no sideways part, is a wheel notch. */
+export const WHEEL_NOTCH_PX = 40;
+
+/** What the classifier remembers between events: the source of the current gesture. */
+export interface WheelState {
+  source: WheelSource | null;
+  lastTime: number;
+  lastAbsY: number;
+}
+
+export function newWheelState(): WheelState {
+  return { source: null, lastTime: -Infinity, lastAbsY: 0 };
+}
+
+/**
+ * Guesses whether a wheel event came from a mouse wheel or a trackpad. It is
+ * a heuristic, because a browser reports both as the same event. A gesture
+ * keeps the source its first telling event gave it, so one burst never flips
+ * between panning and passing through. Mouse: a line or page delta, a large
+ * integer delta, or the same large delta again. Trackpad: a sideways part or
+ * a fractional delta. A small integer delta that says neither is a trackpad,
+ * because a mouse notch is never that small in pixels.
+ */
+export function classifyWheel(state: WheelState, e: WheelSample): { state: WheelState; source: WheelSource } {
+  const fresh = e.time - state.lastTime > WHEEL_BURST_GAP_MS;
+  const absY = Math.abs(e.deltaY);
+  let source = fresh ? null : state.source;
+  if (source === null) {
+    if (e.deltaMode !== 0) source = 'mouse';
+    else if (e.deltaX !== 0 || !Number.isInteger(e.deltaY)) source = 'trackpad';
+    else if (absY >= WHEEL_NOTCH_PX) source = 'mouse';
+    else if (!fresh && absY > 0 && absY === state.lastAbsY && absY >= WHEEL_NOTCH_PX / 2) source = 'mouse';
+    else source = 'trackpad';
+  }
+  return { state: { source, lastTime: e.time, lastAbsY: absY }, source };
+}
