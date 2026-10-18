@@ -1743,7 +1743,8 @@ export class DagViewElement extends HTMLElement {
     if (badge !== '') {
       ctx.font = subFont;
       const padB = 4 * s;
-      badgeW = Math.min(ctx.measureText(badge).width + padB * 2, (right - left) / 2);
+      // The layout sized the box for the label and the whole badge, so the badge keeps its word and only an extreme box cuts it.
+      badgeW = Math.min(ctx.measureText(badge).width + padB * 2, (right - left) * 0.8);
       const bh = subPx + 4 * s;
       const bx = right - badgeW;
       const by = cy - bh / 2;
