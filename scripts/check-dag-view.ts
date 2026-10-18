@@ -820,6 +820,59 @@ check(
 );
 await page.evaluate(() => (document.getElementById('demo-dag') as DagViewElement).fit());
 
+// -- Focus fade ----------------------------------------------------------------------
+// Hovering a node dims the rest only after a second, so a pointer that crosses the graph does not flash it.
+
+const focusSetup = await page.evaluate(async () => {
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	el.scrollIntoView({ block: 'center' });
+	el.selected = null;
+	el.fit();
+	await new Promise((r) => setTimeout(r, 400));
+	const snap = el.snapshot;
+	const rect = el.getBoundingClientRect();
+	const at = (id: string): { x: number; y: number } => {
+		const n = snap.nodes.find((x) => x.id === id)!;
+		return { x: rect.left + n.screen.x + n.screen.w / 2, y: rect.top + n.screen.y + n.screen.h / 2 };
+	};
+	return { bundle: at('bundle'), off: { x: rect.left + 4, y: rect.bottom - 4 } };
+});
+const auditPixels = (): Promise<number> =>
+	page.evaluate(() => {
+		const el = document.getElementById('demo-dag') as DagViewElement;
+		const canvas = el.shadowRoot!.querySelector('canvas')!;
+		const node = el.snapshot.nodes.find((n) => n.id === 'audit')!;
+		const dpr = el.snapshot.canvas.dpr;
+		const data = canvas
+			.getContext('2d')!
+			.getImageData(
+				Math.round((node.screen.x + 3) * dpr),
+				Math.round((node.screen.y + 3) * dpr),
+				Math.max(1, Math.round((node.screen.w - 6) * dpr)),
+				Math.max(1, Math.round((node.screen.h - 6) * dpr)),
+			).data;
+		let sum = 0;
+		for (let idx = 0; idx < data.length; idx += 4) sum += data[idx] + data[idx + 1] + data[idx + 2];
+		return sum;
+	});
+await page.mouse.move(focusSetup.off.x, focusSetup.off.y);
+await page.waitForTimeout(500);
+const bright = await auditPixels();
+await page.mouse.move(focusSetup.bundle.x, focusSetup.bundle.y);
+await page.waitForTimeout(500);
+const early = await auditPixels();
+check('half a second on a node dims no other node', early === bright, `${bright} -> ${early}`);
+await page.waitForTimeout(2000);
+const late = await auditPixels();
+check('two and a half seconds on a node dims the nodes outside its neighbourhood', late < bright * 0.6, `${bright} -> ${late}`);
+await page.mouse.move(focusSetup.off.x, focusSetup.off.y);
+await page.waitForTimeout(100);
+const easing = await auditPixels();
+await page.waitForTimeout(400);
+const back = await auditPixels();
+check('leaving eases the dim back, rather than snapping', easing > late && easing < back, `${late} -> ${easing} -> ${back}`);
+check('leaving ends fully bright again', back === bright, `${bright} vs ${back}`);
+
 // A scratch element, so the gallery board stays as the screenshots need it.
 const stopped = await page.evaluate(async () => {
 	const host = document.createElement('div');
