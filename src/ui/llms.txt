@@ -503,7 +503,9 @@ Edge in BOTH world units and `screen` CSS pixels (origin at the canvas top-left)
 
 Attributes: orientation, no-search, no-toolbar, no-fullscreen-button, no-minimap, no-detail-panel, empty-text, fullscreen.
 
-Node fields: id, label, sublabel, category, state, layer, meta, detail, href, active. The box wraps the label and the sublabel to a couple of lines each, then ends them in an ellipsis. The state is drawn as a word in a badge on the first line. The layout leaves room for it. `detail` is multi-line text: why the node is in its state. The default tooltip shows it in full.
+Node fields: id, label, sublabel, category, state, layer, meta, detail, href, links, active. `links` is a list of {label, href}. The selected-node card lists each one under the detail text. An absolute http(s) link opens in a new tab with rel=noopener. A relative one opens here. A link `safeNodeHref` refuses is left out.
+
+A repeated href is dropped. The box wraps the label and the sublabel to a couple of lines each, then ends them in an ellipsis. The state is drawn as a word in a badge on the first line. The layout leaves room for it. `detail` is multi-line text: why the node is in its state. The default tooltip shows it in full.
 
 Selecting a node opens a panel. At the bottom left with the full label, the state badge, the sublabel, the `detail` text and an "Open" link for the `href` (new tab). `no-detail-panel` turns the panel off. Ctrl/Cmd-click on a node opens its `href` at once, and the right-click menu offers "Open link". Only http(s) and relative links open (`safeNodeHref`). A `setData` refresh keeps the selection when the selected id is still in the graph.
 
@@ -546,7 +548,7 @@ A reversed edge's `points` still run from its TRUE source to its TRUE target. As
 
 This is DEFAULT_NODE_MIN_W (72). And DEFAULT_NODE_MAX_W (300) so one long title cannot set the whole layout. ) → {w, h, label, sub, badge, labelChars. subChars} is the same measure plus the wrapped lines. The label wraps to DEFAULT_LABEL_LINES (2) and the sublabel to DEFAULT_SUB_LINES (2). The state badge takes room on the first label line. wrapText(text, maxChars, maxLines) → {lines, truncated} breaks after a space or an identifier separator (/ - _.: ,), and ends a cut last line in an ellipsis.
 
-safeNodeHref(href) → string | null passes http(s) and relative links and refuses every other scheme.
+safeNodeHref(href) → string | null passes http(s) and relative links and refuses every other scheme. cardLinks(node) → {label, href, external}[] is the list the card renders.
 
 (the world point under the anchor does not move) / zoomFactorForWheel(px) / fitViewport(rect, vw, vh, pad?) / clampViewport(v, bounds, vw, vh, margin?) (a leash, not a fence: it only stops the drawing being flicked out of sight) / layoutBounds(layout) / visibleWorldRect. MIN_SCALE = 0.05, MAX_SCALE = 4, ZOOM_PX_PER_DOUBLE = 260. Culling: rectsOverlap, visibleNodes(layout, rect), visibleEdges(layout, rect). Hit tests: hitTestNodes(layout, wx, wy) (topmost wins), hitTestEdges(layout, wx, wy, tol) (NEAREST wins, not first), nodeRect. neighbourhood(layout, index) → {ancestors, descendants, edges} Everything up-stream and down-stream, transitively. This follows the TRUE edge directions including the ones cycle-breaking reversed.
 
@@ -556,7 +558,7 @@ ACTIVE_PERIOD_MS = 1600, ACTIVE_PULSE_PERIOD_MS = 3200, ACTIVE_SWEEP_SHARE = 0.6
 
 criticalPathLength(layout) → number longest dependency chain, in nodes. nodeHue(node) → 0..359 category. This is else the id.
 
-Types: DagNode, DagEdge, DagOrientation, DagGraph, RejectedEdge, CycleResult, LayerResult, LayerOptions, LayerSlot, ProperLayering, NodeSize, CoordOptions, SlotPlacement, CoordResult, PlacedNode, PlacedEdge, DagLayout, DagLayoutOptions, MeasureOptions, NodeText, WrappedText, DagViewport. This also covers WorldRect, Neighbourhood, ActiveStyle.
+Types: DagNode, DagEdge, DagOrientation, DagGraph, RejectedEdge, CycleResult, LayerResult, LayerOptions, LayerSlot, ProperLayering, NodeSize, CoordOptions, SlotPlacement, CoordResult, PlacedNode, PlacedEdge, DagLayout, DagLayoutOptions, MeasureOptions, NodeText, WrappedText, DagViewport. This also covers WorldRect, Neighbourhood, ActiveStyle, DagLink, CardLink.
 
 ### ui/color.js
 Deterministic category colours, the uniform dim transform and the label halo -- the colour primitives shared by the canvas-painted components (<timeline-view>, <dag-view>). Pure. No DOM, no clock, no random source. Re-exported by ui/timeline-view-math.js, so an existing import of these from there keeps working.
