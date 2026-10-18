@@ -123,6 +123,9 @@
 				<h3>retheme <span class="sub">(the same data under <code>--dag-*</code> custom properties)</span></h3>
 				<dag-view id="demo-dag-theme" class="light" no-search no-toolbar></dag-view>
 
+				<h3>active nodes <span class="sub">(work running now: <code>working</code> and <code>waiting-ci</code> are marked by <code>active: true</code> on their style entries, <code>pr-41</code> by its own <code>active</code> field. A light sheen sweeps each running box about every 1.6&thinsp;s, offset per node so they never beat together, under a solid fill and an outline alike. Under <code>prefers-reduced-motion</code> it becomes a slow fade instead. The idle boxes stay still, and the loop stops when no running box is in view)</span></h3>
+				<dag-view id="demo-dag-active" orientation="LR" no-search></dag-view>
+
 				<h3>empty <span class="sub">(a graph with nothing in it says so, rather than looking broken)</span></h3>
 				<dag-view id="demo-dag-empty" empty-text="No dependencies recorded yet." no-search></dag-view>
 			</section>

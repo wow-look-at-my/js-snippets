@@ -107,6 +107,7 @@ main code {
 #demo-dag-cycle,
 #demo-dag-lr,
 #demo-dag-theme,
+#demo-dag-active,
 #demo-dag-empty {
 	/* Tall enough that a four-layer graph fits ABOVE the label LOD floor.
 	   A shorter box is not a smaller picture, it is an unlabelled one. */

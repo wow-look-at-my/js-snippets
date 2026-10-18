@@ -19,6 +19,8 @@ interface Page {
 	goto(url: string, options?: { waitUntil?: string }): Promise<unknown>;
 	waitForTimeout(ms: number): Promise<void>;
 	evaluate<T>(fn: () => T): Promise<Awaited<T>>;
+	evaluate<T, A>(fn: (arg: A) => T, arg: A): Promise<Awaited<T>>;
+	emulateMedia(options: { reducedMotion: 'reduce' | 'no-preference' }): Promise<void>;
 	$(selector: string): Promise<ElementHandle | null>;
 	mouse: {
 		move(x: number, y: number): Promise<void>;
@@ -90,7 +92,7 @@ const upgrade = await page.evaluate(() => {
 	return out;
 });
 
-check('found every gallery instance', upgrade.length === 5, `saw ${upgrade.length}`);
+check('found every gallery instance', upgrade.length === 6, `saw ${upgrade.length}`);
 for (const u of upgrade) {
 	check(`#${u.id} upgraded with a sized canvas`, u.upgraded && u.hasCanvas && u.w > 0 && u.h > 0, JSON.stringify(u));
 }
@@ -521,6 +523,152 @@ check(
 );
 check('nothing is parked off screen after the fit', scaled.offScreen === 0, `${scaled.offScreen} off screen`);
 
+// -- Active nodes ------------------------------------------------------------------------
+// The sheen is the one thing that moves without input. A frame must differ
+// from the last on an active box and match it on an idle one, and the loop
+// must stop once no active box is in view. Neither is reachable under node.
+
+interface Region {
+	id: string;
+	sums: number[];
+}
+
+/** Fingerprints the interior of each named box in #demo-dag-active, once per sample, a sample every `gap` ms. */
+async function sampleBoxes(ids: string[], samples: number, gap: number): Promise<Region[]> {
+	return page.evaluate(
+		async (arg: { ids: string[]; samples: number; gap: number }) => {
+			const el = document.getElementById('demo-dag-active') as DagViewElement;
+			const canvas = el.shadowRoot!.querySelector('canvas')!;
+			const ctx = canvas.getContext('2d')!;
+			const out = arg.ids.map((id) => ({ id, sums: [] as number[] }));
+			for (let step = 0; step < arg.samples; step++) {
+				const snap = el.snapshot;
+				const dpr = snap.canvas.dpr;
+				for (const region of out) {
+					const node = snap.nodes.find((n) => n.id === region.id)!;
+					const inset = 3;
+					const x = Math.round((node.screen.x + inset) * dpr);
+					const y = Math.round((node.screen.y + inset) * dpr);
+					const w = Math.max(1, Math.round((node.screen.w - 2 * inset) * dpr));
+					const h = Math.max(1, Math.round((node.screen.h - 2 * inset) * dpr));
+					const data = ctx.getImageData(x, y, w, h).data;
+					let sum = 0;
+					for (let idx = 0; idx < data.length; idx += 4) sum += data[idx] + data[idx + 1] * 3 + data[idx + 2] * 7;
+					region.sums.push(sum);
+				}
+				await new Promise((r) => setTimeout(r, arg.gap));
+			}
+			return out;
+		},
+		{ ids, samples, gap },
+	);
+}
+
+const changes = (r: Region): number => r.sums.filter((v, idx) => idx > 0 && v !== r.sums[idx - 1]).length;
+
+await page.mouse.move(2, 2);
+const activeState = await page.evaluate(() => {
+	const el = document.getElementById('demo-dag-active') as DagViewElement;
+	el.scrollIntoView({ block: 'center' });
+	const snap = el.snapshot;
+	return {
+		animating: el.animating,
+		active: snap.nodes.filter((n) => n.active).map((n) => n.id).sort(),
+		canvas: snap.canvas,
+		// Wholly inside the canvas, not merely overlapping it: a box half off the edge samples pixels that are not there.
+		inside: snap.nodes.every(
+			(n) =>
+				n.screen.x >= 0 &&
+				n.screen.y >= 0 &&
+				n.screen.x + n.screen.w <= snap.canvas.width &&
+				n.screen.y + n.screen.h <= snap.canvas.height &&
+				n.screen.w >= 40,
+		),
+	};
+});
+await page.waitForTimeout(300);
+check(
+	'the style entries and the node field mark exactly the running nodes active',
+	JSON.stringify(activeState.active) === JSON.stringify(['pr-12', 'pr-19', 'pr-33', 'pr-41']),
+	JSON.stringify(activeState.active),
+);
+check(
+	'the active board is laid out at a readable size',
+	activeState.canvas.width >= 400 && activeState.canvas.height >= 200,
+	JSON.stringify(activeState.canvas),
+);
+check('every active-board node lies wholly inside the canvas', activeState.inside);
+check('the loop runs while an active node is in view', activeState.animating);
+
+// Ten samples over two periods: a box rests for part of each period, so one pair of frames proves nothing.
+const sweep = await sampleBoxes(['pr-12', 'pr-19', 'pr-41', 'pr-27', 'pr-45'], 10, 320);
+for (const id of ['pr-12', 'pr-19', 'pr-41']) {
+	const r = sweep.find((x) => x.id === id)!;
+	check(`active ${id}: its pixels change between frames`, changes(r) >= 2, `sums ${r.sums.join(',')}`);
+}
+for (const id of ['pr-27', 'pr-45']) {
+	const r = sweep.find((x) => x.id === id)!;
+	check(
+		`idle ${id}: its pixels do not change between frames`,
+		changes(r) === 0 && r.sums[0] > 0,
+		`sums ${r.sums.join(',')}`,
+	);
+}
+
+await page.emulateMedia({ reducedMotion: 'reduce' });
+await page.waitForTimeout(200);
+const pulse = await sampleBoxes(['pr-12', 'pr-45'], 10, 320);
+check('reduced motion: an active box still changes, as a pulse', changes(pulse[0]) >= 2, `sums ${pulse[0].sums.join(',')}`);
+check('reduced motion: an idle box stays still', changes(pulse[1]) === 0, `sums ${pulse[1].sums.join(',')}`);
+await page.emulateMedia({ reducedMotion: 'no-preference' });
+
+// A scratch element, so the gallery board stays as the screenshots need it.
+const stopped = await page.evaluate(async () => {
+	const host = document.createElement('div');
+	host.style.cssText = 'width:600px;height:300px;position:fixed;left:-4000px;top:0';
+	const el = document.createElement('dag-view') as DagViewElement;
+	el.style.cssText = 'display:block;width:100%;height:100%';
+	host.appendChild(el);
+	document.body.appendChild(host);
+	const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 250));
+	el.styles = { working: { active: true } };
+	el.setData({
+		nodes: [
+			{ id: 'run', state: 'working' },
+			{ id: 'idle', state: 'done' },
+		],
+		edges: [{ from: 'idle', to: 'run' }],
+	});
+	await tick();
+	const running = el.animating;
+	const original = el.viewport;
+	// Pan every node out of view: the loop has nothing left to animate.
+	el.viewport = { x: 1e6, y: 1e6, scale: original.scale };
+	await tick();
+	const pannedAway = el.animating;
+	el.viewport = original;
+	await tick();
+	const pannedBack = el.animating;
+	// The same nodes, and no style entry or field says active any more.
+	el.styles = { working: { pattern: 'solid' } };
+	await tick();
+	const noneActive = el.animating;
+	el.setData({ nodes: [{ id: 'run', state: 'working', active: true }], edges: [] });
+	await tick();
+	const fieldActive = el.animating;
+	el.setData({ nodes: [{ id: 'run', state: 'working' }], edges: [] });
+	await tick();
+	const fieldCleared = el.animating;
+	host.remove();
+	return { running, pannedAway, pannedBack, noneActive, fieldActive, fieldCleared };
+});
+check('scratch graph: the loop runs with an active node in view', stopped.running);
+check('the loop stops when every active node is out of view', !stopped.pannedAway);
+check('the loop starts again when an active node comes back into view', stopped.pannedBack);
+check('the loop stops when the style map no longer marks any node active', !stopped.noneActive);
+check('a node field alone starts the loop', stopped.fieldActive);
+check('the loop stops when no active node remains', !stopped.fieldCleared);
+
 // -- Screenshots -------------------------------------------------------------------------
 
 if (shots) {
@@ -534,6 +682,15 @@ if (shots) {
 	// Park the pointer off the graph first: a hover fades everything outside one neighbourhood.
 	await page.mouse.move(2, 2);
 	await page.waitForTimeout(400);
+	// The sheen moves, so two frames apart show it at two positions.
+	for (const name of ['dag-view-active-1.png', 'dag-view-active-2.png']) {
+		const el = await page.$('#demo-dag-active');
+		if (el === null) break;
+		const out = join(outDir, name);
+		await el.screenshot({ path: out });
+		console.log(`  shot ${out}`);
+		await page.waitForTimeout(450);
+	}
 	const gallery: [string, string][] = [
 		['demo-dag', 'dag-view.png'],
 		['demo-dag-cycle', 'dag-view-cycle.png'],

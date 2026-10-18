@@ -83,6 +83,36 @@ const CYCLE_EDGES: DagEdge[] = [
   { from: 'session', to: 'api', label: 'the cycle' },
 ];
 
+/**
+ * A CI-fix board: PR threads, some with work running now. `working` and
+ * `waiting-ci` are marked active by their style entries, `pr-41` by its
+ * own field, and the rest are not active at all. The sheen must sweep only
+ * the running boxes, each at its own offset, under every pattern.
+ */
+const ACTIVE_NODES: DagNode[] = [
+  { id: 'pr-12', label: 'fix flaky cache key', sublabel: 'go-s3-server', category: 'go-s3-server', state: 'working' },
+  { id: 'pr-19', label: 'bump toolchain', sublabel: 'gosmopolitan', category: 'gosmopolitan', state: 'waiting-ci' },
+  { id: 'pr-27', label: 'schema drift', sublabel: 'webhooks', category: 'webhooks', state: 'blocked' },
+  { id: 'pr-33', label: 'wrap long labels', sublabel: 'js-snippets', category: 'js-snippets', state: 'waiting-ci' },
+  { id: 'pr-41', label: 'retry on 502', sublabel: 'buildhost', category: 'buildhost', state: 'pending', active: true },
+  { id: 'pr-45', label: 'green, idle', sublabel: 'slopfix', category: 'slopfix', state: 'fixed' },
+];
+
+const ACTIVE_EDGES: DagEdge[] = [
+  { from: 'pr-12', to: 'pr-27', label: 'blocked-by' },
+  { from: 'pr-19', to: 'pr-33' },
+  { from: 'pr-33', to: 'pr-41' },
+  { from: 'pr-45', to: 'pr-41' },
+];
+
+const ACTIVE_STYLES: DagStyleMap = {
+  working: { pattern: 'solid', active: true },
+  'waiting-ci': { pattern: 'outline', active: true },
+  blocked: { pattern: 'hatch', emphasis: true },
+  pending: { pattern: 'outline', dashed: true },
+  fixed: { pattern: 'solid', dim: true },
+};
+
 /** Extra treatments on top of the built-in states. */
 const STYLES: DagStyleMap = {
   blocked: { pattern: 'hatch', emphasis: true },
@@ -130,6 +160,11 @@ export function mountDagViewDemo(): void {
   wire(document.getElementById('demo-dag-cycle') as DagViewElement | null, CYCLE_NODES, CYCLE_EDGES);
   wire(document.getElementById('demo-dag-lr') as DagViewElement | null, BUILD_NODES, BUILD_EDGES);
   wire(document.getElementById('demo-dag-theme') as DagViewElement | null, BUILD_NODES, BUILD_EDGES);
+  const active = document.getElementById('demo-dag-active') as DagViewElement | null;
+  if (active !== null) {
+    active.styles = ACTIVE_STYLES;
+    active.setData({ nodes: ACTIVE_NODES, edges: ACTIVE_EDGES });
+  }
   // The empty one is deliberately given nothing: an empty graph must say so.
   wire(document.getElementById('demo-dag-empty') as DagViewElement | null, [], []);
 }
