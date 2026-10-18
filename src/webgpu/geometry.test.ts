@@ -131,8 +131,8 @@ test('createTorus: structural invariants and bounds', () => {
 });
 
 // Winding oracle. For each non-degenerate triangle, the geometric normal
-// cross(p1 - p0, p2 - p0) must agree with the average of those stored vertex
-// normals (dot > 0) — i.e. the triangle is counter-clockwise viewed from
+// cross(p1 - p0, p2 - p0) agrees with the average of its stored vertex
+// normals (dot > 0). The triangle is then counter-clockwise viewed from
 // outside, front-facing under WebGPU's default frontFace: 'ccw'. Zero-area
 // triangles (e.g. sphere pole rows, a cone's apex row) are skipped.
 function windingDots(m: Mesh): { tri: number; dot: number }[] {
