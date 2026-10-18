@@ -35,6 +35,10 @@ import {
   groupOfNode,
   groupMatches,
   groupHeaderText,
+  newFocusFade,
+  focusTarget,
+  stepFocusFade,
+  lerp,
   classifyWheelSource,
   newWheelState,
   MIN_SCALE,
@@ -52,6 +56,7 @@ import type {
   NodeText,
   WorldRect,
   WheelState,
+  FocusFade,
   WheelSource,
   DagGroup,
   PlacedGroup,
@@ -355,6 +360,10 @@ export class DagViewElement extends HTMLElement {
   private colorFn: ColorFn | null = null;
 
   private hoverIndex = -1;
+  /** The eased focus: which neighbourhood is drawn bright, and how far the rest has dimmed. */
+  private focus: FocusFade = newFocusFade();
+  /** The alpha of everything outside the focus this frame. */
+  private focusAlpha = 1;
   private hoverEdgeIndex = -1;
   private selectedIndex = -1;
   private highlight: Neighbourhood | null = null;
@@ -557,6 +566,8 @@ export class DagViewElement extends HTMLElement {
     this.selectedIndex = -1;
     this.hoverIndex = -1;
     this.highlight = null;
+    this.focus = newFocusFade();
+    this.focusAlpha = 1;
     this.highlightCache.clear();
     this.invalidate();
   }
@@ -616,6 +627,8 @@ export class DagViewElement extends HTMLElement {
     this.selectedIndex = -1;
     this.hoverIndex = -1;
     this.highlight = null;
+    this.focus = newFocusFade();
+    this.focusAlpha = 1;
     this.highlightCache.clear();
     this.layoutStale = true;
     this.viewTouched = true;
@@ -1538,7 +1551,19 @@ export class DagViewElement extends HTMLElement {
    * otherwise. */
   private applyHighlight(): void {
     const i = this.hoverIndex >= 0 ? this.hoverIndex : this.selectedIndex;
-    this.highlight = i >= 0 ? this.neighbourhoodOf(i) : null;
+    this.focus = focusTarget(this.focus, i, performance.now());
+    this.syncFocus(performance.now());
+    this.invalidate();
+  }
+
+  /** Steps the focus fade to `now` and takes the neighbourhood it shows. Returns whether it is still moving. */
+  private syncFocus(now: number): boolean {
+    const step = stepFocusFade(this.focus, now);
+    this.focus = step.state;
+    const shown = this.focus.shown;
+    this.highlight = shown >= 0 && shown < this.layout.nodes.length && this.focus.fade > 0 ? this.neighbourhoodOf(shown) : null;
+    this.focusAlpha = lerp(1, FADE_ALPHA, this.focus.fade);
+    return step.moving;
   }
 
   private neighbourhoodOf(i: number): Neighbourhood {
@@ -1724,10 +1749,11 @@ export class DagViewElement extends HTMLElement {
     this.dirty = false;
     this.lastRenderTs = ts;
     this.frameTs = ts;
+    const focusMoving = this.syncFocus(performance.now());
     this.draw();
-    // The sheen is the only thing that moves on its own. With no active box in view, no frame is scheduled at all.
+    // The sheen and the focus fade are the only things that move on their own. When neither moves, no frame is scheduled.
     this.animatingValue = this.activeInView();
-    if (this.animatingValue) this.invalidate();
+    if (this.animatingValue || focusMoving) this.invalidate();
   }
 
   /** True when an active node is in view at a scale where its box, and so its sheen, is drawn. */
@@ -1858,7 +1884,7 @@ export class DagViewElement extends HTMLElement {
     const style = e.edge.state !== undefined ? this.styleMap[e.edge.state] : undefined;
 
     ctx.save();
-    ctx.globalAlpha = faded ? FADE_ALPHA : 1;
+    ctx.globalAlpha = faded ? this.focusAlpha : 1;
     ctx.strokeStyle = e.reversed ? t.emphasis : style?.color ?? t.edge;
     ctx.lineWidth = (e.reversed || this.hoverEdgeIndex === index ? 2 : 1.25) / this.view.scale;
     // A cycle edge is dashed as well as colored: color alone is not a signal a colorblind reader can act on.
@@ -1887,6 +1913,7 @@ export class DagViewElement extends HTMLElement {
       this.highlight === null ||
       index === this.hoverIndex ||
       index === this.selectedIndex ||
+      index === this.focus.shown ||
       this.highlight.ancestors.has(index) ||
       this.highlight.descendants.has(index);
     const matched = this.searchQuery !== '' && this.searchMatches.has(index);
@@ -1897,7 +1924,7 @@ export class DagViewElement extends HTMLElement {
     const h = n.h * s;
 
     ctx.save();
-    ctx.globalAlpha = !inHighlight || searchFaded ? FADE_ALPHA : 1;
+    ctx.globalAlpha = searchFaded ? FADE_ALPHA : !inHighlight ? this.focusAlpha : 1;
 
     // Below this zoom a box is a few pixels tall. A plain filled mark reads
     // as "something is here", where a border and clipped text read as mud.

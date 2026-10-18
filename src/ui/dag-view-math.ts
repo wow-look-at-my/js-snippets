@@ -2078,3 +2078,75 @@ export function classifyWheelSource(state: WheelState, e: WheelSample): { state:
   }
   return { state: { source, lastTime: e.time, lastAbsY: absY }, source };
 }
+
+// -- Focus fade ------------------------------------------------------------------------
+
+/** Hermite smoothstep: 0 at or below `edge0`, 1 at or above `edge1`, an S-curve between. */
+export function smoothstep(edge0: number, edge1: number, x: number): number {
+  if (edge1 === edge0) return x < edge0 ? 0 : 1;
+  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+/** a at t = 0, b at t = 1. */
+export function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+/** Hovering one node this long dims nothing yet, in seconds. */
+export const FOCUS_DIM_START_S = 1;
+/** Hovering one node this long dims the rest fully, in seconds. */
+export const FOCUS_DIM_FULL_S = 2;
+/** Leaving a focus fades the rest back up over this long, in ms. */
+export const FOCUS_RELEASE_MS = 250;
+
+/** The opacity of everything outside the focus: `hoverSeconds.smoothstep(1, 2).lerp(maxAlpha, minAlpha)`. */
+export function focusOpacity(hoverSeconds: number, maxAlpha: number, minAlpha: number): number {
+  return lerp(maxAlpha, minAlpha, smoothstep(FOCUS_DIM_START_S, FOCUS_DIM_FULL_S, hoverSeconds));
+}
+
+/**
+ * The focus fade, as data. `target` is the node the reader points at (or has
+ * selected), -1 for none. `shown` is the node whose neighbourhood is drawn
+ * bright now. `fade` is 0 (nothing dimmed) to 1 (fully dimmed). A change of
+ * target first fades the old focus back to 0 from where it was, and only
+ * then shows the new one, so the picture never snaps.
+ */
+export interface FocusFade {
+  target: number;
+  targetSince: number;
+  shown: number;
+  fade: number;
+  releaseFrom: number;
+  releaseAt: number;
+}
+
+export function newFocusFade(): FocusFade {
+  return { target: -1, targetSince: 0, shown: -1, fade: 0, releaseFrom: 0, releaseAt: 0 };
+}
+
+/** Points the fade at a new target. The same target again changes nothing, so its hover time keeps counting. */
+export function focusTarget(state: FocusFade, target: number, now: number): FocusFade {
+  if (target === state.target) return state;
+  return { ...state, target, targetSince: now, releaseFrom: state.fade, releaseAt: now };
+}
+
+/** Advances the fade to `now`. `moving` is false once nothing will change without a new target: the caller can stop drawing frames. */
+export function stepFocusFade(state: FocusFade, now: number): { state: FocusFade; moving: boolean } {
+  const release = state.releaseFrom * (1 - smoothstep(0, FOCUS_RELEASE_MS, now - state.releaseAt));
+  const held = (now - state.targetSince) / 1000;
+  const curve = state.target >= 0 ? smoothstep(FOCUS_DIM_START_S, FOCUS_DIM_FULL_S, held) : 0;
+  let shown = state.shown;
+  let fade: number;
+  if (state.target === shown) {
+    fade = Math.max(curve, release);
+  } else if (release > 0) {
+    fade = release;
+  } else {
+    shown = state.target;
+    fade = curve;
+  }
+  const releasing = release > 0;
+  const rising = state.target >= 0 && held < FOCUS_DIM_FULL_S;
+  return { state: { ...state, shown, fade }, moving: releasing || rising || shown !== state.target };
+}
