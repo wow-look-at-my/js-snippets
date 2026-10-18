@@ -633,8 +633,10 @@ const card = await page.evaluate(async () => {
 		rel: a.rel,
 	}));
 	const snapLinks = el.snapshot.nodes.find((n) => n.id === 'pr-12')!.links;
+	const shown = !panel.hidden;
+	const open = panel.querySelector('.dt-link') !== null;
 	el.selected = null;
-	return { shown: !panel.hidden, links, snapLinks, open: panel.querySelector('.dt-link') !== null };
+	return { shown, links, snapLinks, open };
 });
 check('selecting a node with links opens the card', card.shown);
 check('the card keeps the href open link beside the named links', card.open);
