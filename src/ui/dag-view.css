@@ -313,10 +313,21 @@ button[hidden] {
   overflow-wrap: anywhere;
 }
 
+.dt-link,
+.dt-links a {
+  color: var(--dag-accent, #4aa3ff);
+}
 .dt-link {
   display: inline-block;
   margin-top: 8px;
-  color: var(--dag-accent, #4aa3ff);
+}
+.dt-links {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
 }
 
 /* -- Notice strip -------------------------------------------------------------- */

@@ -90,7 +90,21 @@ const CYCLE_EDGES: DagEdge[] = [
  * the running boxes, each at its own offset, under every pattern.
  */
 const ACTIVE_NODES: DagNode[] = [
-  { id: 'pr-12', label: 'fix flaky cache key', sublabel: 'go-s3-server', category: 'go-s3-server', state: 'working' },
+  // Named links: an external one opens a new tab, a relative one stays here. The unsafe one must never render.
+  {
+    id: 'pr-12',
+    label: 'fix flaky cache key',
+    sublabel: 'go-s3-server',
+    category: 'go-s3-server',
+    state: 'working',
+    href: '#dag-view',
+    links: [
+      { label: 'PR wow-look-at-my/go-s3-server#12', href: 'https://github.com/wow-look-at-my/go-s3-server/pull/12' },
+      { label: 'worker run', href: '#run=demo-run-12' },
+      { label: 'blocked by PR wow-look-at-my/webhooks#27', href: 'https://github.com/wow-look-at-my/webhooks/pull/27' },
+      { label: 'never rendered', href: 'javascript:alert(1)' },
+    ],
+  },
   { id: 'pr-19', label: 'bump toolchain', sublabel: 'gosmopolitan', category: 'gosmopolitan', state: 'waiting-ci' },
   { id: 'pr-27', label: 'schema drift', sublabel: 'webhooks', category: 'webhooks', state: 'blocked' },
   { id: 'pr-33', label: 'wrap long labels', sublabel: 'js-snippets', category: 'js-snippets', state: 'waiting-ci' },

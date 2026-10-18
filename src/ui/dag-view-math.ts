@@ -23,10 +23,18 @@ export interface DagNode {
   detail?: string;
   /** A link for the node. The selected-node panel and Ctrl/Cmd-click open it. Only http(s) and relative links open. */
   href?: string;
+  /** Named links. The selected-node card lists each one under the detail text. */
+  links?: DagLink[];
   /** Work is running on this node now. A light sheen sweeps across its box. A style entry with `active: true` marks a whole state. */
   active?: boolean;
   /** Consumer payload, passed back untouched on every event and callback. */
   meta?: unknown;
+}
+
+/** One named link on a node: a pull request, a run, a log. */
+export interface DagLink {
+  label: string;
+  href: string;
 }
 
 /** One directed edge, read as "`to` depends on `from`", so `from` is drawn
@@ -1303,6 +1311,32 @@ export function safeNodeHref(href: string | undefined): string | null {
   if (/^https?:\/\//i.test(h)) return h;
   if (/^[a-z][a-z0-9+.-]*:/i.test(h) || h.startsWith('//')) return null;
   return h;
+}
+
+/** A node link the card can render: its text, its safe href, and whether it leaves this origin. */
+export interface CardLink {
+  label: string;
+  href: string;
+  external: boolean;
+}
+
+/**
+ * The links the selected-node card lists, in input order. A link whose href
+ * `safeNodeHref` refuses is left out. An empty label falls back to the href,
+ * and a repeat of an earlier href is dropped. An absolute http(s) link is
+ * external: the card opens it in a new tab.
+ */
+export function cardLinks(node: DagNode): CardLink[] {
+  const out: CardLink[] = [];
+  const seen = new Set<string>();
+  for (const link of node.links ?? []) {
+    const href = safeNodeHref(link?.href);
+    if (href === null || seen.has(href)) continue;
+    seen.add(href);
+    const label = typeof link.label === 'string' && link.label.trim() !== '' ? link.label.trim() : href;
+    out.push({ label, href, external: /^https?:\/\//i.test(href) });
+  }
+  return out;
 }
 
 // -- Viewport ------------------------------------------------------------------------

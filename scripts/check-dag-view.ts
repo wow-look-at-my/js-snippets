@@ -619,6 +619,51 @@ check('reduced motion: an active box still changes, as a pulse', changes(pulse[0
 check('reduced motion: an idle box stays still', changes(pulse[1]) === 0, `sums ${pulse[1].sums.join(',')}`);
 await page.emulateMedia({ reducedMotion: 'no-preference' });
 
+// -- Node links on the detail card ----------------------------------------------------
+
+const card = await page.evaluate(async () => {
+	const el = document.getElementById('demo-dag-active') as DagViewElement;
+	el.selected = 'pr-12';
+	await new Promise((r) => setTimeout(r, 100));
+	const panel = el.shadowRoot!.querySelector<HTMLElement>('.detail')!;
+	const links = [...panel.querySelectorAll<HTMLAnchorElement>('.dt-links a')].map((a) => ({
+		text: a.textContent ?? '',
+		href: a.getAttribute('href') ?? '',
+		target: a.target,
+		rel: a.rel,
+	}));
+	const snapLinks = el.snapshot.nodes.find((n) => n.id === 'pr-12')!.links;
+	el.selected = null;
+	return { shown: !panel.hidden, links, snapLinks, open: panel.querySelector('.dt-link') !== null };
+});
+check('selecting a node with links opens the card', card.shown);
+check('the card keeps the href open link beside the named links', card.open);
+check(
+	'the card lists every safe link, in order, pointing where the node says',
+	JSON.stringify(card.links.map((l) => l.href)) ===
+		JSON.stringify([
+			'https://github.com/wow-look-at-my/go-s3-server/pull/12',
+			'#run=demo-run-12',
+			'https://github.com/wow-look-at-my/webhooks/pull/27',
+		]),
+	JSON.stringify(card.links),
+);
+check(
+	'an external link opens a new tab with rel=noopener',
+	card.links
+		.filter((l) => l.href.startsWith('https://'))
+		.every((l) => l.target === '_blank' && /\bnoopener\b/.test(l.rel)),
+	JSON.stringify(card.links),
+);
+check(
+	'a relative link stays in this tab',
+	card.links.filter((l) => l.href.startsWith('#')).every((l) => l.target === ''),
+	JSON.stringify(card.links),
+);
+check('the label is the link text', card.links[1]?.text === 'worker run', JSON.stringify(card.links));
+check('the unsafe link never renders', !card.links.some((l) => l.href.startsWith('javascript')));
+check('the snapshot reports the same links', card.snapLinks.length === 3, JSON.stringify(card.snapLinks));
+
 // A scratch element, so the gallery board stays as the screenshots need it.
 const stopped = await page.evaluate(async () => {
 	const host = document.createElement('div');

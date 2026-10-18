@@ -29,6 +29,7 @@ import {
   ACTIVE_PULSE_PERIOD_MS,
   layoutNodeText,
   safeNodeHref,
+  cardLinks,
   MIN_SCALE,
   MAX_SCALE,
 } from './dag-view-math.ts';
@@ -183,6 +184,8 @@ export interface DagSnapshotNode {
   state: string | null;
   detail: string | null;
   href: string | null;
+  /** The node's links the card lists: safe hrefs only, repeats dropped. */
+  links: { label: string; href: string }[];
   /** Whether the node carries the active sheen, from its own field or its state's style entry. */
   active: boolean;
   layer: number;
@@ -255,7 +258,7 @@ const NODE_PAD_Y = 7;
 
 /** The DAG element. Auto-registered as `<dag-view>` when this module loads (unless the name is taken). Data arrives via properties and methods -- `setData` / `nodes` / `edges` -- never attributes. The attributes are scalar toggles: `orientation` ("TB" or "LR"), `no-search`, `no-toolbar`, `no-fullscreen-button`, `no-minimap`, `no-detail-panel`, `empty-text`, and `fullscreen` (reflected viewport-fill mode -- see the `fullscreen` property).
  *
- * DETAIL. A selected node opens a panel with its full label, sublabel, state, `detail` text and an open link for its `href`. Ctrl/Cmd-click on a node opens the `href` at once. `no-detail-panel` turns the panel off.
+ * DETAIL. A selected node opens a panel with its full label, sublabel, state, `detail` text, an open link for its `href`, and its named `links`. Ctrl/Cmd-click on a node opens the `href` at once. `no-detail-panel` turns the panel off.
  *
  * INPUT. Drag pans. Ctrl/Cmd + wheel and pinch zoom. A PLAIN wheel pans instead of zooming, so the element never swallows a page scroll that was meant for the page. The zoom buttons and the +/- keys are the discoverable path. Clicking a node selects it. Hovering one fades everything outside its dependency neighbourhood. This is the question a dependency graph exists to answer and the thing you cannot do by following lines with your eyes.
  *
@@ -660,6 +663,7 @@ export class DagViewElement extends HTMLElement {
           state: n.node.state ?? null,
           detail: n.node.detail ?? null,
           href: n.node.href ?? null,
+          links: cardLinks(n.node).map((l) => ({ label: l.label, href: l.href })),
           active: isActiveNode(n.node, this.styleMap),
           layer: n.layer,
           world: { x: round(n.x), y: round(n.y), w: round(n.w), h: round(n.h) },
@@ -1018,6 +1022,24 @@ export class DagViewElement extends HTMLElement {
       a.rel = 'noopener noreferrer';
       a.textContent = 'Open ↗';
       parts.push(a);
+    }
+    const links = cardLinks(node);
+    if (links.length > 0) {
+      const list = document.createElement('ul');
+      list.className = 'dt-links';
+      for (const link of links) {
+        const a = document.createElement('a');
+        a.href = link.href;
+        a.textContent = link.external ? `${link.label} ↗` : link.label;
+        if (link.external) {
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+        }
+        const item = document.createElement('li');
+        item.appendChild(a);
+        list.appendChild(item);
+      }
+      parts.push(list);
     }
     this.detailEl.replaceChildren(...parts);
     this.detailEl.hidden = false;
