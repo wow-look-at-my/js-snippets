@@ -157,7 +157,7 @@ test('safeHref allows only http(s) and mailto', () => {
 test('safeHref is not fooled by case, padding, or embedded control characters', () => {
   // The URL parser lowercases the scheme and strips leading whitespace and
   // embedded tab/newline/CR before parsing — exactly as a browser would when
-  // it navigates, which is why detection is delegated to it rather than to a
+  // it navigates. This is why detection is delegated to it rather than to a
   // string match.
   for (const bad of [
     'JaVaScRiPt:alert(1)',

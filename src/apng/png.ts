@@ -167,7 +167,7 @@ export function filterScanlines(
 /** The inverse of `filterScanlines`: reconstruct `height` raw scanlines of
  * `stride` bytes from PNG's filter-byte-prefixed rows. Exported because a
  * caller that verifies its own output (or reads a PNG it did not write)
- * needs the exact same predictor arithmetic; getting it from here rather
+ * needs the exact same predictor arithmetic. Getting it from here rather
  * than reimplementing it is what keeps both halves in step. */
 export function unfilterScanlines(
   filtered: Uint8Array,

@@ -115,8 +115,8 @@ func TestEncodeRowsEmpty(t *testing.T) {
 	assert.Empty(t, back)
 }
 
-// A bad tag is a programming error, and it must surface when the plan is
-// built — naming the field — rather than as a short payload much later.
+// A bad tag is a programming error. It must surface when the plan is built
+// — naming the field — rather than as a short payload much later.
 func TestRowPlanRejectsBadDeclarations(t *testing.T) {
 	type noTags struct{ ID uint64 }
 	type badKind struct {
@@ -200,7 +200,7 @@ func TestWants(t *testing.T) {
 
 // What tagging COSTS, kept measurable rather than asserted. The pair runs the
 // same 100k rows through EncodeRows and through the hand-written mapping it
-// replaces, so the price of reflection stays a number anyone can re-read.
+// replaces. The price of reflection stays a number anyone can re-read.
 func benchRows() ([]goldenRow, Header) {
 	rows := make([]goldenRow, 100_000)
 	base := time.UnixMilli(1_780_000_000_000).UTC()

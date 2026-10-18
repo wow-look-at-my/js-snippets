@@ -26,7 +26,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -77,16 +77,17 @@ jobs:
 
   # Prose style (ASD-STE100's mechanical subset) over the docs and the llms.txt files this repo serves to consumers.
   ste-lint:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
+      id-token: write # the prose check fetches its binary through secret-server's OIDC
     steps:
       - uses: actions/checkout@v4
       - uses: wow-look-at-my/actions@ste-lint#latest
 
   # timelinewire/ is a nested Go LIBRARY module (no main package), so autorelease is off: there is no binary to publish.
   go:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       id-token: write
       contents: write
@@ -142,9 +143,9 @@ jobs:
             core.info(`published ${next} at ${context.sha}`);
             core.summary.addRaw(`Published \`${next}\`. Consumers: \`go get github.com/wow-look-at-my/js-snippets/timelinewire@latest\``).write();
 
-  # The component gallery, per branch: src/ui/'s components are not node-tested, so this preview is the only place a rendering regression shows before merge.
+  # The component gallery, per branch: src/ui/'s components are not node-tested. This preview is the only place a rendering regression shows before merge.
   showcase:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       id-token: write # buildhost OIDC auth
       contents: read

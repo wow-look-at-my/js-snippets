@@ -405,9 +405,10 @@ export class PerfGraphElement extends HTMLElement {
   // -- Range ---------------------------------------------------------------------
 
   /**
-   * Display range: fixed ends win; otherwise autoRange over data (+ budget),
-   * with the free ends quantized outward to a nice step so the range — and
-   * therefore the tick array — only rebuilds when data crosses a grid line.
+   * Display range: fixed ends win. Otherwise autoRange over data (+ budget).
+   * That autoRange is with the free ends quantized outward to a nice step so
+   * the range — and therefore the tick array. Only rebuilds when data
+   * crosses a grid line.
    */
   private updateRange(): void {
     let dLo = this.stacked ? 0 : this.stats.min;
@@ -595,13 +596,13 @@ export class PerfGraphElement extends HTMLElement {
 
   /**
    * The stacked bands. Each band is filled as the whole area under its own
-   * cumulative top, and the bands are painted from the top one down, so a
-   * lower band simply covers the part of the one above it that it owns. That
-   * is one closed path per band, and no shared edge to make agree.
+   * cumulative top. The bands are painted from the top one down, so a lower
+   * band simply covers the part of the one above it that it owns. That is
+   * one closed path per band, and no shared edge to make agree.
    *
-   * Columns are one per sample while the samples fit the backing store, and
-   * one per device pixel past that, with binLast picking each column's newest
-   * sample. Every band bins onto the same columns.
+   * Columns are one per sample. This holds while the samples fit the backing
+   * store, and one per device pixel past that, with binLast picking each
+   * column's newest sample. Every band bins onto the same columns.
    */
   private drawBands(
     ctx: CanvasRenderingContext2D,
@@ -664,7 +665,7 @@ export class PerfGraphElement extends HTMLElement {
   }
 
   /**
-   * The legend row, in place of the stats line: a swatch and the newest value
+   * The legend row, in place of the stats line. A swatch and the newest value
    * per band, left to right, stopping at the edge rather than overflowing it.
    */
   private drawLegend(ctx: CanvasRenderingContext2D, w: number, h: number): void {

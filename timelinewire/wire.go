@@ -8,7 +8,7 @@
 // step by hand.
 //
 // It knows a LAYOUT and not a vocabulary: the caller names its own columns in
-// a Schema and the names never reach the wire, so producers with different
+// a Schema. The names never reach the wire, so producers with different
 // fields still speak one format.
 package timelinewire
 
@@ -52,8 +52,8 @@ type Page struct {
 }
 
 // Encode renders a page. It returns an error rather than a short payload when
-// the page and the schema disagree: a decoder can only report "trailing bytes"
-// long after the fact, so the mismatch is caught where it is still legible.
+// the page and the schema disagree. A decoder can only report "trailing bytes"
+// long after the fact. The mismatch is caught where it is still legible.
 func Encode(p Page, s Schema) ([]byte, error) {
 	if len(s.Magic) != 4 {
 		return nil, fmt.Errorf("timelinewire: magic must be 4 bytes, got %q", s.Magic)

@@ -41,7 +41,7 @@ PingPongTarget = { resize(w, h): void; dispose(): void };
 PingPong<T extends PingPongTarget = FloatFbo> = { read: T, write: T, swap(): void, resize(w, h): void, dispose(): void };
 ```
 Exports:
-  - createFloatFbo(gl, width, height, options?) → FloatFbo No depth attachment. Resize() reallocates the backing texture. ReadPixels(..., gl.FLOAT, ...) works while the FBO is bound.
+  - createFloatFbo(gl, width, height, options?) → No depth attachment (FloatFbo). Resize() reallocates the backing texture. ReadPixels(..., gl.FLOAT, ...) works while the FBO is bound.
   - createPingPong(gl, width, height, options?) → PingPong<FloatFbo> Multiple equal createFloatFbo targets for iterative accumulation: bind write.framebuffer, sample read.texture, then swap(). Float storage is the point — 8-bit quantizes away small per-step feedback changes (a ×0.999 alpha decay never fades). Both targets start empty/transparent (WebGL2 zero-initializes textures). Resize() reallocates — and clears — both. Swap() reassigns read/write, so access targets through the pair rather than caching them across swaps.
   - makePingPong(a, b) → PingPong<T> Pure pairing logic over any two resize/dispose targets (what createPingPong wraps around two FloatFbos). Read starts as a, write as b.
 

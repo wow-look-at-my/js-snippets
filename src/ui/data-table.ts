@@ -589,9 +589,9 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
       });
       // A row is only interactive when someone is listening. Rows are
       // reachable by KEYBOARD when they are — a click-only row that opens a
-      // detail view is unusable without a mouse, and an unconditional
-      // tabindex would be worse: it puts every row of a purely presentational
-      // table into the tab order for nothing.
+      // detail view is unusable without a mouse. An unconditional tabindex
+      // would be worse: it puts every row of a purely presentational table
+      // into the tab order for nothing.
       if (this._interactiveRows || expandable) {
         tr.tabIndex = 0;
         tr.setAttribute('role', 'button');

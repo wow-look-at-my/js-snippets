@@ -20,7 +20,7 @@ export interface RenderMarkdownOptions {
 
 /**
  * Renders markdown into a fresh container element, or null when the source
- * is absent, empty, or has no content -- so a caller can tell "no content"
+ * is absent, empty, or has no content. So a caller can tell "no content"
  * from "content that rendered to nothing" and show its own empty state.
  */
 export function renderMarkdown(

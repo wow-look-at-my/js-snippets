@@ -185,10 +185,10 @@ button[hidden] {
 .tooltip {
   position: absolute;
   z-index: 3;
-  max-width: 340px;
+  max-width: 420px;
   /* Pathological content clips instead of outgrowing the host; the % keeps
    * it inside even a short host. */
-  max-height: min(240px, 85%);
+  max-height: min(360px, 85%);
   overflow: hidden;
   padding: 6px 9px;
   pointer-events: none;
@@ -232,6 +232,91 @@ button[hidden] {
  * row past the tooltip border. */
 .tt-v {
   min-width: 0;
+}
+
+/* -- Selected-node panel -------------------------------------------------------- */
+/* The whole of the selected node: the canvas box holds a few lines, this holds
+ * the full explanation and the link. It leaves the toolbar column free. */
+
+.detail {
+  position: absolute;
+  z-index: 3;
+  left: 10px;
+  bottom: 10px;
+  width: min(460px, calc(100% - 76px));
+  max-height: min(320px, 60%);
+  overflow: auto;
+  padding: 10px 12px;
+  background: var(--dag-tooltip-bg, rgba(20, 24, 32, 0.97));
+  color: var(--dag-tooltip-fg, #e8ecf4);
+  border: 1px solid var(--dag-hairline, rgba(200, 205, 216, 0.22));
+  border-radius: 8px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+  font: var(--dag-font-size, 11px) / 1.5 var(--dag-font, monospace);
+  font-size: calc(var(--dag-font-size, 11px) + 1px);
+}
+
+.detail[hidden] {
+  display: none;
+}
+
+.dt-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.dt-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.dt-close {
+  flex-shrink: 0;
+  padding: 0 6px;
+  font: inherit;
+  line-height: 1.2;
+  color: inherit;
+  background: none;
+  border: 1px solid var(--dag-hairline, rgba(200, 205, 216, 0.22));
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.dt-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 4px;
+  opacity: 0.85;
+  overflow-wrap: anywhere;
+}
+
+.dt-state {
+  padding: 0 7px;
+  border-radius: 999px;
+  font-weight: 600;
+  color: var(--dag-bg, #0d0f14);
+  background: var(--dag-fg, #e8ecf4);
+}
+
+.dt-state.emphasis {
+  background: var(--dag-emphasis, #ff5c5c);
+}
+
+.dt-body {
+  margin-top: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.dt-link {
+  display: inline-block;
+  margin-top: 8px;
+  color: var(--dag-accent, #4aa3ff);
 }
 
 /* -- Notice strip -------------------------------------------------------------- */

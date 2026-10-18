@@ -60,7 +60,7 @@ export function timeOf(entry: ActivityEntry): number {
 /**
  * Does the entry match a free-text query? Case-insensitive substring over
  * the kind, the message and any field VALUES, so typing a family
- * ("manager"), a status word ("failed") or a repo slug all narrow the same
+ * ("manager"). A status word ("failed") or a repo slug all narrow the same
  * box. Every whitespace-separated term must match somewhere (AND), which is
  * what makes "manager failed" useful.
  */

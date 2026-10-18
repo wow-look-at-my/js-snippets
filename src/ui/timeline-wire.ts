@@ -119,8 +119,8 @@ export function nextFrame(): Promise<void> {
  * of real work. `onSlice` reports each chunk's measured cost.
  *
  * The frame is claimed BEFORE the work, never after: yielding afterwards
- * leaves seams where a task's last chunk and the next flow's first one both
- * run unwaited.
+ * leaves seams. This happens where a task's last chunk and the next flow's
+ * first one both run unwaited.
  */
 export async function runSliced<T>(task: Task<T>, onSlice?: (ms: number) => void): Promise<T> {
     for (;;) {

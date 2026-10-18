@@ -145,8 +145,8 @@ func DecodeRows(b []byte, out any, magic string) (Header, error) {
 
 // SchemaOf derives the Schema a row type declares. A producer needs it to
 // state its column names somewhere a test can compare them against the
-// consumer's — the library never sees the names as anything but strings, so
-// nothing else can catch both disagreeing.
+// consumer's. The producer the library never sees the names as anything but
+// strings, so nothing else can catch both disagreeing.
 func SchemaOf(rowType any, magic string) (Schema, error) {
 	t := reflect.TypeOf(rowType)
 	if t == nil {

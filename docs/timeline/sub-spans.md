@@ -25,7 +25,7 @@ Siblings run one after another. A sub-span that overlaps a sibling is invalid da
 
 A sub-span bar reaches up through the track gap to its parent. Its top corners are square. The bar above casts a short shadow onto its top edge. As a result, the join reads as tucked under and not as missing padding. A span with sub-spans has square bottom corners. An instant sub-span stays a pip.
 
-The block's extent is the union of every member. The block is ongoing while the parent or any member is ongoing.
+The block's extent is the union of every member. The block ongoes while the parent or any member ongoes.
 
 A member's row inside the block is its depth. The block is as tall as its deepest branch. The lane packer sees the whole family as one item several rows tall. The sticky `TrackAllocator` keeps the block's top row where it was while the block stays on screen, as it does for any bar.
 

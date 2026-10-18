@@ -19,7 +19,8 @@ import {
   neighbourhood,
   criticalPathLength,
   nodeHue,
-  measureNode,
+  layoutNodeText,
+  safeNodeHref,
   MIN_SCALE,
   MAX_SCALE,
 } from './dag-view-math.ts';
@@ -32,6 +33,7 @@ import type {
   PlacedNode,
   PlacedEdge,
   Neighbourhood,
+  NodeText,
   WorldRect,
 } from './dag-view-math.ts';
 import { categoryColor, categoryJitter, dimColor, labelHaloColor } from './color.ts';
@@ -108,9 +110,9 @@ export type DagStyleMap = Record<string, DagStyle>;
 
 /**
  * Built-in states. A consumer's own `styles` map is merged OVER this, so
- * these are defaults rather than a closed vocabulary -- any `state` string
- * with no entry falls back to a plain solid node in its category color,
- * which is a readable node, never a blank one.
+ * these are defaults rather than a closed vocabulary. Any `state` string
+ * with no entry falls back to a plain solid node in its category color.
+ * This is a readable node, never a blank one.
  */
 export const DEFAULT_STYLES: DagStyleMap = {
   done: { pattern: 'solid' },
@@ -167,6 +169,8 @@ export interface DagSnapshotNode {
   sublabel: string | null;
   category: string | null;
   state: string | null;
+  detail: string | null;
+  href: string | null;
   layer: number;
   world: DagSnapshotRect;
   /** CSS pixels, origin at the canvas top-left. */
@@ -224,20 +228,35 @@ const IDLE_FRAME_MS = 1000 / 30;
 const INTERACT_GRACE_MS = 500;
 /** Node count past which hover highlighting is computed lazily, once per hover. */
 const HIGHLIGHT_CACHE_MAX = 64;
+/** Width of the hatch/stipple band at a patterned node's leading edge, world px. */
+const PATTERN_BAND = 8;
+/** Alpha of the category fill behind a patterned node's text: enough to read the color, not enough to cost contrast. */
+const PATTERN_TINT = 0.22;
+/** Horizontal text padding inside a node box, world px. */
+const NODE_PAD_X = 10;
+/** Vertical text padding inside a node box, world px. */
+const NODE_PAD_Y = 7;
 
 // -- The element ---------------------------------------------------------------------
 
-/** The DAG element. Auto-registered as `<dag-view>` when this module loads (unless the name is taken). Data arrives via properties and methods -- `setData` / `nodes` / `edges` -- never attributes; the attributes are scalar toggles: `orientation` ("TB" or "LR"), `no-search`, `no-toolbar`, `no-fullscreen-button`, `no-minimap`, `empty-text`, and `fullscreen` (reflected viewport-fill mode -- see the `fullscreen` property).
+/** The DAG element. Auto-registered as `<dag-view>` when this module loads (unless the name is taken). Data arrives via properties and methods -- `setData` / `nodes` / `edges` -- never attributes. The attributes are scalar toggles: `orientation` ("TB" or "LR"), `no-search`, `no-toolbar`, `no-fullscreen-button`, `no-minimap`, `no-detail-panel`, `empty-text`, and `fullscreen` (reflected viewport-fill mode -- see the `fullscreen` property).
  *
- * INPUT. Drag pans. Ctrl/Cmd + wheel and pinch zoom; a PLAIN wheel pans instead of zooming, so the element never swallows a page scroll that was meant for the page -- the zoom buttons and the +/- keys are the discoverable path. Clicking a node selects it; hovering one fades everything outside its dependency neighbourhood, which is the question a dependency graph exists to answer and the thing you cannot do by following lines with your eyes.
+ * DETAIL. A selected node opens a panel with its full label, sublabel, state, `detail` text and an open link for its `href`. Ctrl/Cmd-click on a node opens the `href` at once. `no-detail-panel` turns the panel off.
  *
- * WHAT THE LAYOUT COULD NOT HONOUR IS SHOWN, NOT SWALLOWED. A circular dependency is drawn in the emphasis color with its arrow still pointing the true way, and the notice strip names the count of cycles, dropped edges and overruled layer hints. Read `info` for the same facts as data. */
+ * INPUT. Drag pans. Ctrl/Cmd + wheel and pinch zoom. A PLAIN wheel pans instead of zooming, so the element never swallows a page scroll that was meant for the page. The zoom buttons and the +/- keys are the discoverable path. Clicking a node selects it. Hovering one fades everything outside its dependency neighbourhood. This is the question a dependency graph exists to answer and the thing you cannot do by following lines with your eyes.
+ *
+ * WHAT THE LAYOUT COULD NOT HONOUR IS SHOWN, NOT SWALLOWED. A circular dependency is drawn in the emphasis color with its arrow still pointing the true way. The notice strip names the count of cycles, dropped edges and overruled layer hints. Read `info` for the same facts as data. */
 export class DagViewElement extends HTMLElement {
   static get observedAttributes(): string[] {
-    return ['orientation', 'no-search', 'no-toolbar', 'no-fullscreen-button', 'no-minimap', 'empty-text', 'fullscreen'];
+    return ['orientation', 'no-search', 'no-toolbar', 'no-fullscreen-button', 'no-minimap', 'no-detail-panel', 'empty-text', 'fullscreen'];
   }
 
   private canvas: HTMLCanvasElement;
+  private detailEl: HTMLDivElement;
+  /** Wrapped text per node id, from the last layout. drawLabels reads it so the drawing matches the measured box. */
+  private nodeText = new Map<string, NodeText>();
+  /** The id selected before the last setData, restored by the next layout. */
+  private keepSelected: string | null = null;
   private ctx: CanvasRenderingContext2D | null = null;
   private tooltipEl: HTMLDivElement;
   private toastEl: HTMLDivElement;
@@ -338,6 +357,14 @@ export class DagViewElement extends HTMLElement {
     this.tooltipEl = document.createElement('div');
     this.tooltipEl.className = 'tooltip';
     shadow.appendChild(this.tooltipEl);
+
+    // The selected node, in full: the canvas box holds a few lines, this holds the whole explanation and the link.
+    this.detailEl = document.createElement('div');
+    this.detailEl.className = 'detail';
+    this.detailEl.hidden = true;
+    this.detailEl.setAttribute('role', 'region');
+    this.detailEl.setAttribute('aria-label', 'Selected node');
+    shadow.appendChild(this.detailEl);
 
     // Says what the right-click did.
     this.toastEl = document.createElement('div');
@@ -458,6 +485,8 @@ export class DagViewElement extends HTMLElement {
     if (data.nodes !== undefined) this.rawNodes = data.nodes.slice();
     if (data.edges !== undefined) this.rawEdges = data.edges.slice();
     this.layoutStale = true;
+    // A refresh keeps the selection when the node is still there: a dashboard that polls must not close the panel a reader is reading.
+    this.keepSelected = this.selectedIndex >= 0 ? this.layout.nodes[this.selectedIndex].node.id : null;
     this.selectedIndex = -1;
     this.hoverIndex = -1;
     this.highlight = null;
@@ -497,6 +526,8 @@ export class DagViewElement extends HTMLElement {
   set styles(map: DagStyleMap | null | undefined) {
     this.styleMap = { ...DEFAULT_STYLES, ...(map ?? {}) };
     this.colorCache.clear();
+    // A patterned state carries a band that widens its box, so a style change can be a layout change.
+    this.layoutStale = true;
     this.invalidate();
   }
 
@@ -559,9 +590,9 @@ export class DagViewElement extends HTMLElement {
 
   /** The whole drawn state, in both coordinate systems, as a plain object.
    * `world` is what the layout decided. `screen` is where that landed on the
-   * canvas in CSS pixels, with the origin at the canvas top-left, so a reader
-   * can measure what they are looking at: an empty band between a couple of
-   * columns, a node parked off screen, a row that did not line up with the
+   * canvas in CSS pixels, with the origin at the canvas top-left. A reader can
+   * measure what they are looking at: an empty band between a couple of
+   * columns, a node parked off screen, a row. That row did not line up with the
    * one above. A description of a gap is a guess. These numbers are the gap.
    * `visible` says whether a node's box overlaps the canvas at all, so
    * everything scrolled out of view is countable rather than merely missing. */
@@ -593,6 +624,8 @@ export class DagViewElement extends HTMLElement {
           sublabel: n.node.sublabel ?? null,
           category: n.node.category ?? null,
           state: n.node.state ?? null,
+          detail: n.node.detail ?? null,
+          href: n.node.href ?? null,
           layer: n.layer,
           world: { x: round(n.x), y: round(n.y), w: round(n.w), h: round(n.h) },
           screen: { x: s.x, y: s.y, w, h },
@@ -664,20 +697,37 @@ export class DagViewElement extends HTMLElement {
     if (!this.layoutStale) return;
     this.layoutStale = false;
     const t = this.theme;
+    const texts = new Map<string, NodeText>();
     this.layout = layoutDag(this.rawNodes, this.rawEdges, {
       orientation: this.orientationValue,
       gap: t.gap,
       layerGap: t.layerGap,
       // The live font decides the box widths, so a bold or wide face grows
       // the boxes instead of overflowing them.
-      sizeOf: (n) =>
-        measureNode(n, {
+      sizeOf: (n) => {
+        const pat = n.state !== undefined ? this.styleMap[n.state]?.pattern : undefined;
+        const text = layoutNodeText(n, {
           charW: this.charW,
+          padX: pat === 'hatch' || pat === 'stipple' ? NODE_PAD_X + PATTERN_BAND / 2 : NODE_PAD_X,
+          padY: NODE_PAD_Y,
           lineH: t.fontSize + 4,
           subLineH: t.fontSize + 2,
-        }),
+        });
+        if (!texts.has(n.id)) texts.set(n.id, text);
+        return { w: text.w, h: text.h };
+      },
     });
+    this.nodeText = texts;
     this.bounds = layoutBounds(this.layout);
+    if (this.keepSelected !== null) {
+      const keep = this.layout.byId.get(this.keepSelected);
+      this.keepSelected = null;
+      if (keep !== undefined) {
+        this.selectedIndex = keep;
+        this.applyHighlight();
+      }
+    }
+    this.renderDetail();
     this.highlightCache.clear();
     this.applySearch();
     this.updateNotice();
@@ -719,7 +769,7 @@ export class DagViewElement extends HTMLElement {
    * Right-click copies the whole drawn state as JSON.
    *
    * A reader who can see something wrong with the picture usually cannot say
-   * it in numbers, and the numbers are what anybody else needs to act. This
+   * it in numbers. The numbers are what anybody else needs to act. This
    * turns "there is a huge gap in the middle" into coordinates.
    *
    * It replaces the browser's own menu, which offers nothing for a canvas.
@@ -739,11 +789,11 @@ export class DagViewElement extends HTMLElement {
   /**
    * Builds the menu at the cursor.
    *
-   * A menu, rather than copying on the click itself. The copy was invisible:
-   * the browser's own menu is suppressed, and a reader who sees nothing open
+   * A menu, rather than copying on the click itself. The copy was invisible.
+   * The browser's own menu is suppressed, and a reader who sees nothing open
    * reads a working feature as a dead click and reports THAT.
    *
-   * The item list depends on what is under the cursor, so a right-click on a
+   * The item list depends on what is under the cursor. A right-click on a
    * node also offers the one thing that node can give.
    */
   private openMenu(x: number, y: number, node: string | null): void {
@@ -753,7 +803,11 @@ export class DagViewElement extends HTMLElement {
     const items: { label: string; run: () => void }[] = [
       { label: 'Copy graph state (JSON)', run: () => this.copySnapshot() },
     ];
-    if (node !== null) items.push({ label: `Copy id of "${node}"`, run: () => this.copyNodeID(node) });
+    if (node !== null) {
+      const target = this.layout.nodes[this.layout.byId.get(node) ?? -1]?.node;
+      if (target !== undefined && safeNodeHref(target.href) !== null) items.push({ label: 'Open link', run: () => this.openHref(target) });
+      items.push({ label: `Copy id of "${node}"`, run: () => this.copyNodeID(node) });
+    }
     items.push({ label: 'Fit on screen', run: () => this.fit() });
 
     for (const item of items) {
@@ -847,8 +901,8 @@ export class DagViewElement extends HTMLElement {
 
   /**
    * Search HIGHLIGHTS, it does not filter. Removing the non-matching nodes
-   * would also remove the edges that explain why a match matters, and "what
-   * is this connected to" is the reason to look one up in the first place.
+   * would also remove the edges that explain why a match matters. "what is
+   * this connected to" is the reason to look one up in the first place.
    */
   private applySearch(): void {
     this.searchMatches.clear();
@@ -871,6 +925,75 @@ export class DagViewElement extends HTMLElement {
     this.fsBtn.hidden = noToolbar || this.hasAttribute('no-fullscreen-button');
     this.fsBtn.setAttribute('aria-pressed', String(this.fullscreen));
     this.orientBtn.textContent = this.orientationValue === 'TB' ? '⇅' : '⇆';
+    this.renderDetail();
+  }
+
+  /** Fill the selected-node panel, or hide it when nothing is selected. */
+  private renderDetail(): void {
+    const node = this.selectedIndex >= 0 ? this.layout.nodes[this.selectedIndex]?.node : undefined;
+    if (node === undefined || this.hasAttribute('no-detail-panel')) {
+      this.detailEl.hidden = true;
+      this.detailEl.replaceChildren();
+      return;
+    }
+    const head = document.createElement('div');
+    head.className = 'dt-head';
+    const title = document.createElement('div');
+    title.className = 'dt-title';
+    title.textContent = node.label ?? node.id;
+    head.appendChild(title);
+    const close = document.createElement('button');
+    close.className = 'dt-close';
+    close.type = 'button';
+    close.textContent = '×';
+    close.title = 'Clear the selection';
+    close.setAttribute('aria-label', 'Clear the selection');
+    close.addEventListener('click', () => this.select(-1, true));
+    head.appendChild(close);
+    const parts: HTMLElement[] = [head];
+    const meta = document.createElement('div');
+    meta.className = 'dt-meta';
+    if (node.state !== undefined && node.state !== '') {
+      const badge = document.createElement('span');
+      badge.className = 'dt-state';
+      badge.dataset.state = node.state;
+      if (this.styleMap[node.state]?.emphasis === true) badge.classList.add('emphasis');
+      badge.textContent = node.state;
+      meta.appendChild(badge);
+    }
+    if (node.sublabel !== undefined && node.sublabel !== '') {
+      const sub = document.createElement('span');
+      sub.className = 'dt-sub';
+      sub.textContent = node.sublabel;
+      meta.appendChild(sub);
+    }
+    if (meta.childElementCount > 0) parts.push(meta);
+    if (node.detail !== undefined && node.detail.trim() !== '') {
+      const body = document.createElement('div');
+      body.className = 'dt-body';
+      body.textContent = node.detail;
+      parts.push(body);
+    }
+    const href = safeNodeHref(node.href);
+    if (href !== null) {
+      const a = document.createElement('a');
+      a.className = 'dt-link';
+      a.href = href;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.textContent = 'Open ↗';
+      parts.push(a);
+    }
+    this.detailEl.replaceChildren(...parts);
+    this.detailEl.hidden = false;
+  }
+
+  /** Open a node's link in a new tab. Returns whether there was one to open. */
+  private openHref(node: DagNode): boolean {
+    const href = safeNodeHref(node.href);
+    if (href === null) return false;
+    window.open(href, '_blank', 'noopener,noreferrer');
+    return true;
   }
 
   private onFitClick = (): void => this.fit();
@@ -967,6 +1090,7 @@ export class DagViewElement extends HTMLElement {
     const ni = hitTestNodes(this.layout, w.x, w.y);
     if (ni >= 0) {
       this.select(ni, true);
+      if (e.ctrlKey || e.metaKey) this.openHref(this.layout.nodes[ni].node);
       this.dispatchEvent(
         new CustomEvent('nodeclick', { detail: { node: this.layout.nodes[ni].node, placed: this.layout.nodes[ni] } }),
       );
@@ -1023,8 +1147,8 @@ export class DagViewElement extends HTMLElement {
    * A PLAIN wheel pans; ctrl/meta + wheel zooms.
    *
    * Zooming on a plain wheel is what most diagram tools do, and inside a
-   * page it is the wrong default: the element sits in a document the reader
-   * is also scrolling, and swallowing that scroll to zoom a graph they were
+   * page it is the wrong default. The element sits in a document the reader
+   * is also scrolling. Swallowing that scroll to zoom a graph they were
    * only passing over is the single most irritating thing an embedded
    * canvas can do. Ctrl+wheel is the browser's own zoom gesture, the
    * buttons and the +/- keys are discoverable, and the page keeps working.
@@ -1123,8 +1247,8 @@ export class DagViewElement extends HTMLElement {
 
   /**
    * Move the selection along an edge. Up/down (left/right in 'LR') follow
-   * the dependency direction; the cross-axis keys move to the next sibling
-   * in the same layer, so a wide layer is walkable without leaving it.
+   * the dependency direction. The cross-axis keys move to the next sibling
+   * in the same layer. A wide layer is walkable without leaving it.
    */
   private walk(key: string): void {
     const cur = this.layout.nodes[this.selectedIndex];
@@ -1184,6 +1308,7 @@ export class DagViewElement extends HTMLElement {
     this.selectedIndex = i;
     this.applyHighlight();
     this.invalidate();
+    this.renderDetail();
     const node = i >= 0 ? this.layout.nodes[i].node : null;
     if (announce && node !== null) {
       const nb = this.neighbourhoodOf(i);
@@ -1258,10 +1383,12 @@ export class DagViewElement extends HTMLElement {
       const n = hit.node;
       title.textContent = n.label ?? n.id;
       if (n.sublabel !== undefined) rows.push({ key: '', value: n.sublabel });
+      if (n.state !== undefined) rows.push({ key: 'state', value: n.state });
+      if (n.detail !== undefined && n.detail.trim() !== '') rows.push({ key: '', value: n.detail });
       const nb = this.neighbourhoodOf(this.layout.byId.get(n.id) as number);
       rows.push({ key: 'depends on', value: String(nb.ancestors.size) });
       rows.push({ key: 'needed by', value: String(nb.descendants.size) });
-      if (n.state !== undefined) rows.push({ key: 'state', value: n.state });
+      if (safeNodeHref(n.href) !== null) rows.push({ key: '', value: 'click for details, Ctrl/Cmd-click to open' });
     } else {
       title.textContent = `${hit.edge.from} → ${hit.edge.to}`;
       if (hit.edge.label !== undefined) rows.push({ key: '', value: hit.edge.label });
@@ -1501,7 +1628,7 @@ export class DagViewElement extends HTMLElement {
     ctx.save();
     ctx.globalAlpha = !inHighlight || searchFaded ? FADE_ALPHA : 1;
 
-    // Below this zoom a box is a few pixels tall: a plain filled mark reads
+    // Below this zoom a box is a few pixels tall. A plain filled mark reads
     // as "something is here", where a border and clipped text read as mud.
     if (s < LOD_MARK_SCALE) {
       ctx.fillStyle = colors.fill;
@@ -1519,12 +1646,21 @@ export class DagViewElement extends HTMLElement {
       ctx.fillStyle = t.bg;
       ctx.fill();
     } else if (pattern === 'hatch' || pattern === 'stipple') {
+      // The pattern fills a band at the leading edge only. Text never sits on it: under a hatch, no halo keeps a label readable.
       ctx.fillStyle = t.bg;
       ctx.fill();
+      const prev = ctx.globalAlpha;
+      ctx.globalAlpha = prev * PATTERN_TINT;
+      ctx.fillStyle = colors.fill;
+      ctx.fill();
+      ctx.globalAlpha = prev;
       const pat = this.patternFor(pattern, colors.fill);
       if (pat !== null) {
+        ctx.save();
+        ctx.clip();
         ctx.fillStyle = pat;
-        ctx.fill();
+        ctx.fillRect(p.x, p.y, PATTERN_BAND * s, h);
+        ctx.restore();
       }
     } else {
       ctx.fillStyle = colors.fill;
@@ -1566,44 +1702,73 @@ export class DagViewElement extends HTMLElement {
   ): void {
     const t = this.theme;
     const s = this.view.scale;
-    const padX = 9 * s;
-    const avail = w - padX * 2;
-    if (avail <= 8) return;
+    const lead = (pattern === 'hatch' || pattern === 'stipple' ? PATTERN_BAND : 0) * s;
+    const padX = (NODE_PAD_X - 1) * s;
+    const left = x + lead + padX;
+    const right = x + w - padX;
+    if (right - left <= 8) return;
 
-    const label = n.node.label ?? n.node.id;
-    const sub = n.node.sublabel;
+    const text = this.nodeText.get(n.node.id);
+    const labelLines = text?.label ?? [n.node.label ?? n.node.id];
+    const subLines = text?.sub ?? (n.node.sublabel ? [n.node.sublabel] : []);
+    const badge = text?.badge ?? n.node.state ?? '';
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
 
-    // The halo is what makes a label survive a hatched or stippled fill, and
-    // a fill in any category hue, without picking a text color per node.
-    const paint = (text: string, font: string, px: number, cy: number, color: string): void => {
+    const labelPx = t.fontSize * s;
+    const subPx = (t.fontSize - 1) * s;
+    const lineH = (t.fontSize + 4) * s;
+    const subLineH = (t.fontSize + 2) * s;
+    const labelFont = `${labelPx}px ${t.font}`;
+    const subFont = `${subPx}px ${t.font}`;
+
+    // The halo is what makes a label survive a fill in any category hue, without picking a text color per node.
+    const paint = (line: string, font: string, px: number, cy: number, avail: number): void => {
       ctx.font = font;
-      const fitted = fitToWidth(ctx, text, avail);
+      const fitted = fitToWidth(ctx, line, avail);
       if (fitted === '') return;
       // The halo width tracks the GLYPH size.
       ctx.lineWidth = Math.max(1.5, px * 0.26);
       ctx.strokeStyle = this.labelHalo;
       ctx.lineJoin = 'round';
-      ctx.strokeText(fitted, x + padX, cy);
-      ctx.fillStyle = color;
-      ctx.fillText(fitted, x + padX, cy);
+      ctx.strokeText(fitted, left, cy);
+      ctx.fillStyle = t.fg;
+      ctx.fillText(fitted, left, cy);
     };
 
-    const labelPx = t.fontSize * s;
-    const subPx = (t.fontSize - 1) * s;
-    const labelFont = `${labelPx}px ${t.font}`;
-    const subFont = `${subPx}px ${t.font}`;
-    void pattern;
-    if (sub === undefined || sub === '') {
-      paint(label, labelFont, labelPx, y + h / 2, t.fg);
-      return;
+    // The state reads as a word, in a badge at the end of the first line. The layout left room for it.
+    let badgeW = 0;
+    const blockH = labelLines.length * lineH + subLines.length * subLineH;
+    let cy = y + Math.max(NODE_PAD_Y * s, (h - blockH) / 2) + lineH / 2;
+    if (badge !== '') {
+      ctx.font = subFont;
+      const padB = 4 * s;
+      // The layout sized the box for the label and the whole badge, so the badge keeps its word and only an extreme box cuts it.
+      badgeW = Math.min(ctx.measureText(badge).width + padB * 2, (right - left) * 0.8);
+      const bh = subPx + 4 * s;
+      const bx = right - badgeW;
+      const by = cy - bh / 2;
+      const emphasis = n.node.state !== undefined && this.styleMap[n.node.state]?.emphasis === true;
+      ctx.beginPath();
+      roundRect(ctx, bx, by, badgeW, bh, bh / 2);
+      ctx.fillStyle = emphasis ? t.emphasis : this.colorsFor(n.node).border;
+      ctx.fill();
+      ctx.fillStyle = t.bg;
+      ctx.fillText(fitToWidth(ctx, badge, badgeW - padB * 2), bx + padB, cy);
+      badgeW += 6 * s;
     }
-    paint(label, labelFont, labelPx, y + h * 0.36, t.fg);
+    labelLines.forEach((line, idx) => {
+      paint(line, labelFont, labelPx, cy, right - left - (idx === 0 ? badgeW : 0));
+      cy += lineH;
+    });
+    cy += (subLineH - lineH) / 2;
     // The sublabel is the FOREGROUND colour at reduced alpha, never --dag-muted.
     const prevAlpha = ctx.globalAlpha;
-    ctx.globalAlpha = prevAlpha * 0.72;
-    paint(sub, subFont, subPx, y + h * 0.7, t.fg);
+    ctx.globalAlpha = prevAlpha * 0.82;
+    for (const line of subLines) {
+      paint(line, subFont, subPx, cy, right - left);
+      cy += subLineH;
+    }
     ctx.globalAlpha = prevAlpha;
   }
 
@@ -1713,8 +1878,8 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
 /**
  * Truncate to fit, with an ellipsis. Binary search over a real
  * `measureText` rather than a character-count estimate: a proportional font
- * makes "iiii" and "WWWW" different widths, and an estimate is what puts
- * text through the side of a box.
+ * makes "iiii" and "WWWW" different widths. An estimate is what puts text
+ * through the side of a box.
  */
 function fitToWidth(ctx: CanvasRenderingContext2D, text: string, avail: number): string {
   if (avail <= 0) return '';
@@ -1730,7 +1895,6 @@ function fitToWidth(ctx: CanvasRenderingContext2D, text: string, avail: number):
   return lo <= 0 ? '' : text.slice(0, lo) + ell;
 }
 
-/** Wheel deltas in the deltaModes, normalized to CSS px. */
 function normalizeWheel(delta: number, deltaMode: number): number {
   if (deltaMode === 1) return delta * 16;
   if (deltaMode === 2) return delta * 800;

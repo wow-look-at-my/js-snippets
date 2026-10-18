@@ -67,13 +67,13 @@ page.on('console', (m) => {
 });
 page.on('pageerror', (e) => pageErrors.push(String(e)));
 
-await page.goto(pathToFileURL(resolve(file)).href, { waitUntil: 'load' });
+// The gallery draws only the section its hash names.
+await page.goto(`${pathToFileURL(resolve(file)).href}#dag-view`, { waitUntil: 'load' });
 await page.waitForTimeout(1200);
 
-// -- Upgrade -------------------------------------------------------------------
-// A demo whose import got elided sits on its light-DOM "loading..." line
-// with the build green throughout, which is the exact failure the gallery
-// exists to catch.
+// -- Upgrade A demo whose import got elided sits on its light-DOM
+// "loading..." line with the build green throughout, which is the exact
+// failure the gallery exists to catch.
 
 const upgrade = await page.evaluate(() => {
 	const out: { id: string; upgraded: boolean; hasCanvas: boolean; w: number; h: number }[] = [];
@@ -204,9 +204,9 @@ check('the nodeclick event reaches the page', /bundle/.test(selected.readout), s
 
 // -- Interaction: right-click copies the drawn state ----------------------------------
 
-// Driven as the real gesture rather than by calling the getter, because what
-// has to hold is that a reader looking at a wrong picture can hand somebody
-// the numbers. A getter nothing is wired to does not do that.
+// Driven as the real gesture rather than by calling the getter. This is
+// because what has to hold is that a reader looking at a wrong picture can
+// hand somebody the numbers. A getter nothing is wired to does not do that.
 await page.evaluate(() => {
 	const el = document.getElementById('demo-dag')!;
 	el.addEventListener('snapshotcopy', (e) => {
@@ -217,8 +217,8 @@ await page.mouse.click(nodeScreenPoint.x, nodeScreenPoint.y, { button: 'right' }
 await page.waitForTimeout(150);
 
 // The right-click opens a MENU. Copying on the click itself was invisible:
-// the browser's own menu is suppressed, so a reader who saw nothing open read
-// a working feature as a dead click.
+// the browser's own menu is suppressed. A reader who saw nothing open read a
+// working feature as a dead click.
 const menu = await page.evaluate(() => {
 	const el = document.getElementById('demo-dag') as DagViewElement;
 	const m = el.shadowRoot!.querySelector<HTMLElement>('.menu')!;
@@ -235,7 +235,7 @@ check(
 );
 
 // The component's pill rule used to be a bare `button` selector, which took
-// every menu item out of flow and drew all of them at one spot. Reading the
+// every menu item out of flow. It drew all of them at one spot. Reading the
 // text back cannot see that -- only the boxes can.
 const rows = await page.evaluate(() => {
 	const el = document.getElementById('demo-dag') as DagViewElement;
@@ -375,7 +375,7 @@ check(
 	JSON.stringify(searched),
 );
 
-// -- The empty instance says so ----------------------------------------------------------
+// -- The empty instance says. ----------------------------------------------------------
 
 const empty = await page.evaluate(() => {
 	const el = document.getElementById('demo-dag-empty') as DagViewElement;
@@ -385,11 +385,91 @@ const empty = await page.evaluate(() => {
 check('an empty graph shows its empty state', !empty.hidden && empty.nodes === 0, JSON.stringify(empty));
 check("the empty text is the consumer's", /No dependencies recorded/.test(empty.text), empty.text);
 
+// -- A blocked node says WHY -------------------------------------------------------------
+// The e2e node carries a multi-line `detail` and an `href`. The tooltip, the selected-node panel and the canvas box
+// must each carry it readably. A reason that only lives in the payload is the board that said "zero detail".
+
+const e2ePoint = await page.evaluate(() => {
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	const input = el.shadowRoot!.querySelector<HTMLInputElement>('.search')!;
+	input.value = '';
+	input.dispatchEvent(new Event('input'));
+	el.scrollIntoView({ block: 'center' });
+	el.focusNode('e2e', 1);
+	el.selected = null;
+	const r = el.getBoundingClientRect();
+	return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+});
+await page.mouse.move(2, 2);
+await page.waitForTimeout(150);
+await page.mouse.move(e2ePoint.x, e2ePoint.y);
+await page.waitForTimeout(150);
+const e2eTip = await page.evaluate(() => {
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	const tip = el.shadowRoot!.querySelector<HTMLElement>('.tooltip')!;
+	return { visible: tip.classList.contains('visible'), text: tip.textContent ?? '' };
+});
+check('hovering the blocked node shows its tooltip', e2eTip.visible, JSON.stringify(e2eTip));
+check(
+	'the tooltip carries the whole reason, every line',
+	/Blocked: the browser image/.test(e2eTip.text) && /Retry: when the runner image/.test(e2eTip.text) && /Note: the fix belongs/.test(e2eTip.text),
+	e2eTip.text,
+);
+
+await page.mouse.click(e2ePoint.x, e2ePoint.y);
+await page.waitForTimeout(150);
+const panel = await page.evaluate(() => {
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	const d = el.shadowRoot!.querySelector<HTMLElement>('.detail')!;
+	const body = d.querySelector<HTMLElement>('.dt-body');
+	const link = d.querySelector<HTMLAnchorElement>('.dt-link');
+	const state = d.querySelector<HTMLElement>('.dt-state');
+	return {
+		hidden: d.hidden,
+		body: body?.textContent ?? '',
+		lines: body === null ? 0 : Math.round(body.getBoundingClientRect().height / parseFloat(getComputedStyle(body).lineHeight)),
+		href: link?.getAttribute('href') ?? null,
+		target: link?.target ?? '',
+		state: state?.textContent ?? '',
+	};
+});
+check('selecting the node opens the detail panel', !panel.hidden, JSON.stringify(panel));
+check('the panel shows the full reason as multi-line text', /Retry:/.test(panel.body) && panel.lines >= 3, JSON.stringify(panel));
+check('the panel names the state as a badge', panel.state === 'blocked', panel.state);
+check('the panel links the node href in a new tab', panel.href === '#dag-view' && panel.target === '_blank', JSON.stringify(panel));
+
+// A refresh with the same node keeps it selected: a polling dashboard must not close the panel a reader is reading.
+const kept = await page.evaluate(() => {
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	el.setData({ nodes: el.nodes, edges: el.edges });
+	el.info;
+	return { selected: el.selected, hidden: el.shadowRoot!.querySelector<HTMLElement>('.detail')!.hidden };
+});
+check('a data refresh keeps the selection and its panel', kept.selected === 'e2e' && !kept.hidden, JSON.stringify(kept));
+
+if (shots) {
+	await page.mouse.move(2, 2);
+	await page.waitForTimeout(250);
+	const el = await page.$('#demo-dag');
+	if (el !== null) {
+		const out = join(outDir, 'dag-view-detail.png');
+		await el.screenshot({ path: out });
+		console.log(`  shot ${out}`);
+	}
+}
+
+await page.keyboard.press('Escape');
+await page.waitForTimeout(120);
+check(
+	'clearing the selection hides the panel',
+	await page.evaluate(() => (document.getElementById('demo-dag') as DagViewElement).shadowRoot!.querySelector<HTMLElement>('.detail')!.hidden),
+);
+
 // -- Dashboard scale ---------------------------------------------------------------------
-// The shape a real consumer hands this: every repository in an org is a node,
-// and a manifest sweep that read nothing leaves almost all of them edgeless.
-// The gallery's graphs are small enough that nothing here can go wrong in
-// them, which is why this case is built rather than looked up.
+// The shape a real consumer hands this: every repository in an org is a node.
+// A manifest sweep that read nothing leaves almost all of them edgeless. The
+// gallery's graphs are small enough that nothing here can go wrong in them,
+// which is why this case is built rather than looked up.
 //
 // It went wrong twice, and both failures look identical on screen -- a dark
 // box with a couple of stray lines. Its own comment names that state: "shows
@@ -468,8 +548,8 @@ if (shots) {
 		console.log(`  shot ${out}`);
 	}
 	// The README's picture, captured from the SAME live component as every
-	// other shot, so it cannot drift into showing a graph the code no
-	// longer draws. Opt-in, because it writes into the tracked tree.
+	// other shot. It cannot drift into showing a graph the code no longer
+	// draws. Opt-in, because it writes into the tracked tree.
 	if (process.argv.includes('--readme')) {
 		const el = await page.$('#demo-dag');
 		if (el !== null) {

@@ -65,7 +65,7 @@ export class ActivityFeedElement extends HTMLElement {
     this.table.styleText = ACTIVITY_CSS;
     this.table.filteredEmptyText = (total) => `No entries match the filter (${total} hidden).`;
     // The feed owns persistence: its stored shape predates the generic
-    // table's and is what consumers already have in localStorage, so the
+    // table's and is what consumers already have in localStorage. The
     // inner table is left storage-less and this element translates.
     this.table.addEventListener('table-filter-change', (e) => {
       e.stopPropagation();

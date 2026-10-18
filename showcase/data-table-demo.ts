@@ -92,10 +92,11 @@ const FACETS: FacetGroup<DemoRun>[] = [
 
 /**
  * Cell styling, passed INTO the shadow root. This is the styleText hatch's
- * whole reason for existing: the status span below is created by THIS file
- * but lives inside the component's shadow root, where no page stylesheet
- * can reach it. The colours themselves still come from the page, because
- * custom properties do inherit through the boundary.
+ * whole reason for existing: the status span below is created by THIS
+ * file. However, the status span below lives inside the component's shadow
+ * root, where no page stylesheet can reach it. The colours themselves
+ * still come from the page, because custom properties do inherit through
+ * the boundary.
  */
 const DEMO_TABLE_CSS = `
 .demo-status { font-weight: 500; }
@@ -122,8 +123,8 @@ export function mountDataTableDemo(now: number): void {
     full.rowId = (r) => r.id;
     // Expandable detail: click (or Enter) a row to reveal it. One row's
     // detail is deliberately ASYNC so the placeholder-then-paint path is on
-    // screen too — a detail that has to be fetched is the common case, and
-    // it is the one that looks broken if the component gets it wrong.
+    // screen too. A detail that has to be fetched is the common case. It is
+    // the one that looks broken if the component gets it wrong.
     full.detailFor = (r) => {
       const box = document.createElement('div');
       box.className = 'demo-detail';

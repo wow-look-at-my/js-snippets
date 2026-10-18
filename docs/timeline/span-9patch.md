@@ -13,15 +13,17 @@ A span is a rounded bar: fill, a 1px border, sometimes a 45-degree hatch. All of
 
 (SwiftShader, no GPU — treat the ratios inside a row as the signal and never the absolute numbers. Run-to-run spread on that renderer is about 20%, which is why 416-vs-399 is a wash and not a win.)
 
-**Snapped means every bar rounded to whole device pixels.** That is the column where the 9-patch looks good. It is also the column the component cannot have. `renderView` is the single global rounding step, precisely so bars do not move relative to each other during a fractional pan. Rounding again per bar makes each one walk by up to a pixel against its neighbours, the axis ticks, and the lanes above it. `anchorPattern` exists for the same reason on the texture. It phases the hatch to the span's own unrounded origin. The pattern then travels with the bar, instead of the bar sliding across a hatch pinned to the canvas.
+**Snapped means every bar rounded to whole device pixels.** That is the column where the 9-patch looks good. It is also the column the component cannot have. `renderView` is the single global rounding step, accurately so bars do not move relative to each other during a fractional pan. Rounding again per bar makes each one walk by up to a pixel against its neighbours, the axis ticks, and the lanes above it. `anchorPattern` exists for the same reason on the texture.
+
+It phases the hatch to the span's own unrounded origin. The pattern then travels with the bar, instead of the bar sliding across a hatch pinned to the canvas.
 
 So the row that matters is the sub-pixel one, where blits resample. The hatched 9-patch ties the path, and the solid one loses by 2.3x. A stretched solid middle is one blit. It has every reason to win. It still does not.
 
 ## The bug that nearly buried this
 
-The first version baked a middle exactly one hatch period (5px) wide. Every blit boundary resamples about a pixel of the slice's edge, so a fifth of the tile sat on a seam. The reconstructed hatch then rendered as disconnected dashes with a visible seam per tile, next to a path version drawing continuous diagonals. That looked like proof the technique was unusable. It was proof the strip was too narrow: at multiple periods the sub-pixel 9-patch and the path render alike.
+The first version baked a middle exactly one hatch period (5px) wide. Every blit boundary resamples about a pixel of the slice's edge, so a fifth of the tile sat on a seam. The reconstructed hatch then rendered as disconnected dashes with a visible seam per tile, next to a path version drawing continuous diagonals. That looked like proof the technique was unusable. It proofs the strip was too narrow: at multiple periods the sub-pixel 9-patch and the path render alike.
 
-The lesson is the ordinary one — a technique that looks broken is a bug in the harness until the harness has been fixed once.
+The lesson is the ordinary one — a technique that looks broken is a bug in the harness until the harness was fixed once.
 
 ## Why this is not close, beyond the numbers
 

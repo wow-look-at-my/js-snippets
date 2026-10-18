@@ -21,10 +21,11 @@ export interface FittedText {
 }
 
 /**
- * Derive tiers from a single label: the full text; then with a leading
- * `owner/` path segment stripped (only when that segment contains no
- * whitespace); then with everything from the first ` - ` on stripped.
- * Inapplicable tiers are skipped; always returns >= 1 tier.
+ * Derive tiers from a single label: the full text. This also covers
+ * then with a leading `owner/` path segment stripped (only when that
+ * segment contains no whitespace). This also covers then with
+ * everything from the first ` - ` on stripped. Inapplicable tiers are
+ * skipped; always returns >= 1 tier.
  */
 export function deriveLabelTiers(label: string): string[] {
   const tiers = [label];
@@ -133,7 +134,7 @@ export class FadeTextPainter {
 
   /**
    * Fill `text` at (x, y), left-aligned, `width` = its measured width, with
-   * the last `fadePx` px fading out; an optional halo strokes under the fill
+   * the last `fadePx` px fading out. An optional halo strokes under the fill
    * with the same fade. A fadePx wider than the text clamps to whole-px
    * steps so the gradient cache stays bounded.
    */

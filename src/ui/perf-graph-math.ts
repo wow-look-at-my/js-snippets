@@ -1,12 +1,12 @@
-// Pure math for the <perf-graph> element: a fixed-capacity Float32Array ring
-// buffer, stats / display-range / tick helpers, a min-max downsampler for
+// Pure math for the <perf-graph> element. A fixed-capacity Float32Array ring
+// buffer, stats / display-range / tick helpers. A min-max downsampler for
 // more-samples-than-pixels rendering, and the HUD value formatter. No DOM or
 // browser APIs — everything here runs (and is tested) under node;
 // ui/perf-graph.ts is the canvas-bound half that consumes it.
 //
 // Hot paths are allocation-free by design: SampleRing allocates only in the
 // constructor and setCapacity(), and computeStats / binMinMax write into
-// caller-owned outputs, so a per-frame HUD redraw performs no allocation.
+// caller-owned outputs. A per-frame HUD redraw performs no allocation.
 // niceTicks is the one allocating helper — call it only when the display
 // range changes.
 
@@ -246,8 +246,8 @@ export function binMinMax(ring: SampleRing, bins: number, outMin: Float32Array, 
 /** Newest finite sample in each of `bins` buckets — the reduction a stacked
  * AREA wants, where binMinMax's envelope would draw a band as a ragged blur.
  * Bin membership matches binMinMax exactly (sample i lands in floor(i * bins
- * / count)), so every series of one SeriesRing bins onto the same columns and
- * the bands stay aligned. Empty bins are NaN. `bins` is clamped to
+ * / count)), so every series of one SeriesRing bins onto the same columns.
+ * The bands stay aligned. Empty bins are NaN. `bins` is clamped to
  * out.length. Writes only into the caller-owned array — no allocation. */
 export function binLast(ring: SampleRing, bins: number, out: Float32Array): number {
   const nBins = Math.min(Math.max(0, Math.floor(bins)), out.length);

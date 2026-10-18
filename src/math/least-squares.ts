@@ -128,7 +128,7 @@ export function evalPolynomial(coeffs: readonly number[], x: number): number {
 
 // Least-squares polynomial of the given degree through (xs, ys). Coefficients
 // come back in ascending power order. The x values are centred and scaled
-// internally, then the fit is mapped back, because a raw Vandermonde matrix on
+// internally. Then the fit is mapped back, because a raw Vandermonde matrix on
 // large x loses the high-order terms to conditioning.
 export function fitPolynomial(
   xs: readonly number[],
@@ -327,8 +327,8 @@ function canonicalSign(v: Vec3): Vec3 {
 
 // Cyclic Jacobi rotations on a symmetric 3x3. Eigenvalues come back ascending,
 // with the matching orthonormal eigenvectors. Jacobi is used rather than the
-// closed-form cubic because it stays accurate on a near-degenerate matrix,
-// which is exactly the case a flat or rod-shaped point cloud produces.
+// closed-form cubic because it stays accurate on a near-degenerate matrix.
+// This is exactly the case a flat or rod-shaped point cloud produces.
 export function symmetricEigen3(matrix: Matrix): Eigen3 {
   const [rows, cols] = dims(matrix);
   if (rows !== 3 || cols !== 3) throw new RangeError(`symmetricEigen3 needs a 3x3 matrix, got ${rows}x${cols}`);

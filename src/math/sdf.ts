@@ -11,8 +11,7 @@ export const SDF_TORUS = 3;
 /** A 4-component params vector; each primitive reads the components it needs. */
 export type SdfParams = readonly [number, number, number, number];
 
-// -- Primitive distance functions (local space)
-// ------------------------------ `params` is a 4-vector.
+// -- Primitive distance functions (local space) `params` is a 4-vector.
 
 /** Signed distance to a sphere. params: [radius]. */
 export function sdSphere(p: Vec3, params: SdfParams): number {
@@ -38,7 +37,6 @@ export function sdCylinder(p: Vec3, params: SdfParams): number {
   return Math.min(Math.max(dx, dy), 0) + Math.hypot(ox, oy);
 }
 
-/** Signed distance to a torus whose ring lies in the XZ plane. params: [majorRadius, minorRadius]. */
 export function sdTorus(p: Vec3, params: SdfParams): number {
   const qx = Math.hypot(p[0], p[2]) - params[0];
   return Math.hypot(qx, p[1]) - params[1];

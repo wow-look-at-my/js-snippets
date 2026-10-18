@@ -1,5 +1,7 @@
 ### editor/code-editor.js
-Tiny dependency-free syntax-highlighting code editor as a custom element. The highlighted token spans ARE the editable content: a single contenteditable whose children are coloured spans + bare whitespace text nodes. The native caret therefore sits in the real glyphs and never drifts. On each edit the text is re-tokenized and the spans rebuilt with the caret offset saved/restored. Rendered in the light DOM. Injects its own themeable stylesheet once. ~18 KB unminified, no dependencies. Re-exports everything from editor/tokenizer.js so one import is enough.
+Tiny dependency-free syntax-highlighting code editor as a custom element. The highlighted token spans ARE the editable content: a single contenteditable whose children are coloured spans + bare whitespace text nodes. The native caret therefore sits in the real glyphs and never drifts. On each edit the text is re-tokenized and the spans rebuilt with the caret offset saved/restored. Rendered in the light DOM. Injects its own themeable stylesheet once. ~18 KB unminified, no dependencies.
+
+Re-exports everything from editor/tokenizer.js so one import is enough.
 
 Importing the module auto-registers <code-editor> (unless that tag is taken).
 

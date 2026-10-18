@@ -140,10 +140,10 @@ function feed(el: TimelineViewElement, t0: number, now: number, reset: boolean):
 // Boot: pre-roll recent history so the default view is already populated.
 for (const el of els) feed(el, boot - PREROLL_MS, boot, true);
 
-// The frozen instance: ONE batch over a closed window, then both stops.
-// Its "now" is the window's end, so the runs that were still going then stay
-// ongoing — their bars must terminate at maxTime instead of growing, which
-// is the treatment this instance exists to keep on screen.
+// The frozen instance: ONE batch over a closed window, then both stops. Its
+// "now" is the window's end, so the runs that were still going then stay
+// ongoing. Their bars must terminate at maxTime instead of growing, which is
+// the treatment this instance exists to keep on screen.
 {
   const from = boot - STATIC_FROM_MS;
   const to = boot - STATIC_TO_MS;

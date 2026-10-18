@@ -21,7 +21,7 @@ export function packRgba(r: number, g: number, b: number, a: number): number {
 
 /** Build an exact palette covering every pixel of every image, or return null
  * when they use more than `limit` distinct colours. `reserveTransparent` adds a
- * fully transparent entry when the images do not already contain one — the
+ * fully transparent entry when the images do not already contain one. The
  * encoder needs it to write "leave this pixel alone" into a blend_op=OVER frame.
  * It costs one palette slot, so the effective colour budget is `limit - 1` for
  * fully opaque input. */
@@ -103,7 +103,7 @@ export function buildPalette(
 
 /** Map an RGBA8 image to one byte per pixel through `palette`. Throws on a
  * colour the palette does not contain: the palette is built from the very
- * pixels being indexed, so a miss means the caller mixed images from
+ * pixels being indexed. A miss means the caller mixed images from
  * different builds — silently substituting a nearby colour would ship a
  * corrupted frame that looks almost right. */
 export function indexImage(src: Uint8Array, palette: Palette): Uint8Array {

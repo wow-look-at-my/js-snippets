@@ -132,7 +132,7 @@ export interface TimeBounds {
 /**
  * Clamp a view into `bounds`, preserving its span: a view past `max`
  * shifts back, one before `min` shifts forward. A span WIDER than the
- * bounded range cannot preserve both stops, so it collapses to exactly
+ * bounded range cannot preserve both stops. It collapses to exactly
  * [min, max] — which is what a zoom-out against a short static window
  * should land on. Null and non-finite sides are ignored, so an unbounded
  * view comes back untouched.
@@ -149,7 +149,7 @@ export function clampViewToBounds(view: TimeView, bounds: TimeBounds): TimeView 
   return out;
 }
 
-/** The widest span `bounds` can show, for a zoom clamp: the distance between finite stops, else `maxSpan`. Never below `minSpan` — a bounded range narrower than the hard zoom floor still zooms to the floor, and clampViewToBounds then parks that
+/** The widest span `bounds` can show, for a zoom clamp: the distance between finite stops, else `maxSpan`. Never below `minSpan` — a bounded range narrower than the hard zoom floor still zooms to the floor. And clampViewToBounds then parks that
  * window over the range. */
 export function boundedMaxSpan(bounds: TimeBounds, maxSpan = MAX_SPAN_MS, minSpan = MIN_SPAN_MS): number {
   const { min, max } = bounds;
@@ -313,7 +313,7 @@ export class WheelGestureRouter {
 
   /**
    * Route one event of the stream. `ts` is the event's timestamp in ms
-   * on any monotonic clock (e.timeStamp / performance.now()); WheelRoute
+   * on any monotonic clock (e.timeStamp / performance.now()). WheelRoute
    * semantics — `consumed` is the preventDefault contract — are
    * unchanged from routeWheel.
    */
@@ -406,10 +406,10 @@ export function liveEdgeTarget(now: number, lastFresh: number | null, staleAfter
 
 // -- Whole-pixel scrolling ------------------------------------------------------------
 
-/** Snap a view's ORIGIN to the device-pixel grid, span preserved: with the
- * snapped view, any fixed time's x keeps a constant subpixel phase, so a
- * moving viewport translates the whole scene in WHOLE device-pixel steps and
- * bars keep exact relative offsets. This is the place rounding may touch
+/** Snap a view's ORIGIN to the device-pixel grid, span preserved. With the
+ * snapped view, any fixed time's x keeps a constant subpixel phase. A moving
+ * viewport translates the whole scene in WHOLE device-pixel steps and bars
+ * keep exact relative offsets. This is the place rounding may touch
  * time→x. */
 export function snapViewToDevicePixels(view: TimeView, plotWidthCss: number, dpr: number): TimeView {
   const span = view.end - view.start;
@@ -540,7 +540,7 @@ export function formatTimeFull(t: number, tzOffsetMs = 0, withMs = false): strin
 /**
  * Compact human duration: '—' for non-finite/negative, then 0ms → '0ms',
  * sub-second → 'Nms', sub-minute → 'N.Ns', sub-hour → 'Nm NNs',
- * sub-day → 'Nh NNm', else 'Nd Nh'.
+ * sub-day → 'Nh NNm'. This also covers else 'Nd Nh'.
  */
 export function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—';
@@ -615,10 +615,11 @@ function lowestFit(trackEnds: readonly number[], start: number, rows: number): n
 /** packTracks over only the items that intersect `view` (a partially visible
  * interval counts; an ongoing one — end null — intersects every window
  * at/after its start). Same deterministic (start, id) ordering and first-fit
- * reuse as packTracks, evaluated over the visible subset only — so one
- * historical parallelism burst stops padding its lane the moment it scrolls
- * out of view. Assignment is a pure function of the visible SET: while the
- * window slides over unchanged overlap, nothing hops tracks. */
+ * reuse as packTracks. Those packTracks are evaluated over the visible
+ * subset only — so one historical parallelism burst stops padding its lane
+ * the moment it scrolls out of view. Assignment is a pure function of the
+ * visible SET: while the window slides over unchanged overlap, nothing hops
+ * tracks. */
 export function packVisibleTracks(items: readonly PackItem[], view: TimeView): { tracks: number[]; trackCount: number } {
   const order: number[] = [];
   for (let i = 0; i < items.length; i++) {
@@ -646,7 +647,7 @@ export function packVisibleTracks(items: readonly PackItem[], view: TimeView): {
 /** Bound on remembered id → track assignments per TrackAllocator (LRU eviction beyond it). */
 export const TRACK_MEMORY_CAP = 2048;
 
-/** STICKY sub-track allocation for one lane — the STATEFUL counterpart of
+/** STICKY sub-track allocation for one lane. The STATEFUL counterpart of
  * packVisibleTracks, built so rows stop shifting under the viewer as the
  * visible membership churns (panning, live updates):
  *
@@ -655,8 +656,8 @@ export const TRACK_MEMORY_CAP = 2048;
  *   even an item whose times were live-edited can never create a
  *   same-track overlap).
  * - An item RETURNING after scrolling out gets its remembered track back
- *   when no visible occupant conflicts — best-effort row memory, bounded
- *   by an LRU cap (`memoryCap`, default TRACK_MEMORY_CAP). */
+ * when no visible occupant conflicts. Best-effort row memory, bounded by
+ * an LRU cap (`memoryCap`, default TRACK_MEMORY_CAP). */
 export class TrackAllocator {
   /** id → last assigned track. Map insertion order doubles as LRU recency. */
   private memory = new Map<string, number>();
@@ -931,8 +932,8 @@ export function demotionOrder(trackCounts: readonly number[]): number[] {
   return order;
 }
 
-/** Auto-fit: decide which lanes render at the compact track height so the lane stack fits `availHeight` (the host's plot height). Evaluate with the NATURAL layout (every lane at the normal track height); while it overflows, demote lanes one at a time in demotionOrder() until the total fits or every lane is compact (if all-compact still overflows, the caller's vertical lane scrolling takes over). Demotion applies to a whole lane — all of its tracks go compact together. Deterministic and oscillation-free: the result is a pure function of (track counts, metrics, heights, prevDemotedCount). Between both thresholds the demotion COUNT is kept; the demotion SET is always re-derived from the CURRENT counts, so
- *a lane whose parallelism left the window hands its demotion to the now-tallest lane deterministically. `compactTrackHeight` is clamped to at most the normal track height. */
+/** Auto-fit: decide which lanes render at the compact track height so the lane stack fits `availHeight` (the host's plot height). Evaluate with the NATURAL layout (every lane at the normal track height). While it overflows, demote lanes one at a time in demotionOrder() until the total fits or every lane is compact (if all-compact still overflows, the caller's vertical lane scrolling takes over). Demotion applies to a whole lane — all of its tracks go compact together. Deterministic and oscillation-free: the result is a pure function of (track counts, metrics, heights, prevDemotedCount). Between both thresholds the demotion COUNT is kept. The demotion SET is always re-derived from the CURRENT counts. A
+ * lane whose parallelism left the window hands its demotion to the now-tallest lane deterministically. `compactTrackHeight` is clamped to at most the normal track height. */
 export function computeAutoFit(
   trackCounts: readonly number[],
   m: LaneMetrics,
@@ -977,9 +978,9 @@ export const ELLIPSIS = '…';
 
 /**
  * Fit `text` into `availPx` given a (monospace) character width: returns the
- * text unchanged when it fits, an `abc…` truncation when at least `minChars`
- * characters + the ellipsis fit, else '' (suppress the label entirely —
- * never let it spill into a neighboring bar).
+ * text unchanged when it fits, an `abc…` truncation. This happens when at
+ * least `minChars` characters + the ellipsis fit, else '' (suppress the label
+ * entirely — never let it spill into a neighboring bar).
  */
 export function fitText(text: string, availPx: number, charW: number, minChars = 2): string {
   if (!(charW > 0) || availPx <= 0 || text.length === 0) return '';
@@ -1060,9 +1061,9 @@ export interface InstantCluster {
   marks: ClusterMark[];
 }
 
-/** SCALE-AWARE clustering of instant markers: a greedy transitive sweep in time order merges instants whose centers sit within `pitchPx` CSS px of their neighbor at the view's scale — exactly the ones whose pips would overdraw each other — and zooming in progressively splits every cluster until each pip stands at its true timestamp. The chain is maximal: it breaks only at a real gap in the data, never at a width cap, so a cluster is "one visually continuous run of instants" and nothing about it depends on where the sweep started. A run that spans real time is not compacted to a point — it carries `marks`: its members THINNED to `pitchPx`, each at its own true timestamp
- *and each drawn as the pip it always was. Marks are dropped, never merged and never redrawn as some other glyph, so however far out you zoom the run stays a row of separated pips (halve the width, halve the pips) and can never fuse into one shape. The rule and both ways this has been got wrong: docs/timeline/zoom-out-never-merges.md. Only instants participate: an item must be terminal (end != null — an ongoing interval will grow into a bar) with a duration mapping under `instantPx` (the pip threshold) at this scale. Membership depends only on time DELTAS and the scale — never on the viewport's position — so a pure pan can never change clusters (no jitter), and items
- *beyond the view still cluster, so a group scrolls into view already formed. Deterministic under input re-ordering: the sweep runs in (start, id) order and indices refer to input positions. */
+/** SCALE-AWARE clustering of instant markers. A greedy transitive sweep in time order merges instants whose centers sit within `pitchPx` CSS px of their neighbor at the view's scale. Exactly the ones whose pips would overdraw each other. It zooming in progressively splits every cluster until each pip stands at its true timestamp. The chain is maximal: it breaks only at a real gap in the data, never at a width cap. A cluster is "one visually continuous run of instants" and nothing about it depends on where the sweep started. A run that spans real time is not compacted to a point. It carries `marks`: its members THINNED to `pitchPx`, each at its own true timestamp and each
+ * drawn as the pip it always was. Marks are dropped, never merged and never redrawn as some other glyph. However far out you zoom the run stays a row of separated pips (halve the width, halve the pips) and can never fuse into one shape. The rule and both ways this has been got wrong: docs/timeline/zoom-out-never-merges.md. Only instants participate: an item must be terminal (end != null — an ongoing interval will grow into a bar) with a duration mapping under `instantPx` (the pip threshold) at this scale. Membership depends only on time DELTAS and the scale — never on the viewport's position. So a pure pan can never change clusters (no jitter), and items beyond the view
+ * still cluster. A group scrolls into view already formed. Deterministic under input re-ordering: the sweep runs in (start, id) order and indices refer to input positions. */
 export function clusterInstants(
   items: readonly PackItem[],
   view: TimeView,
@@ -1147,13 +1148,12 @@ export function clusterZoomView(extent: TimeRange, minSpan = MIN_SPAN_MS, fillFr
   return { start: mid - span / 2, end: mid + span / 2 };
 }
 
-/** Where a cluster's marker sits, in TIME: the extent midpoint while that fits
- * the window, slid along the visible slice of the extent when the window
- * clips it (the sticky-label pattern — a transitive chain straddling a
- * viewport edge keeps an on-screen marker instead of hiding its members'
- * evidence), and null once no part of the extent is visible. `marginMs`
- * insets the slid marker from the window edges (pass the marker radius in ms)
- * so it stays fully visible. */
+/** Where a cluster's marker sits. That marker is in TIME: the extent midpoint
+ * while that fits the window, slid along the visible slice of the extent.
+ * This holds when the window clips it (the sticky-label pattern — a
+ * transitive chain straddling a viewport edge keeps an on-screen marker
+ * instead of hiding its members' evidence), and null once no part of the
+ * extent is visible. */
 export function clusterMarkerTime(extent: TimeRange, view: TimeView, marginMs: number): number | null {
   if (extent.end < view.start || extent.start > view.end) return null;
   const mid = (extent.start + extent.end) / 2;
@@ -1215,10 +1215,10 @@ export function minimapExtent(
  * Map the viewport into strip px: the window rect, CROPPED to the strip
  * (a view hanging past the extent shows truncated at the strip edge —
  * never slid to a lying position), with a minimum visual width applied
- * around the center BEFORE cropping (a tiny window on a huge extent
- * stays visible); a view entirely outside the extent pins a minimum
- * sliver at the nearer strip edge. Degenerate extent/width yields the
- * full strip.
+ * around the center. This happens BEFORE cropping (a tiny window on a
+ * huge extent stays visible). A view entirely outside the extent pins a
+ * minimum sliver at the nearer strip edge. Degenerate extent/width
+ * yields the full strip.
  */
 export function minimapWindowRect(
   view: TimeView,
@@ -1242,10 +1242,10 @@ export function minimapWindowRect(
 /**
  * Hit-test a strip x against the window rect. Handles win over the
  * middle and their zones reach `hitPx` OUTSIDE the rect (generous grab
- * targets) but only min(hitPx, windowWidth/4) INSIDE it — a narrow
- * window keeps a grabbable middle instead of the handle zones swallowing
- * it. When both handle zones cover x (tiny window), the nearer handle
- * wins (ties go left). Outside everything: 'before'/'after' — the
+ * targets) but only min(hitPx, windowWidth/4) INSIDE it. A narrow window
+ * keeps a grabbable middle instead of the handle zones swallowing it.
+ * When both handle zones cover x (tiny window), the nearer handle wins
+ * (ties go left). Outside everything: 'before'/'after' — the
  * click-to-center zones.
  */
 export function minimapHitZone(x: number, rect: MinimapWindowRect, hitPx = MINIMAP_HANDLE_HIT_PX): MinimapZone {
@@ -1275,12 +1275,12 @@ export function minimapPan(view: TimeView, dxPx: number, extent: TimeView, width
 }
 
 /**
- * Drag one window edge to the strip x. The dragged edge is clamped to
- * the extent and to [minSpan, maxSpan] against the fixed opposite edge —
- * dragging a handle past (or into) the other CLAMPS at the minimum span,
+ * Drag one window edge to the strip x. The dragged edge is clamped to the
+ * extent and to [minSpan, maxSpan] against the fixed opposite edge.
+ * Dragging a handle past (or into) the other CLAMPS at the minimum span,
  * it never flips which edge is which mid-drag. The min-span floor wins
- * over the extent clamp (the window must stay a valid view even inside
- * a tiny extent).
+ * over the extent clamp (the window must stay a valid view even inside a
+ * tiny extent).
  */
 export function minimapResize(
   view: TimeView,
@@ -1316,8 +1316,8 @@ export type { HitRect } from './hit-test.ts';
 
 /**
  * Route for a connector from the right-center of `from` to the left-center
- * of `to`: a sampled cubic bezier with horizontal control handles, so the
- * line leaves the source rightward and enters the target leftward — a
+ * of `to`: a sampled cubic bezier with horizontal control handles. The line
+ * leaves the source rightward. The line enters the target leftward — a
  * gentle S-curve for forward targets, a readable loop-back for targets that
  * start earlier. Aligned same-row forward targets get a plain 2-point
  * segment. Returns `samples + 1` points (polyline: draw it, hit-test it
@@ -1360,13 +1360,13 @@ export interface SegmentHit {
   end: number;
 }
 
-/** The segment PAINTED at time `t` inside an interval's bar: the LAST array
+/** The segment PAINTED at time `t` inside an interval's bar. The LAST array
  * entry covering t (segments draw in order — later overpaints earlier),
  * with the draw path's clamps (start floored to `intervalStart`, null/late
- * end capped to `intervalEnd` — pass the effective end: `end ?? now`).
+ * end capped to `intervalEnd`. Pass the effective end: `end ?? now`).
  * Coverage is half-open [start, end) so shared phase boundaries resolve to
- * the incoming phase, EXCEPT t at the interval's own end still hits a segment
- * ending there (the bar's last pixel must resolve). */
+ * the incoming phase, EXCEPT t. At the interval's own end still hits a
+ * segment ending there (the bar's last pixel must resolve). */
 export function segmentAtTime(
   segments: readonly TimelineSegment[] | null | undefined,
   intervalStart: number,
@@ -1477,7 +1477,7 @@ export function subtractRanges(span: TimeRange, covers: readonly TimeRange[]): T
   return out;
 }
 
-/** The range a consumer may ask `loadRange` about for this viewport: the
+/** The range a consumer may ask `loadRange` about for this viewport. The
  * visible window plus a little backward prefetch, clamped to `now` AND to the
  * covered end. */
 export function historyProbe(view: TimeView, now: number, coveredEnd: number | null, prefetchFrac = 0.15): TimeRange | null {
@@ -1498,12 +1498,12 @@ export interface CoverageOptions {
 
 /** Bookkeeping for `loadRange`-style async history loading. Tracks which time ranges are
  * covered by data the consumer has supplied, which request is in flight (one at a time
- * — no request storms), the exhausted-history boundary, and the fixed retry cadence
- * for rejected loads. const next = tracker.nextRequest(view, now); // range to fetch, or
- * null ...call loadRange(next)... // tracker marked it in flight tracker.settle(next, {
- * ok: true }); // → covered tracker.settle(next, { ok: true, exhausted: true }); //
- * → history ends here tracker.settle(next, { ok: false }); // → retried ~retryMs
- * later, forever */
+ * — no request storms). No request also storms the exhausted-history boundary, and the
+ * fixed retry cadence for rejected loads. const next = tracker.nextRequest(view, now).
+ * // range to fetch, or null ...call loadRange(next)... // tracker marked it. In flight
+ * tracker.settle(next, { ok: true }). // → covered tracker.settle(next, { ok: true,
+ * exhausted: true }). // → history ends here tracker.settle(next, { ok: false }). This
+ * also covers // → retried ~retryMs later, forever */
 export class CoverageTracker {
   private covered: TimeRange[] = [];
   private inflight: TimeRange | null = null;
