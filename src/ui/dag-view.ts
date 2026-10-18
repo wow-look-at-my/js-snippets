@@ -617,6 +617,11 @@ export class DagViewElement extends HTMLElement {
     };
   }
 
+  /** Whether the active-node loop is running. It runs only while an active node is in view and drawn as a box, and stops when none is. */
+  get animating(): boolean {
+    return this.animatingValue;
+  }
+
   /** The whole drawn state, in both coordinate systems, as a plain object.
    * `world` is what the layout decided. `screen` is where that landed on the
    * canvas in CSS pixels, with the origin at the canvas top-left. A reader can
@@ -625,11 +630,6 @@ export class DagViewElement extends HTMLElement {
    * one above. A description of a gap is a guess. These numbers are the gap.
    * `visible` says whether a node's box overlaps the canvas at all, so
    * everything scrolled out of view is countable rather than merely missing. */
-  /** Whether the active-node loop is running. It runs only while an active node is in view and drawn as a box, and stops when none is. */
-  get animating(): boolean {
-    return this.animatingValue;
-  }
-
   get snapshot(): DagSnapshot {
     this.ensureLayout();
     const toScreen = (p: { x: number; y: number }): { x: number; y: number } => {

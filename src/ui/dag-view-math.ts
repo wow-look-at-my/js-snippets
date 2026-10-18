@@ -1609,23 +1609,16 @@ export function visibleActiveNodes(
   return visibleNodes(layout, view).filter((idx) => isActiveNode(layout.nodes[idx].node, styles));
 }
 
-/**
- * Where one node is in its loop, 0 (inclusive) to 1 (exclusive). Each id
- * gets its own fixed offset into the period, so active nodes never beat in
- * lockstep, and one node keeps its offset across redraws and reloads.
- */
+/** Each id gets its own fixed offset into the period, so active nodes
+ * never beat in lockstep. One node keeps its offset across redraws and
+ * reloads. */
 export function activePhase(id: string, nowMs: number, periodMs: number = ACTIVE_PERIOD_MS): number {
   const offset = (hashString(id) / 0x100000000) * periodMs;
   const t = (((nowMs + offset) % periodMs) + periodMs) % periodMs;
   return t / periodMs;
 }
 
-/**
- * The sheen's centre on the box's diagonal axis, where `s = x + y` runs
- * from 0 at the top-left corner to `w + h` at the bottom-right. Returns
- * null outside the sweep share of the period. The band enters fully off
- * the box and leaves fully off it, so no frame starts or ends mid-box.
- */
+/** Returns null outside the sweep share of the period. */
 export function sheenCentre(phase: number, w: number, h: number, halfBand: number): number | null {
   if (phase >= ACTIVE_SWEEP_SHARE) return null;
   const k = phase / ACTIVE_SWEEP_SHARE;
@@ -1637,7 +1630,6 @@ export function sheenHalfBand(w: number, h: number): number {
   return Math.max(6, (w + h) * 0.14);
 }
 
-/** The reduced-motion pulse: 0 at the start of the period, 1 at its middle, a cosine between. */
 export function pulseLevel(phase: number): number {
   return 0.5 - 0.5 * Math.cos(2 * Math.PI * phase);
 }

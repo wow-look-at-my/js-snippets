@@ -523,10 +523,7 @@ check(
 );
 check('nothing is parked off screen after the fit', scaled.offScreen === 0, `${scaled.offScreen} off screen`);
 
-// -- Active nodes ------------------------------------------------------------------------
-// The sheen is the one thing that moves without input. A frame must differ
-// from the last on an active box and match it on an idle one, and the loop
-// must stop once no active box is in view. Neither is reachable under node.
+// -- Active nodes The sheen is the thing that moves without input.
 
 interface Region {
 	id: string;
@@ -600,7 +597,7 @@ check(
 check('every active-board node lies wholly inside the canvas', activeState.inside);
 check('the loop runs while an active node is in view', activeState.animating);
 
-// Ten samples over two periods: a box rests for part of each period, so one pair of frames proves nothing.
+// Samples over periods: a box rests for part of each period, so one pair of frames proves nothing.
 const sweep = await sampleBoxes(['pr-12', 'pr-19', 'pr-41', 'pr-27', 'pr-45'], 10, 320);
 for (const id of ['pr-12', 'pr-19', 'pr-41']) {
 	const r = sweep.find((x) => x.id === id)!;
@@ -682,7 +679,7 @@ if (shots) {
 	// Park the pointer off the graph first: a hover fades everything outside one neighbourhood.
 	await page.mouse.move(2, 2);
 	await page.waitForTimeout(400);
-	// The sheen moves, so two frames apart show it at two positions.
+	// The sheen moves, so frames apart show it at positions.
 	for (const name of ['dag-view-active-1.png', 'dag-view-active-2.png']) {
 		const el = await page.$('#demo-dag-active');
 		if (el === null) break;
