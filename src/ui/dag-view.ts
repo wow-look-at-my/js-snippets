@@ -30,6 +30,10 @@ import {
   layoutNodeText,
   safeNodeHref,
   cardLinks,
+  layoutGrouped,
+  hitTestGroupHeader,
+  groupOfNode,
+  groupMatches,
   MIN_SCALE,
   MAX_SCALE,
 } from './dag-view-math.ts';
@@ -44,6 +48,8 @@ import type {
   Neighbourhood,
   NodeText,
   WorldRect,
+  DagGroup,
+  PlacedGroup,
 } from './dag-view-math.ts';
 import { categoryColor, categoryJitter, dimColor, labelHaloColor } from './color.ts';
 
@@ -98,6 +104,8 @@ type Theme = typeof THEME_DEFAULTS;
 export interface DagData {
   nodes?: DagNode[];
   edges?: DagEdge[];
+  /** Named groups. A node joins one with its `group` field. */
+  groups?: DagGroup[];
 }
 
 /** Fill pattern for a node `state`. */
@@ -219,6 +227,8 @@ export interface DagSnapshot {
   info: DagInfo;
   nodes: DagSnapshotNode[];
   edges: DagSnapshotEdge[];
+  /** Every group with a member: whether it is collapsed, its member ids, and its box. */
+  groups: { id: string; label: string; collapsed: boolean; members: string[]; nodeId: string; world: DagSnapshotRect }[];
 }
 
 // -- Constants ---------------------------------------------------------------------
@@ -314,6 +324,9 @@ export class DagViewElement extends HTMLElement {
 
   private rawNodes: DagNode[] = [];
   private rawEdges: DagEdge[] = [];
+  private rawGroups: DagGroup[] = [];
+  /** A reader's expand or collapse, by group id. It outlives a setData, so a polling page keeps what the reader opened. */
+  private groupToggles = new Map<string, boolean>();
   private layout: DagLayout = layoutDag([], []);
   private bounds: WorldRect = { x: 0, y: 0, w: 0, h: 0 };
   private view: DagViewport = { x: 0, y: 0, scale: 1 };
@@ -516,6 +529,7 @@ export class DagViewElement extends HTMLElement {
   setData(data: DagData): void {
     if (data.nodes !== undefined) this.rawNodes = data.nodes.slice();
     if (data.edges !== undefined) this.rawEdges = data.edges.slice();
+    if (data.groups !== undefined) this.rawGroups = data.groups.slice();
     this.layoutStale = true;
     // A refresh keeps the selection when the node is still there: a dashboard that polls must not close the panel a reader is reading.
     this.keepSelected = this.selectedIndex >= 0 ? this.layout.nodes[this.selectedIndex].node.id : null;
@@ -551,6 +565,52 @@ export class DagViewElement extends HTMLElement {
   }
 
   /** Node/edge `state` -> treatment. Merged over DEFAULT_STYLES. */
+  get groups(): DagGroup[] {
+    return this.rawGroups.slice();
+  }
+
+  set groups(v: DagGroup[]) {
+    this.setData({ groups: v });
+  }
+
+  /** Whether the group draws as one node now: the reader's last toggle, else the group's own `collapsed`. */
+  isGroupCollapsed(id: string): boolean {
+    const g = this.rawGroups.find((x) => x.id === id);
+    return this.groupToggles.get(id) ?? g?.collapsed === true;
+  }
+
+  /**
+   * Collapse or expand a group. Pan and zoom stay as they are, and the group's
+   * top-left corner stays where it was on screen, so the reader's eye does not
+   * have to find it again. Fires `groupchange` {id, collapsed}.
+   */
+  setGroupCollapsed(id: string, collapsed: boolean): void {
+    if (!this.rawGroups.some((g) => g.id === id)) return;
+    if (this.isGroupCollapsed(id) === collapsed) return;
+    this.ensureLayout();
+    const before = this.layout.groups?.find((g) => g.id === id);
+    const anchor = before !== undefined ? worldToScreen({ x: before.x, y: before.y }, this.view) : null;
+    this.groupToggles.set(id, collapsed);
+    this.keepSelected = this.selectedIndex >= 0 ? this.layout.nodes[this.selectedIndex].node.id : null;
+    this.selectedIndex = -1;
+    this.hoverIndex = -1;
+    this.highlight = null;
+    this.highlightCache.clear();
+    this.layoutStale = true;
+    this.viewTouched = true;
+    this.ensureLayout();
+    const after = this.layout.groups?.find((g) => g.id === id);
+    if (anchor !== null && after !== undefined) {
+      this.view = { ...this.view, x: anchor.x - after.x * this.view.scale, y: anchor.y - after.y * this.view.scale };
+    }
+    this.dispatchEvent(new CustomEvent('groupchange', { detail: { id, collapsed } }));
+    this.invalidate();
+  }
+
+  private toggleGroup(g: PlacedGroup): void {
+    this.setGroupCollapsed(g.id, !g.collapsed);
+  }
+
   get styles(): DagStyleMap {
     return { ...this.styleMap };
   }
@@ -671,6 +731,14 @@ export class DagViewElement extends HTMLElement {
           visible: s.x + w > 0 && s.y + h > 0 && s.x < this.cssW && s.y < this.cssH,
         };
       }),
+      groups: (this.layout.groups ?? []).map((g) => ({
+        id: g.id,
+        label: g.label,
+        collapsed: g.collapsed,
+        members: g.members.map((m) => m.id),
+        nodeId: g.nodeId,
+        world: { x: round(g.x), y: round(g.y), w: round(g.w), h: round(g.h) },
+      })),
       edges: this.layout.edges.map((e) => ({
         from: e.edge.from,
         to: e.edge.to,
@@ -737,7 +805,7 @@ export class DagViewElement extends HTMLElement {
     this.layoutStale = false;
     const t = this.theme;
     const texts = new Map<string, NodeText>();
-    this.layout = layoutDag(this.rawNodes, this.rawEdges, {
+    this.layout = layoutGrouped(this.rawNodes, this.rawEdges, this.rawGroups, (g) => this.isGroupCollapsed(g.id), {
       orientation: this.orientationValue,
       gap: t.gap,
       layerGap: t.layerGap,
@@ -948,7 +1016,9 @@ export class DagViewElement extends HTMLElement {
     if (this.searchQuery === '') return;
     this.layout.nodes.forEach((n, i) => {
       const hay = `${n.node.id} ${n.node.label ?? ''} ${n.node.sublabel ?? ''}`.toLowerCase();
-      if (hay.includes(this.searchQuery)) this.searchMatches.add(i);
+      // A match hidden inside a collapsed group lights up the group's node.
+      const group = groupOfNode(this.layout, n.node.id);
+      if (hay.includes(this.searchQuery) || (group !== null && groupMatches(group, this.searchQuery))) this.searchMatches.add(i);
     });
   }
 
@@ -1144,7 +1214,17 @@ export class DagViewElement extends HTMLElement {
     if (!wasClick) return;
 
     const w = screenToWorld(p, this.view);
+    const header = hitTestGroupHeader(this.layout, w.x, w.y);
+    if (header !== null) {
+      this.toggleGroup(header);
+      return;
+    }
     const ni = hitTestNodes(this.layout, w.x, w.y);
+    const stand = ni >= 0 ? groupOfNode(this.layout, this.layout.nodes[ni].node.id) : null;
+    if (stand !== null) {
+      this.toggleGroup(stand);
+      return;
+    }
     if (ni >= 0) {
       this.select(ni, true);
       if (e.ctrlKey || e.metaKey) this.openHref(this.layout.nodes[ni].node);
@@ -1274,6 +1354,11 @@ export class DagViewElement extends HTMLElement {
         if (this.selectedIndex >= 0) {
           e.preventDefault();
           const n = this.layout.nodes[this.selectedIndex];
+          const group = groupOfNode(this.layout, n.node.id);
+          if (group !== null) {
+            this.toggleGroup(group);
+            break;
+          }
           this.dispatchEvent(new CustomEvent('nodeclick', { detail: { node: n.node, placed: n } }));
         }
         break;
@@ -1660,6 +1745,7 @@ export class DagViewElement extends HTMLElement {
 
     const view = visibleWorldRect(this.view, this.cssW, this.cssH);
     this.drawGrid(ctx, view);
+    for (const g of this.layout.groups ?? []) if (!g.collapsed) this.drawGroupBox(ctx, g);
 
     // Edges first, so a node always covers the lines that reach it.
     ctx.save();
@@ -1670,6 +1756,37 @@ export class DagViewElement extends HTMLElement {
     ctx.restore();
 
     for (const i of visibleNodes(this.layout, view)) this.drawNode(ctx, i);
+  }
+
+  /** An expanded group: a dashed box behind its members, with a header that names it and collapses it on a click. */
+  private drawGroupBox(ctx: CanvasRenderingContext2D, g: PlacedGroup): void {
+    const t = this.theme;
+    const s = this.view.scale;
+    const p = worldToScreen({ x: g.x, y: g.y }, this.view);
+    const w = g.w * s;
+    const h = g.h * s;
+    if (p.x > this.cssW || p.y > this.cssH || p.x + w < 0 || p.y + h < 0) return;
+    const r = Math.min(t.nodeRadius * 2, w / 2, h / 2);
+    ctx.save();
+    ctx.beginPath();
+    roundRect(ctx, p.x, p.y, w, h, r);
+    ctx.globalAlpha = 0.06;
+    ctx.fillStyle = t.fg;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = t.hairline;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([6, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (s >= LOD_LABEL_SCALE) {
+      ctx.font = this.fontLabel;
+      ctx.fillStyle = t.muted;
+      ctx.textBaseline = 'middle';
+      const text = `▾ ${g.label}  ·  ${g.members.length}  ·  click to collapse`;
+      ctx.fillText(fitToWidth(ctx, text, Math.max(0, w - 16)), p.x + 8, p.y + (g.header * s) / 2);
+    }
+    ctx.restore();
   }
 
   /*Without it a pan across empty canvas gives no motion cue at all, and the
@@ -1746,6 +1863,18 @@ export class DagViewElement extends HTMLElement {
     }
 
     const r = Math.min(t.nodeRadius, w / 2, h / 2);
+    if (groupOfNode(this.layout, n.node.id) !== null) {
+      // A collapsed group reads as a stack of cards: two offset edges behind the box.
+      for (const off of [6, 3]) {
+        ctx.beginPath();
+        roundRect(ctx, p.x + off, p.y + off, w, h, r);
+        ctx.fillStyle = t.bg;
+        ctx.fill();
+        ctx.strokeStyle = colors.border;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
     ctx.beginPath();
     roundRect(ctx, p.x, p.y, w, h, r);
 
@@ -1820,7 +1949,7 @@ export class DagViewElement extends HTMLElement {
     const text = this.nodeText.get(n.node.id);
     const labelLines = text?.label ?? [n.node.label ?? n.node.id];
     const subLines = text?.sub ?? (n.node.sublabel ? [n.node.sublabel] : []);
-    const badge = text?.badge ?? n.node.state ?? '';
+    const badge = text?.badge ?? n.node.badge ?? n.node.state ?? '';
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
 

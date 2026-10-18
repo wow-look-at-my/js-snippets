@@ -23,6 +23,10 @@ export interface DagNode {
   detail?: string;
   /** A link for the node. The selected-node panel and Ctrl/Cmd-click open it. Only http(s) and relative links open. */
   href?: string;
+  /** The id of a group in the `groups` list. A collapsed group draws all its members as one node. */
+  group?: string;
+  /** Text for the badge on the first line. Defaults to the state. */
+  badge?: string;
   /** Named links. The selected-node card lists each one under the detail text. */
   links?: DagLink[];
   /** Work is running on this node now. A light sheen sweeps across its box. A style entry with `active: true` marks a whole state. */
@@ -890,6 +894,8 @@ export interface DagLayout {
   rejected: readonly RejectedEdge[];
   /** Ids whose `layer` hint an edge overruled. */
   ignoredPins: readonly string[];
+  /** The groups with at least one member, collapsed and expanded. Absent from a layout made without groups. */
+  groups?: readonly PlacedGroup[];
 }
 
 /** Options for layoutDag. */
@@ -1280,7 +1286,7 @@ export function layoutNodeText(node: DagNode, opts: MeasureOptions = {}): NodeTe
   const minW = opts.minW ?? DEFAULT_NODE_MIN_W;
   const labelText = node.label ?? node.id;
   const subText = node.sublabel ?? '';
-  const badge = node.state ?? '';
+  const badge = node.badge ?? node.state ?? '';
   const badgeChars = badge === '' ? 0 : badge.length + BADGE_PAD_CHARS + BADGE_GAP_CHARS;
   const subW = charW * SUB_CHAR_RATIO;
   const wantW = Math.max((labelText.length + badgeChars) * charW, subText.length * subW);
@@ -1446,6 +1452,13 @@ export function layoutBounds(layout: DagLayout): WorldRect {
       x1 = Math.max(x1, p.x);
       y1 = Math.max(y1, p.y);
     }
+  }
+  for (const g of layout.groups ?? []) {
+    if (g.collapsed) continue;
+    x0 = Math.min(x0, g.x);
+    y0 = Math.min(y0, g.y);
+    x1 = Math.max(x1, g.x + g.w);
+    y1 = Math.max(y1, g.y + g.h);
   }
   if (!Number.isFinite(x0)) return { x: 0, y: 0, w: 0, h: 0 };
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
@@ -1666,4 +1679,339 @@ export function sheenHalfBand(w: number, h: number): number {
 
 export function pulseLevel(phase: number): number {
   return 0.5 - 0.5 * Math.cos(2 * Math.PI * phase);
+}
+
+// -- Groups -----------------------------------------------------------------------------
+
+/** A named set of nodes. A node joins it by naming its `id` in `group`. */
+export interface DagGroup {
+  id: string;
+  /** The stand-in's label while collapsed, and the box header while expanded. Defaults to "<N> nodes". */
+  label?: string;
+  /** The starting state. A reader's click overrides it. */
+  collapsed?: boolean;
+}
+
+/** A group as the layout drew it. */
+export interface PlacedGroup {
+  id: string;
+  label: string;
+  collapsed: boolean;
+  /** The members, in input order. */
+  members: readonly DagNode[];
+  /** The id of the node that stands for a collapsed group. */
+  nodeId: string;
+  /** Collapsed: the stand-in's box. Expanded: the box around the members, with the header on top. */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** The header strip's height. Zero while collapsed. */
+  header: number;
+}
+
+/** The prefix of a collapsed group's stand-in id. */
+export const GROUP_NODE_PREFIX = 'group:';
+/** The header strip of an expanded group, world px. */
+export const GROUP_HEADER = 26;
+/** Padding between an expanded group's box and its members, world px. */
+export const GROUP_PAD = 12;
+
+export function groupNodeId(id: string): string {
+  return GROUP_NODE_PREFIX + id;
+}
+
+/** The text a group shows: its own label, else a count of its members. */
+export function groupLabel(group: DagGroup, count: number): string {
+  const label = group.label?.trim() ?? '';
+  return label !== '' ? label : `${count} node${count === 1 ? '' : 's'}`;
+}
+
+/** One group with its members, as collapseGroups found it. */
+export interface GroupMembers {
+  group: DagGroup;
+  members: DagNode[];
+  collapsed: boolean;
+}
+
+/** A graph with every collapsed group replaced by its stand-in. */
+export interface CollapsedGraph {
+  nodes: DagNode[];
+  edges: DagEdge[];
+  /** Groups with at least one member, in the order of the `groups` list. */
+  groups: GroupMembers[];
+}
+
+/**
+ * Replaces each collapsed group's members with ONE stand-in node, at the
+ * place of its first member. An edge to or from a member goes to or from the
+ * stand-in. An edge between members of one collapsed group goes. Edges that
+ * now join the same pair are kept once. A node that names no listed group,
+ * and a group with no member, change nothing.
+ */
+export function collapseGroups(
+  nodes: readonly DagNode[],
+  edges: readonly DagEdge[],
+  groups: readonly DagGroup[],
+  isCollapsed: (group: DagGroup) => boolean = (g) => g.collapsed === true,
+): CollapsedGraph {
+  const byId = new Map<string, DagGroup>();
+  for (const g of groups) if (!byId.has(g.id)) byId.set(g.id, g);
+  const membersOf = new Map<string, DagNode[]>();
+  for (const n of nodes) {
+    if (n.group === undefined || !byId.has(n.group)) continue;
+    const list = membersOf.get(n.group) ?? [];
+    list.push(n);
+    membersOf.set(n.group, list);
+  }
+  const found: GroupMembers[] = [];
+  const standIn = new Map<string, string>();
+  for (const g of byId.values()) {
+    const members = membersOf.get(g.id);
+    if (members === undefined) continue;
+    const collapsed = isCollapsed(g);
+    found.push({ group: g, members, collapsed });
+    if (collapsed) for (const m of members) standIn.set(m.id, groupNodeId(g.id));
+  }
+  const out: DagNode[] = [];
+  const placed = new Set<string>();
+  for (const n of nodes) {
+    const sid = standIn.get(n.id);
+    if (sid === undefined) {
+      out.push(n);
+      continue;
+    }
+    if (placed.has(sid)) continue;
+    placed.add(sid);
+    const entry = found.find((f) => groupNodeId(f.group.id) === sid)!;
+    const count = entry.members.length;
+    out.push({
+      id: sid,
+      label: groupLabel(entry.group, count),
+      sublabel: 'click to expand',
+      badge: String(count),
+      state: 'group',
+      category: sid,
+      active: entry.members.some((m) => m.active === true) || undefined,
+      meta: { group: entry.group.id },
+    });
+  }
+  return { nodes: out, edges: rerouteEdges(edges, (id) => standIn.get(id) ?? id), groups: found };
+}
+
+/** Maps each edge's ends through `to`, drops an edge whose ends meet, and keeps the first edge of each pair. */
+function rerouteEdges(edges: readonly DagEdge[], to: (id: string) => string): DagEdge[] {
+  const seen = new Set<string>();
+  const out: DagEdge[] = [];
+  for (const e of edges) {
+    const from = to(e.from);
+    const target = to(e.to);
+    if (from === target && (from !== e.from || target !== e.to)) continue;
+    const key = `${from}\u0000${target}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(from === e.from && target === e.to ? e : { ...e, from, to: target });
+  }
+  return out;
+}
+
+/**
+ * layoutDag with groups. A collapsed group is one node (see collapseGroups).
+ * An expanded group lays its members out as a graph of their own, inside a
+ * box with a header. The rest of the graph treats the box as one node, so an
+ * edge to a member ends at the box. Each placed edge keeps the input edge it
+ * came from.
+ */
+export function layoutGrouped(
+  nodes: readonly DagNode[],
+  edges: readonly DagEdge[],
+  groups: readonly DagGroup[],
+  isCollapsed: (group: DagGroup) => boolean = (g) => g.collapsed === true,
+  opts: DagLayoutOptions = {},
+): DagLayout {
+  const flat = collapseGroups(nodes, edges, groups, isCollapsed);
+  if (flat.groups.length === 0) return layoutDag(nodes, edges, opts);
+  const open = flat.groups.filter((g) => !g.collapsed);
+  if (open.length === 0) {
+    const plain = layoutDag(flat.nodes, flat.edges, opts);
+    const placed: PlacedGroup[] = [];
+    for (const g of flat.groups) {
+      const p = plain.nodes[plain.byId.get(groupNodeId(g.group.id)) ?? -1];
+      if (p === undefined) continue;
+      const label = groupLabel(g.group, g.members.length);
+      placed.push({ id: g.group.id, label, collapsed: true, members: g.members, nodeId: groupNodeId(g.group.id), x: p.x, y: p.y, w: p.w, h: p.h, header: 0 });
+    }
+    // A stand-in carries a rerouted edge. Each placed edge still names the input edge it stands for.
+    const inputOf = new Map<string, DagEdge>();
+    const standIn = new Map<string, string>();
+    for (const g of flat.groups) for (const m of g.members) standIn.set(m.id, groupNodeId(g.group.id));
+    for (const e of edges) {
+      const key = `${standIn.get(e.from) ?? e.from}\u0000${standIn.get(e.to) ?? e.to}`;
+      if (!inputOf.has(key)) inputOf.set(key, e);
+    }
+    return {
+      ...plain,
+      edges: plain.edges.map((e) => ({ ...e, edge: inputOf.get(`${e.edge.from}\u0000${e.edge.to}`) ?? e.edge })),
+      groups: placed,
+    };
+  }
+  const sizeOf = opts.sizeOf ?? ((n: DagNode): NodeSize => measureNode(n));
+  const memberGroup = new Map<string, string>();
+  for (const g of open) for (const m of g.members) memberGroup.set(m.id, groupNodeId(g.group.id));
+  const subs = new Map<string, DagLayout>();
+  for (const g of open) {
+    const ids = new Set(g.members.map((m) => m.id));
+    const inner = flat.edges.filter((e) => ids.has(e.from) && ids.has(e.to));
+    subs.set(groupNodeId(g.group.id), layoutDag(g.members, inner, opts));
+  }
+  const holderSize = new Map<string, NodeSize>();
+  for (const g of open) {
+    const id = groupNodeId(g.group.id);
+    const sub = subs.get(id)!;
+    // The header text must fit too, so a group of one narrow node still names itself.
+    const head = sizeOf({ id, label: `${groupLabel(g.group, g.members.length)} ▾ collapse` }, -1);
+    holderSize.set(id, { w: Math.max(sub.width + 2 * GROUP_PAD, head.w), h: sub.height + GROUP_HEADER + GROUP_PAD });
+  }
+
+  // The outer graph: a holder node in place of each expanded group's first member.
+  const outerNodes: DagNode[] = [];
+  const holderPlaced = new Set<string>();
+  for (const n of flat.nodes) {
+    const hid = memberGroup.get(n.id);
+    if (hid === undefined) {
+      outerNodes.push(n);
+    } else if (!holderPlaced.has(hid)) {
+      holderPlaced.add(hid);
+      outerNodes.push({ id: hid });
+    }
+  }
+  const origin = new Map<DagEdge, DagEdge>();
+  const outerEdges: DagEdge[] = [];
+  {
+    const seen = new Set<string>();
+    for (const e of flat.edges) {
+      const from = memberGroup.get(e.from) ?? e.from;
+      const to = memberGroup.get(e.to) ?? e.to;
+      if (from === to && (from !== e.from || to !== e.to)) continue;
+      const key = `${from}\u0000${to}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const outer = from === e.from && to === e.to ? e : { ...e, from, to };
+      origin.set(outer, e);
+      outerEdges.push(outer);
+    }
+  }
+  const outer = layoutDag(outerNodes, outerEdges, {
+    ...opts,
+    sizeOf: (n, idx) => holderSize.get(n.id) ?? sizeOf(n, idx),
+  });
+
+  const allNodes: PlacedNode[] = [];
+  const placedGroups: PlacedGroup[] = [];
+  const subEdges: PlacedEdge[] = [];
+  const subStart = new Map<string, number>();
+  for (const p of outer.nodes) {
+    const sub = subs.get(p.node.id);
+    if (sub === undefined) {
+      allNodes.push({ ...p, index: allNodes.length });
+      continue;
+    }
+    const dx = p.x + GROUP_PAD;
+    const dy = p.y + GROUP_HEADER;
+    const start = allNodes.length;
+    subStart.set(p.node.id, start);
+    for (const m of sub.nodes) allNodes.push({ ...m, index: allNodes.length, x: m.x + dx, y: m.y + dy });
+    for (const e of sub.edges) {
+      subEdges.push({
+        ...e,
+        from: e.from + start,
+        to: e.to + start,
+        points: e.points.map((q) => ({ x: q.x + dx, y: q.y + dy })),
+      });
+    }
+  }
+  const byId = new Map<string, number>();
+  allNodes.forEach((p, idx) => byId.set(p.node.id, idx));
+
+  for (const g of flat.groups) {
+    const id = groupNodeId(g.group.id);
+    const label = groupLabel(g.group, g.members.length);
+    if (g.collapsed) {
+      const idx = byId.get(id);
+      if (idx === undefined) continue;
+      const p = allNodes[idx];
+      placedGroups.push({ id: g.group.id, label, collapsed: true, members: g.members, nodeId: id, x: p.x, y: p.y, w: p.w, h: p.h, header: 0 });
+      continue;
+    }
+    const holder = outer.nodes[outer.byId.get(id) ?? -1];
+    if (holder === undefined) continue;
+    placedGroups.push({
+      id: g.group.id,
+      label,
+      collapsed: false,
+      members: g.members,
+      nodeId: id,
+      x: holder.x,
+      y: holder.y,
+      w: holder.w,
+      h: holder.h,
+      header: GROUP_HEADER,
+    });
+  }
+
+  // An outer edge that ends at a holder is attached to the member its input edge named.
+  const placedEdges: PlacedEdge[] = [];
+  for (const e of outer.edges) {
+    const input = origin.get(e.edge) ?? e.edge;
+    const from = byId.get(input.from) ?? byId.get(e.edge.from) ?? -1;
+    const to = byId.get(input.to) ?? byId.get(e.edge.to) ?? -1;
+    placedEdges.push({ ...e, edge: input, from, to, index: placedEdges.length });
+  }
+  for (const e of subEdges) placedEdges.push({ ...e, index: placedEdges.length });
+  const cycleEdges: number[] = [];
+  placedEdges.forEach((e, idx) => {
+    if (e.reversed) cycleEdges.push(idx);
+  });
+  let crossings = outer.crossings;
+  const ignoredPins = [...outer.ignoredPins];
+  const rejected = [...outer.rejected];
+  for (const sub of subs.values()) {
+    crossings += sub.crossings;
+    ignoredPins.push(...sub.ignoredPins);
+    rejected.push(...sub.rejected);
+  }
+  return {
+    nodes: allNodes,
+    edges: placedEdges,
+    byId,
+    width: outer.width,
+    height: outer.height,
+    orientation: outer.orientation,
+    crossings,
+    cycleEdges,
+    rejected,
+    ignoredPins,
+    groups: placedGroups,
+  };
+}
+
+/** The expanded group whose header strip holds the world point, or null. */
+export function hitTestGroupHeader(layout: DagLayout, wx: number, wy: number): PlacedGroup | null {
+  for (const g of layout.groups ?? []) {
+    if (g.collapsed) continue;
+    if (wx >= g.x && wx <= g.x + g.w && wy >= g.y && wy <= g.y + g.header) return g;
+  }
+  return null;
+}
+
+/** The group a stand-in node id stands for, or null when the node is not a stand-in. */
+export function groupOfNode(layout: DagLayout, nodeId: string): PlacedGroup | null {
+  for (const g of layout.groups ?? []) if (g.collapsed && g.nodeId === nodeId) return g;
+  return null;
+}
+
+/** True when the lower-case query is in a member's id, label or sublabel. Search uses it to light up a collapsed group. */
+export function groupMatches(group: PlacedGroup, query: string): boolean {
+  if (query === '') return false;
+  return group.members.some((m) => `${m.id} ${m.label ?? ''} ${m.sublabel ?? ''}`.toLowerCase().includes(query));
 }
