@@ -2081,14 +2081,12 @@ export function classifyWheelSource(state: WheelState, e: WheelSample): { state:
 
 // -- Focus fade ------------------------------------------------------------------------
 
-/** Hermite smoothstep: 0 at or below `edge0`, 1 at or above `edge1`, an S-curve between. */
 export function smoothstep(edge0: number, edge1: number, x: number): number {
   if (edge1 === edge0) return x < edge0 ? 0 : 1;
   const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
   return t * t * (3 - 2 * t);
 }
 
-/** a at t = 0, b at t = 1. */
 export function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
@@ -2105,13 +2103,7 @@ export function focusOpacity(hoverSeconds: number, maxAlpha: number, minAlpha: n
   return lerp(maxAlpha, minAlpha, smoothstep(FOCUS_DIM_START_S, FOCUS_DIM_FULL_S, hoverSeconds));
 }
 
-/**
- * The focus fade, as data. `target` is the node the reader points at (or has
- * selected), -1 for none. `shown` is the node whose neighbourhood is drawn
- * bright now. `fade` is 0 (nothing dimmed) to 1 (fully dimmed). A change of
- * target first fades the old focus back to 0 from where it was, and only
- * then shows the new one, so the picture never snaps.
- */
+/** The focus fade, as data. */
 export interface FocusFade {
   target: number;
   targetSince: number;

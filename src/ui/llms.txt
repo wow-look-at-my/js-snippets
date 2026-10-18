@@ -495,7 +495,9 @@ WHAT THE LAYOUT Can NOT HONOUR IS SHOWN, not SWALLOWED. A circular dependency is
 
 INPUT: drag pans. Ctrl/Cmd + wheel zooms about the cursor, and so does a trackpad pinch (the browser sends it as a wheel with ctrlKey). A two-finger trackpad scroll pans. A PLAIN mouse wheel is NOT handled. The page scrolls, so scrolling past a graph never gets caught, and a hint ("Ctrl + scroll to zoom", or the Cmd form on macOS) fades in at most once every few seconds. classifyWheelSource tells the two apart, per gesture.
 
-`lastWheelSource` reads its last answer. Hovering a node fades everything outside its dependency neighbourhood, EASED by how long the pointer stays on that one node: the rest keeps full opacity for the first second, then dims to full over the next (`focusOpacity(hoverSeconds, 1, FADE_ALPHA)`). A pointer that crosses the graph therefore never flashes it. Leaving a node fades the rest back over 250 ms from wherever it was. A click selection and a keyboard selection take the same curve. Frames run only while the fade moves. Clicking pins that. Double-click zooms to the neighbourhood.
+`lastWheelSource` reads its last answer. Hovering a node fades everything outside its dependency neighbourhood, EASED by how long the pointer stays on that node. The rest keeps full opacity for the first second, then dims to full over the next (`focusOpacity(hoverSeconds, 1, FADE_ALPHA)`). A pointer that crosses the graph therefore never flashes it. Leaving a node fades the rest back over many ms from wherever it was. A click selection and a keyboard selection take the same curve.
+
+Frames run only while the fade moves. Clicking pins that. Double-click zooms to the neighbourhood.
 
 The arrow keys walk the graph along its edges once something is selected, and pan when nothing is. +/- zoom, fits, Escape clears. The search box HIGHLIGHTS rather than filters, because the edges are the reason a match matters.
 
