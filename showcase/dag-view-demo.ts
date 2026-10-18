@@ -22,7 +22,19 @@ const BUILD_NODES: DagNode[] = [
     category: 'verify',
     state: 'failed',
   },
-  { id: 'e2e', label: 'e2e', sublabel: 'playwright', category: 'verify', state: 'blocked' },
+  // A blocked node that says WHY: a long multi-line reason and a link. The tooltip and the selected-node panel must show all of it.
+  {
+    id: 'e2e',
+    label: 'e2e',
+    sublabel: 'playwright',
+    category: 'verify',
+    state: 'blocked',
+    detail:
+      'Blocked: the browser image has no Chromium for this architecture, so playwright cannot start from this branch.\n' +
+      'Retry: when the runner image ships the arm64 browser bundle.\n' +
+      'Note: the fix belongs in the base image, not in this pipeline.',
+    href: '#dag-view',
+  },
   { id: 'bundle', label: 'bundle', sublabel: 'esbuild', category: 'build', state: 'done' },
   { id: 'docs', label: 'docs', sublabel: 'typedoc', category: 'build', state: 'pending' },
   { id: 'sign', label: 'sign', sublabel: 'cosign', category: 'release', state: 'pending' },
@@ -97,6 +109,7 @@ export function mountDagViewDemo(): void {
           { key: 'step', value: n.id },
           { key: 'runs', value: n.sublabel ?? '—' },
           { key: 'state', value: n.state ?? 'unset' },
+          ...(n.detail !== undefined ? [{ key: 'why', value: n.detail }] : []),
         ],
       };
     };
