@@ -171,7 +171,7 @@ const DEFAULT_MEMBER_OPS = ['.', '->', '::'];
 
 /**
  * Assign a highlight `role` to every token, using neighbouring code tokens for
- * context: `a.x` reads `x` as a member, `f(x)` reads `f` as a call, and any
+ * context. `a.x` reads `x` as a member, `f(x)` reads `f` as a call, and any
  * word in the language's keyword set is a keyword. Returns a fresh array; the
  * input tokens are not mutated.
  */

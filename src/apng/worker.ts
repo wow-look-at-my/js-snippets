@@ -38,7 +38,7 @@ interface WorkerScope {
 /**
  * Install the encode handler on the current worker global.
  *
- * Throws when called on a thread that has a `document` — that is the main
+ * Throws when called on a thread that has a `document`. That is the main
  * thread, and running the encoder there is the exact thing this module exists
  * to prevent.
  */
@@ -102,7 +102,7 @@ export interface ApngEncoder {
  * The worker is spawned lazily on the first `encode` and respawned after
  * `terminate()`. `transferFrames` moves the frame buffers into the worker
  * instead of copying them, which is faster and halves peak memory but leaves
- * the caller's arrays detached — only pass it for frames you are done with.
+ * the caller's arrays detached. It only pass it for frames you are done with.
  */
 export function createApngEncoder(
   workerUrl: string | URL,

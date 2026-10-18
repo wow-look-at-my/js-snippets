@@ -1285,11 +1285,11 @@ test('WheelGestureRouter: deltaMode-normalized classification — a line-mode st
 // -- Direction-aware lane scrolling (the nested-scroller contract) ----------------
 
 // The LaneScrollable input form: a vertical wheel scrolls an overflowing lane
-// stack IN PLACE while the stack can move in the wheel's direction, and
-// passes to the page the moment it cannot — so a tall lane stack is finally
-// wheel-scrollable AND the page stays reachable past it. The boolean form
-// keeps the pinned page-always-wins behavior byte-for-byte (every test above
-// this section runs on it, unchanged).
+// stack IN PLACE while the stack can move in the wheel's direction. It passes
+// to the page the moment it cannot — so a tall lane stack is finally
+// wheel-scrollable. The page stays reachable past it. The boolean form keeps
+// the pinned page-always-wins behavior byte-for-byte (every test above this
+// section runs on it, unchanged).
 
 test('routeWheel: direction-aware lanes — a vertical wheel scrolls the stack while it has headroom that way', () => {
   // Parked at the top (headroom below): wheel-down scrolls the stack,
@@ -2962,7 +2962,7 @@ test('clockDrawBudgetMs: zoomed OUT widens to the exact per-device-pixel period 
 
 test('clockDrawBudgetMs: the tier budget is a hard floor — never renders faster than the tier', () => {
   // The ceiling constraint, structurally max(): sweep spans/widths/dprs/
-  // budgets — every result is >= the tier budget, and equals it exactly
+  // budgets. Every result is >= the tier budget, and equals it exactly
   // when the per-pixel period fits inside it.
   for (const span of [1_000, 60_000, 900_000, 3_600_000, 7 * 86_400_000]) {
     for (const plotW of [200, 900, 2500]) {

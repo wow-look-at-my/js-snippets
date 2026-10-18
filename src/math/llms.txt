@@ -43,7 +43,9 @@ Signatures of note:
 - mean(vectors) -> VecN -- componentwise mean of a list. Throws on an empty list.
 
 ### math/least-squares.js
-Least-squares fitting. Pure, no DOM/GPU. The LINEAR solvers minimise the residual of A x = b, where each row is one equation. The GEOMETRIC fits minimise the ORTHOGONAL distance to a line, a plane or a circle. A y-on-x line fit tips over as the line turns vertical. An orthogonal fit does not. A singular system returns null, not a vector of NaN.
+Least-squares fitting. Pure, no DOM/GPU. The LINEAR solvers minimise the residual of A x = b, where each row is one equation. The GEOMETRIC fits minimise the ORTHOGONAL distance to a line, a plane or a circle. A y-on-x line fit tips over as the line turns vertical. An orthogonal fit does not.
+
+A singular system returns null, not a vector of NaN.
 
 Types:
 

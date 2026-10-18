@@ -30,7 +30,7 @@ await page.waitForTimeout(SETTLE_MS);
 
 const report = await page.evaluate(() => {
 	// The readout row at the top and the legend row at the bottom are text and
-	// swatches, not data: a legend swatch is a band's color whether that band
+	// swatches, not data. A legend swatch is a band's color whether that band
 	// has a column. Reading only the plot between them is what makes "this graph
 	// drew a band" a claim about the DATA.
 	const read = (id, skipTop, skipBottom) => {

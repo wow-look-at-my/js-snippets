@@ -110,9 +110,9 @@ export type DagStyleMap = Record<string, DagStyle>;
 
 /**
  * Built-in states. A consumer's own `styles` map is merged OVER this, so
- * these are defaults rather than a closed vocabulary -- any `state` string
- * with no entry falls back to a plain solid node in its category color,
- * which is a readable node, never a blank one.
+ * these are defaults rather than a closed vocabulary. Any `state` string
+ * with no entry falls back to a plain solid node in its category color.
+ * This is a readable node, never a blank one.
  */
 export const DEFAULT_STYLES: DagStyleMap = {
   done: { pattern: 'solid' },
@@ -239,13 +239,13 @@ const NODE_PAD_Y = 7;
 
 // -- The element ---------------------------------------------------------------------
 
-/** The DAG element. Auto-registered as `<dag-view>` when this module loads (unless the name is taken). Data arrives via properties and methods -- `setData` / `nodes` / `edges` -- never attributes; the attributes are scalar toggles: `orientation` ("TB" or "LR"), `no-search`, `no-toolbar`, `no-fullscreen-button`, `no-minimap`, `no-detail-panel`, `empty-text`, and `fullscreen` (reflected viewport-fill mode -- see the `fullscreen` property).
+/** The DAG element. Auto-registered as `<dag-view>` when this module loads (unless the name is taken). Data arrives via properties and methods -- `setData` / `nodes` / `edges` -- never attributes. The attributes are scalar toggles: `orientation` ("TB" or "LR"), `no-search`, `no-toolbar`, `no-fullscreen-button`, `no-minimap`, `no-detail-panel`, `empty-text`, and `fullscreen` (reflected viewport-fill mode -- see the `fullscreen` property).
  *
  * DETAIL. A selected node opens a panel with its full label, sublabel, state, `detail` text and an open link for its `href`. Ctrl/Cmd-click on a node opens the `href` at once. `no-detail-panel` turns the panel off.
  *
- * INPUT. Drag pans. Ctrl/Cmd + wheel and pinch zoom; a PLAIN wheel pans instead of zooming, so the element never swallows a page scroll that was meant for the page -- the zoom buttons and the +/- keys are the discoverable path. Clicking a node selects it; hovering one fades everything outside its dependency neighbourhood, which is the question a dependency graph exists to answer and the thing you cannot do by following lines with your eyes.
+ * INPUT. Drag pans. Ctrl/Cmd + wheel and pinch zoom. A PLAIN wheel pans instead of zooming, so the element never swallows a page scroll that was meant for the page. The zoom buttons and the +/- keys are the discoverable path. Clicking a node selects it. Hovering one fades everything outside its dependency neighbourhood. This is the question a dependency graph exists to answer and the thing you cannot do by following lines with your eyes.
  *
- * WHAT THE LAYOUT COULD NOT HONOUR IS SHOWN, NOT SWALLOWED. A circular dependency is drawn in the emphasis color with its arrow still pointing the true way, and the notice strip names the count of cycles, dropped edges and overruled layer hints. Read `info` for the same facts as data. */
+ * WHAT THE LAYOUT COULD NOT HONOUR IS SHOWN, NOT SWALLOWED. A circular dependency is drawn in the emphasis color with its arrow still pointing the true way. The notice strip names the count of cycles, dropped edges and overruled layer hints. Read `info` for the same facts as data. */
 export class DagViewElement extends HTMLElement {
   static get observedAttributes(): string[] {
     return ['orientation', 'no-search', 'no-toolbar', 'no-fullscreen-button', 'no-minimap', 'no-detail-panel', 'empty-text', 'fullscreen'];
@@ -590,9 +590,9 @@ export class DagViewElement extends HTMLElement {
 
   /** The whole drawn state, in both coordinate systems, as a plain object.
    * `world` is what the layout decided. `screen` is where that landed on the
-   * canvas in CSS pixels, with the origin at the canvas top-left, so a reader
-   * can measure what they are looking at: an empty band between a couple of
-   * columns, a node parked off screen, a row that did not line up with the
+   * canvas in CSS pixels, with the origin at the canvas top-left. A reader can
+   * measure what they are looking at: an empty band between a couple of
+   * columns, a node parked off screen, a row. That row did not line up with the
    * one above. A description of a gap is a guess. These numbers are the gap.
    * `visible` says whether a node's box overlaps the canvas at all, so
    * everything scrolled out of view is countable rather than merely missing. */
@@ -769,7 +769,7 @@ export class DagViewElement extends HTMLElement {
    * Right-click copies the whole drawn state as JSON.
    *
    * A reader who can see something wrong with the picture usually cannot say
-   * it in numbers, and the numbers are what anybody else needs to act. This
+   * it in numbers. The numbers are what anybody else needs to act. This
    * turns "there is a huge gap in the middle" into coordinates.
    *
    * It replaces the browser's own menu, which offers nothing for a canvas.
@@ -789,11 +789,11 @@ export class DagViewElement extends HTMLElement {
   /**
    * Builds the menu at the cursor.
    *
-   * A menu, rather than copying on the click itself. The copy was invisible:
-   * the browser's own menu is suppressed, and a reader who sees nothing open
+   * A menu, rather than copying on the click itself. The copy was invisible.
+   * The browser's own menu is suppressed, and a reader who sees nothing open
    * reads a working feature as a dead click and reports THAT.
    *
-   * The item list depends on what is under the cursor, so a right-click on a
+   * The item list depends on what is under the cursor. A right-click on a
    * node also offers the one thing that node can give.
    */
   private openMenu(x: number, y: number, node: string | null): void {
@@ -901,8 +901,8 @@ export class DagViewElement extends HTMLElement {
 
   /**
    * Search HIGHLIGHTS, it does not filter. Removing the non-matching nodes
-   * would also remove the edges that explain why a match matters, and "what
-   * is this connected to" is the reason to look one up in the first place.
+   * would also remove the edges that explain why a match matters. "what is
+   * this connected to" is the reason to look one up in the first place.
    */
   private applySearch(): void {
     this.searchMatches.clear();
@@ -1147,8 +1147,8 @@ export class DagViewElement extends HTMLElement {
    * A PLAIN wheel pans; ctrl/meta + wheel zooms.
    *
    * Zooming on a plain wheel is what most diagram tools do, and inside a
-   * page it is the wrong default: the element sits in a document the reader
-   * is also scrolling, and swallowing that scroll to zoom a graph they were
+   * page it is the wrong default. The element sits in a document the reader
+   * is also scrolling. Swallowing that scroll to zoom a graph they were
    * only passing over is the single most irritating thing an embedded
    * canvas can do. Ctrl+wheel is the browser's own zoom gesture, the
    * buttons and the +/- keys are discoverable, and the page keeps working.
@@ -1247,8 +1247,8 @@ export class DagViewElement extends HTMLElement {
 
   /**
    * Move the selection along an edge. Up/down (left/right in 'LR') follow
-   * the dependency direction; the cross-axis keys move to the next sibling
-   * in the same layer, so a wide layer is walkable without leaving it.
+   * the dependency direction. The cross-axis keys move to the next sibling
+   * in the same layer. A wide layer is walkable without leaving it.
    */
   private walk(key: string): void {
     const cur = this.layout.nodes[this.selectedIndex];
@@ -1628,7 +1628,7 @@ export class DagViewElement extends HTMLElement {
     ctx.save();
     ctx.globalAlpha = !inHighlight || searchFaded ? FADE_ALPHA : 1;
 
-    // Below this zoom a box is a few pixels tall: a plain filled mark reads
+    // Below this zoom a box is a few pixels tall. A plain filled mark reads
     // as "something is here", where a border and clipped text read as mud.
     if (s < LOD_MARK_SCALE) {
       ctx.fillStyle = colors.fill;
@@ -1877,8 +1877,8 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
 /**
  * Truncate to fit, with an ellipsis. Binary search over a real
  * `measureText` rather than a character-count estimate: a proportional font
- * makes "iiii" and "WWWW" different widths, and an estimate is what puts
- * text through the side of a box.
+ * makes "iiii" and "WWWW" different widths. An estimate is what puts text
+ * through the side of a box.
  */
 function fitToWidth(ctx: CanvasRenderingContext2D, text: string, avail: number): string {
   if (avail <= 0) return '';
@@ -1894,7 +1894,6 @@ function fitToWidth(ctx: CanvasRenderingContext2D, text: string, avail: number):
   return lo <= 0 ? '' : text.slice(0, lo) + ell;
 }
 
-/** Wheel deltas in the deltaModes, normalized to CSS px. */
 function normalizeWheel(delta: number, deltaMode: number): number {
   if (deltaMode === 1) return delta * 16;
   if (deltaMode === 2) return delta * 800;

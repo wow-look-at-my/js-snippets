@@ -8,11 +8,11 @@ export interface Sky {
   bindGroup: GPUBindGroup;
 }
 
-/** Create a sky rendering pipeline for an equirectangular HDRI texture. @param
- * device The GPUDevice. @param format Target color format (e.g. 'bgra8unorm'
- * or 'rgba16float'). @param hdriView Texture view of the HDRI. @param
- * hdriSampler Sampler for the HDRI (typically linear + mip filtering). @param
- * depthFormat Optional depth format. Defaults to 'depth24plus'. The sky
+/** Create a sky rendering pipeline. For an equirectangular HDRI texture.
+ * @param device The GPUDevice. @param format Target color format (e.g.
+ * 'bgra8unorm' or 'rgba16float'). @param hdriView Texture view of the HDRI.
+ * @param hdriSampler Sampler. For the HDRI (typically linear + mip filtering).
+ * @param depthFormat Optional depth format. Defaults to 'depth24plus'. The sky
  * renders at z=1 with depthCompare='less-equal' and no depth writes. */
 export function createSky(
   device: GPUDevice,

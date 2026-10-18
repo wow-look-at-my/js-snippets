@@ -1,18 +1,18 @@
 // WebGL2 shader compilation + program linking with readable errors. Raw GL
 // reports failures as bare info logs ("ERROR: 0:12: ..."), leaving you to count
-// lines by hand; `annotateShaderLog` interleaves the log with the offending
-// source lines so the message is actionable on its own. `injectChunk` splices
-// a shared GLSL chunk (GLSL has no #include) into a shader source before
+// lines by hand. `annotateShaderLog` interleaves the log with the offending
+// source lines so the message is actionable on its own. `injectChunk` splices a
+// shared GLSL chunk (GLSL has no #include) into a shader source before
 // compilation.
 
 /**
  * Interleave a shader info log with the source lines it references.
  *
- * GLSL info logs reference lines as `ERROR: 0:<line>: message` (1-based).
- * For each such line in `infoLog`, the annotated output appends the referenced
- * source line plus `contextLines` lines on either side, with a `>` marker on
- * the offending line. Log lines without a recognizable line number are kept
- * verbatim. Pure string processing — no GL required.
+ * GLSL info logs reference lines as `ERROR: 0:<line>: message` (1-based). For
+ * each such line in `infoLog`, the annotated output appends the referenced
+ * source line plus `contextLines` lines on either side. That line is with a
+ * `>` marker on the offending line. Log lines without a recognizable line
+ * number are kept verbatim. Pure string processing — no GL required.
  */
 export function annotateShaderLog(source: string, infoLog: string, contextLines = 1): string {
   const srcLines = source.split('\n');

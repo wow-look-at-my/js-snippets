@@ -150,11 +150,12 @@ export function matchesQuery(haystack: string, query: string): boolean {
 
 /** Applies the filter and computes the facet counts.
  *
- * FACET COUNTS COVER EVERY SUPPLIED ROW, not the surviving ones: a chip reading "skipped ×0" the moment you hide skipped rows is useless, because the number you need to decide whether to unhide is exactly the one that went to zero. The query narrows what is SHOWN; it never rewrites the chips out from under the reader.
+ * FACET COUNTS COVER EVERY SUPPLIED ROW, not the surviving ones: a chip reading "skipped ×0" the moment you hide skipped rows is useless. This is because the number you need to decide whether to unhide is exactly the one that went to zero. The query narrows what is SHOWN; it never rewrites the chips out from under the
+ * reader.
  *
  * Row order is PRESERVED — sorting is a separate step (sortRows), so a producer's meaningful default order (usually newest-first) survives filtering untouched.
  *
- * The caller's cap (a server-side `?max=`, say) is upstream of all of this and is NOT this component's problem to solve — but it is the consumer's: if the producer caps a page BEFORE applying the same exclusions, a burst of unwanted rows fills the page, this filter empties it, and the table reports "nothing here" while the rows. Filter first, cap second, on whichever side owns the data. */
+ * The caller's cap (a server-side `?max=`, say) is upstream of all of this and is NOT this component's problem to solve. However, it is the consumer's: if the producer caps a page BEFORE applying the same exclusions, a burst of unwanted rows fills the page. This filter empties it, and the table reports "nothing here" while the rows. Filter first, cap second, on whichever side owns the data. */
 export function selectRows<Row extends DataRow>(
   rows: readonly Row[] | null | undefined,
   columns: readonly DataColumn<Row>[],
@@ -223,9 +224,10 @@ export function hiddenFromStored(stored: StoredTableFilter): Map<string, Set<str
 }
 
 /**
- * Parses a stored filter, tolerating anything. A corrupt or stale
- * localStorage value must degrade to "no filter" — never throw, and never
- * leave a table silently hiding rows because of a shape it can't read.
+ * Parses a stored filter, tolerating anything. Consider a corrupt or stale
+ * localStorage value. That corrupt must degrade to "no filter" — never
+ * throw, and never leave a table silently hiding rows because of a shape it
+ * can't read.
  */
 export function parseStoredTableFilter(raw: string | null | undefined): StoredTableFilter {
   const empty: StoredTableFilter = { query: '', hidden: {}, sort: null };

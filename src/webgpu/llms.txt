@@ -4,7 +4,7 @@ Parses Radiance RGBE (.hdr) files. Supports new-style RLE scanlines.
 Exports: loadHDR(url: string) → Promise<{ width, height, data: Float32Array }> Returns multiple floats per pixel (RGBA), suitable for rgba32float textures.
 
 ### webgpu/mip-generator.js
-AMD Single Pass Downsampler for WebGPU. Generates a full mip chain in multiple compute dispatches (box-filter average). WGSL shader is embedded at build time.
+Single Pass Downsampler (AMD) for WebGPU. Generates a full mip chain in multiple compute dispatches (box-filter average). WGSL shader is embedded at build time.
 
 Exports: generateMips(device: GPUDevice, texture: GPUTexture, mipCount?: number) → void Texture must be rgba32float with COPY_DST usage. Mip 0 must be populated. mipCount defaults to texture.mipLevelCount.
 
@@ -21,11 +21,11 @@ Procedural mesh generators. Each returns { positions: Float32Array, normals: Flo
 Exports: createCube(size?), createSphere(radius?, segments?), createCylinder(radiusTop?, radiusBottom?, height?, segments?), createPlane(width?, depth?), createBox(width?, height?, depth?), createTorus(radius?, tube?, radialSegments?, tubularSegments?),
   - flipWinding(mesh: Mesh) → Mesh
   - createBox: axis-aligned box with independent full extents per axis (createCube is the uniform-size special case).
-  - createTorus: ring in the XZ plane. Radius = major, tube = minor radius. RadialSegments subdivide the tube, tubularSegments the ring.
+  - createTorus: ring in the XZ plane. Radius = major, tube = small radius. RadialSegments subdivide the tube, tubularSegments the ring.
   - flipWinding: returns a NEW mesh with each triangle (a, b, c) → (a, c, b) (input unmutated. Positions/normals passed through as the same arrays, only a new index array). For rendering interiors, or pre-flipping geometry drawn under a mirror (determinant < 0) transform so back-face culling keeps working.
 
 ### webgpu/buffer.js
-GPU buffer creation helper.
+buffer creation helper (GPU).
 
 Exports: createBuffer(device: GPUDevice, data: ArrayBufferView, usage: GPUBufferUsageFlags) → GPUBuffer Creates a buffer pre-filled with data via mappedAtCreation.
 
@@ -84,7 +84,9 @@ Exports:
   - createLookController(element, options?) → LookController Pointer-drag first-person look at a fixed eye, feeding applyLookDrag (same convention). Live azDeg/elDeg, dir()/viewMatrix(eye, up?) per frame, onChange(state) per drag update.
 
 ### webgpu/scan.js
-GPU exclusive prefix scan (Blelloch, elements/block, recursive levels — a few levels cover 134M elements) over a u32 region of a storage buffer. The input, output, and scratch regions live in ONE buffer at arbitrary ELEMENT offsets (bases travel in a uniform, so no 256-byte bind-offset alignment and no second writable binding — fused buffer layouts work). planScan is pure (unit-tested). CreateScan/prepare/encode are GPU-bound. Workgroups are threads (WebGPU default limits suffice). Dispatches auto-split into 2D grids when a level exceeds maxComputeWorkgroupsPerDimension. The pure level math lives in webgpu/scan-plan.js (no shader import — loads under node) and is re-exported by scan.js, so consumers import scan.js alone.
+GPU exclusive prefix scan (Blelloch, elements/block, recursive levels — a few levels cover 134M elements) over a u32 region of a storage buffer. The input, output, and scratch regions live in ONE buffer at arbitrary ELEMENT offsets (bases travel in a uniform, so no 256-byte bind-offset alignment and no second writable binding — fused buffer layouts work). planScan is pure (unit-tested). CreateScan/prepare/encode are GPU-bound. Workgroups are threads (WebGPU default limits suffice). Dispatches auto-split into 2D grids when a level exceeds maxComputeWorkgroupsPerDimension.
+
+The pure level math lives in webgpu/scan-plan.js (no shader import — loads under node) and is re-exported by scan.js, so consumers import scan.js alone.
 
 Types:
 
@@ -100,7 +102,7 @@ GpuScan = { prepare(region): PreparedScan };
 Exports:
 
   - SCAN_BLOCK_SIZE = 512, SCAN_ADDBACK_SIZE = 256
-  - planScan(count, maxWorkgroupsPerDim? = 65535) → ScanPlan PURE level math. Level 0 scans src→dst. Each next level scans the level's block sums in place inside scratch until one block remains. The LAST level's sums[0] is the grand total (sum of all inputs, written even for count 0). scratchElems = u32 elements the caller must reserve. GrandTotalElem is scratch-relative.
+  - planScan(count, maxWorkgroupsPerDim? = 65535) → PURE level math (ScanPlan). Level no scans src→dst. Each next level scans the level's block sums in place inside scratch until one block remains. The LAST level's sums[0] is the grand total (sum of all inputs, written even for count 0). scratchElems = u32 elements the caller must reserve. GrandTotalElem is scratch-relative.
   - createScan(device) → GpuScan Compiles the pipelines once per device.
   - GpuScan.prepare({ buffer, count, srcElem, dstElem, scratchElem }) → PreparedScan Bakes one region layout into per-level uniforms + bind groups (create once. Re-prepare only when buffer/count/bases change. Destroy() the one). dstElem may equal srcElem (in-place). buffer needs STORAGE usage and is bound whole (must fit maxStorageBufferBindingSize).
   - PreparedScan.encode(pass: GPUComputePassEncoder) → void Records the dispatches into a CALLER-owned compute pass (wrap it in your own timestamp window, keep issuing dependent dispatches in the same pass). Zero per-frame allocation. Afterwards dst[i] = sum of src[0..i) and the grand total sits at the ABSOLUTE element PreparedScan.grandTotalElem (copyBufferToBuffer it out if needed). Resets pipeline/bind group 0 — restore yours after.

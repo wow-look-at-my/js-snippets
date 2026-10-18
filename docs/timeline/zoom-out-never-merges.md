@@ -1,6 +1,6 @@
 # Zooming out DROPS marks. It never merges them.
 
-The rule, in one line: **N discrete events must never render as one contiguous shape, at any zoom.** Distance from the data does not turn seventy-five runs into one four-hour run. A picture that says it does is a lie about the data, not a summary of it.
+The rule, in one line: **N discrete events must never render as one adjacent shape, at any zoom.** Distance from the data does not turn seventy-five runs into one four-hour run. A picture that says it does is a lie about the data, not a summary of it.
 
 ## What the viewer must see
 

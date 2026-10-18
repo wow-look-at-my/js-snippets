@@ -130,10 +130,10 @@ function parseColor(color: string): { r: number; g: number; b: number; a: number
   return { r: lin[0], g: lin[1], b: lin[2], a: alpha };
 }
 
-/*Applied to EVERY color painted inside a dimmed region (fill, hatching,
+/* Applied to EVERY color painted inside a dimmed region (fill, hatching,
  * border, label text), so relative text-vs-fill contrast is preserved while
  * the whole section recedes. Accepts #hex, rgb()/rgba(), hsl()/hsla(), and
- * oklch() color forms; anything else (named colors, var() references) is
+ * oklch() color forms. Anything else (named colors, var() references) is
  * returned unchanged — the caller keeps a sane color either way. */
 export function dimColor(color: string): string {
   const p = parseColor(color);

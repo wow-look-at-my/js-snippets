@@ -199,9 +199,9 @@ export function fitCylinderForAxis(points: readonly Vec3[], direction: Vec3): Cy
   };
 }
 
-// The candidate directions the global sweep tries: a Hammersley hemisphere set
+// The candidate directions the global sweep tries. A Hammersley hemisphere set
 // (deterministic, low-discrepancy) plus the cloud's own principal axis, which is
-// the exact answer for a long thin cylinder and lets the sweep stay coarse.
+// the exact answer for a long thin cylinder. It lets the sweep stay coarse.
 function candidateDirections(points: readonly Vec3[], samples: number): Vec3[] {
   const out: Vec3[] = [];
   const principal = fitOrthoLine3(points);
@@ -255,7 +255,7 @@ function refineDirection(
 // one: a bounded number of points (a cylinder has a few degrees of freedom),
 // or every candidate axis degenerate.
 //
-// The returned axis is infinite; height and extent report how far the DATA
+// The returned axis is infinite. Height and extent report how far the DATA
 // reaches along it, so a caller drawing a capped cylinder has the interval.
 export function fitCylinder(
   points: readonly Vec3[],

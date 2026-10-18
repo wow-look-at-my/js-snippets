@@ -102,14 +102,14 @@ export function cropRect(src: Uint8Array, width: number, rect: Rect): Uint8Array
  * pixel did not change from `canvas`.
  *
  * This is the payload for a blend_op=OVER frame: the decoder leaves those
- * pixels alone, and the encoder gets long runs of one repeated value through
- * the middle of the rectangle instead of stale pixel data. Only valid when
- * every changed pixel is opaque (see `FrameDiff.opaque`).
+ * pixels alone. The encoder gets long runs of one repeated value through the
+ * middle of the rectangle instead of stale pixel data. Only valid when every
+ * changed pixel is opaque (see `FrameDiff.opaque`).
  *
  * `fill` is the transparent RGBA to write, defaulting to transparent black. An
- * indexed encoder must pass the exact colour of its transparent palette entry:
- * any alpha-0 colour is equally invisible, but only one of them is in the
- * palette, and a colour that is not in the palette cannot be stored at all.
+ * indexed encoder must pass the exact colour of its transparent palette entry.
+ * Any alpha-0 colour is equally invisible, but only one of them is in the
+ * palette. A colour that is not in the palette cannot be stored at all.
  */
 export function cropRectMasked(
   canvas: Uint8Array,

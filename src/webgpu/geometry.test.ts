@@ -130,7 +130,7 @@ test('createTorus: structural invariants and bounds', () => {
   assert.ok(Math.abs(b.min[1] + tube) < 1e-5, `min y ~ -tube: ${b.min[1]}`);
 });
 
-// Winding oracle: for each non-degenerate triangle, the geometric normal
+// Winding oracle. For each non-degenerate triangle, the geometric normal
 // cross(p1 - p0, p2 - p0) must agree with the average of those stored vertex
 // normals (dot > 0) — i.e. the triangle is counter-clockwise viewed from
 // outside, front-facing under WebGPU's default frontFace: 'ccw'. Zero-area

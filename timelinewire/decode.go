@@ -5,12 +5,13 @@ import (
 	"fmt"
 )
 
-// Decode is the inverse of Encode, so a Go producer can read its own payload —
-// in a test, in a dump tool — without writing a second reader of the format.
+// Decode is the inverse of Encode. A Go producer can read its own payload — in
+// a test, in a dump tool — without writing a second reader of the format.
 //
-// A payload that does not decode EXACTLY is an error, trailing bytes included:
-// leftovers mean the caller's schema names different columns than the producer
-// wrote, which would otherwise surface as silently shifted values.
+// A payload that does not decode EXACTLY is an error, trailing bytes included.
+// The payload leftovers mean the caller's schema names different columns than
+// the producer wrote, which would otherwise surface as silently shifted
+// values.
 func Decode(b []byte, s Schema) (Page, error) {
 	if len(s.Magic) != 4 {
 		return Page{}, fmt.Errorf("timelinewire: magic must be 4 bytes, got %q", s.Magic)

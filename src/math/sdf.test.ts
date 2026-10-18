@@ -61,7 +61,6 @@ test('primitiveSDF dispatches by type id and falls back far away', () => {
   assert.ok(primitiveSDF(999, [0, 0, 0], [0, 0, 0, 0]) > 1e8, 'unknown type returns a huge distance');
 });
 
-// ---- B) Transforms: column-major invModel brings world -> local -----------
 
 test('transformPoint applies a column-major affine (inverse-model) transform', () => {
   // A translated sphere: a world point at +X from the centre maps to local +X.

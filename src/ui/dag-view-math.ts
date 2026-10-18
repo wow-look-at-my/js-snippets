@@ -65,8 +65,8 @@ export interface DagGraph {
 }
 
 /** Validate and index the input. A duplicate edge (same from/to, whatever
- * its label) is kept once -- a couple of lines between the same pair say
- * nothing a reader can act on -- and a node id that repeats keeps its
+ * its label) is kept once, a couple of lines between the same pair say
+ * nothing a reader can act on. A node id that repeats keeps its
  * FIRST occurrence, so an id is a stable identity for the whole render. */
 export function buildGraph(nodes: readonly DagNode[], edges: readonly DagEdge[]): DagGraph {
   const index = new Map<string, number>();
@@ -122,11 +122,11 @@ export interface CycleResult {
 
 /**
  * Reverse the minimum-ish set of edges that makes the graph acyclic, by
- * depth-first search from every node in input order: an edge back to a node
+ * depth-first search from every node in input order. An edge back to a node
  * still on the stack closes a cycle, so that edge is the one reversed.
  *
  * The reversed set is RETURNED, not swallowed. A circular dependency is the
- * single most important thing a dependency graph can tell you, and a layout
+ * single most important thing a dependency graph can tell you. A layout
  * that quietly straightened it out would be hiding exactly the fact the
  * reader opened the graph to find. `<dag-view>` draws these edges in the
  * emphasis color with the arrow still pointing the true way.
@@ -202,7 +202,7 @@ export interface LayerOptions {
 
 /**
  * Longest-path layering over the acyclic adjacency: a node's layer is one
- * past the deepest of its dependencies, so no edge ever points backwards or
+ * past the deepest of its dependencies. No edge ever points backwards or
  * stays inside one layer.
  *
  * A node's `layer` hint can only push it DOWN, never up past a dependency.
@@ -276,7 +276,7 @@ export function wrapWideLayers(layout: LayerResult, max = DEFAULT_MAX_LAYER_WIDT
 /**
  * Kahn topological order over an adjacency list, ties broken by node index
  * so the result is the same on every run. A graph with a cycle left in it
- * would strand nodes; they are appended in index order rather than dropped,
+ * would strand nodes. They are appended in index order rather than dropped,
  * because losing a node is never an acceptable way to report a cycle.
  */
 export function topoOrder(out: readonly (readonly number[])[], n: number): number[] {
@@ -334,7 +334,7 @@ export function slotIdentity(s: LayerSlot): string {
 /** Split every edge that spans more than one layer into a chain of
  * single-layer segments through dummy slots. This is what makes long edges
  * behave. With the dummies, a long edge occupies real width in every layer
- * it crosses, gets ordered like anything else, and comes out as a routed
+ * it crosses, gets ordered like anything else. And comes out as a routed
  * polyline instead of a chord across the drawing. */
 export function insertDummies(graph: DagGraph, acyclic: CycleResult, layout: LayerResult): ProperLayering {
   const layers: LayerSlot[][] = [];
@@ -384,13 +384,13 @@ export const ORDER_SWEEPS = 16;
 
 /**
  * Reorder the slots inside each layer to reduce edge crossings: the
- * weighted-median heuristic, swept down and up alternately, with an
- * adjacent-transpose pass after each sweep that swaps neighbours whenever
- * the swap removes crossings.
+ * weighted-median heuristic, swept down and up alternately. Those slots
+ * are with an adjacent-transpose pass after each sweep that swaps
+ * neighbours whenever the swap removes crossings.
  *
  * Crossing minimization is NP-hard, so this is a heuristic and it is
  * supposed to be. What it must be is monotone and deterministic: the best
- * ordering seen so far is kept, a sweep that makes things worse is
+ * ordering seen so far is kept. A sweep that makes things worse is
  * discarded, and every tie breaks on the slot's current position. Mutates
  * `proper.layers` in place and returns the crossing count it settled on.
  */
@@ -445,7 +445,7 @@ export function orderLayers(proper: ProperLayering, sweeps = ORDER_SWEEPS): numb
 
 /** Adjacent-exchange pass: swap neighbouring slots whenever the swap
  * strictly reduces the crossings between this layer and its neighbours. Runs
- * until a full pass changes nothing, or the guard trips -- a heuristic that
+ * until a full pass changes nothing, or the guard trips. A heuristic that
  * cannot terminate would hang the layout, and the guard is what makes that
  * impossible rather than unlikely. */
 function transpose(proper: ProperLayering): void {
@@ -546,7 +546,7 @@ export const DEFAULT_COORD_PASSES = 12;
 export const DEFAULT_ROUTE_GAP = 10;
 
 /** Put each slot as close as it can get to where it WANTS to be, keeping the row's order and a minimum gap between neighbours. This is the whole difference between a drawing that reads and the strip this replaced. Minimizing the total distance from the desired positions cannot do that. Where the desires already fit, they are used unchanged. Where they collide, the block that forms
- *sits at its members' median, which is the position that minimizes the sum of absolute errors. So a row is never wider than what its own nodes asked for. The constraint x[i] - x[i-1] >= gap[i] becomes a plain "not decreasing" once each position is shifted by the gaps before it, which is the standard isotonic regression that pool-adjacent-violators solves exactly. */
+ * sits at its members' median, which is the position that minimizes the sum of absolute errors. So a row is never wider than what its own nodes asked for. The constraint x[i] - x[i-1] >= gap[i] becomes a plain "not decreasing" once each position is shifted by the gaps before it. This is the standard isotonic regression that pool-adjacent-violators solves exactly. */
 export function fitToDesired(desired: readonly number[], gap: readonly number[]): number[] {
   const n = desired.length;
   if (n === 0) return [];
@@ -618,8 +618,8 @@ export interface CoordResult {
   layerExtent: number;
 }
 
-/** Give every slot a cross-axis center. The first pass packs each layer left to right at the minimum gap, which is correct and ugly: a chain of single nodes comes out as a staircase. The straightening passes then repeatedly pull each slot toward the median of its neighbours in the adjacent layer and re-separate any overlap the pull created, alternating direction. That is the priority method rather than full Brandes-Kopf, and the property it buys is the one that matters to a reader: a straight dependency chain draws as a straight line, and a long edge's bend points line up
- *with each other instead of zig-zagging. The separation step runs AFTER every pull, never as a final tidy-up: a layout that resolves overlaps once at the end can still hand back overlapping boxes, and boxes drawn on top of each other is worse than any amount of crookedness. */
+/** Give every slot a cross-axis center. The first pass packs each layer left to right at the minimum gap, which is correct and ugly. A chain of single nodes comes out as a staircase. The straightening passes then repeatedly pull each slot toward the median of its neighbours in the adjacent layer. And re-separate any overlap the pull created, alternating direction. That is the priority method rather than full Brandes-Kopf, and the property it buys is the one that matters to a reader. A straight dependency chain draws as a straight line, and a long edge's bend points line
+ * up with each other instead of zig-zagging. The separation step runs AFTER every pull, never as a final tidy-up. A layout that resolves overlaps once at the end can still hand back overlapping boxes. Boxes drawn on top of each other is worse than any amount of crookedness. */
 export function assignCoordinates(
   proper: ProperLayering,
   sizes: readonly NodeSize[],
@@ -699,12 +699,12 @@ export function assignCoordinates(
   /**
    * Close the slack the straightening opens up.
    *
-   * separate() enforces a MINIMUM distance and nothing enforces a maximum,
-   * so a node pulled toward a far-off neighbour's median leaves a hole where
-   * it used to be, and an unanchored node keeps whatever position the
-   * initial packing gave it. On a graph whose nodes are mostly unconnected
-   * that reads as boxes huddled at both ends of a row with a void between
-   * them, which is not a fact about the dependencies.
+   * separate() enforces a MINIMUM distance and nothing enforces a maximum. A
+   * node pulled toward a far-off neighbour's median leaves a hole where it
+   * used to be. An unanchored node keeps whatever position the initial
+   * packing gave it. On a graph whose nodes are mostly unconnected that
+   * reads as boxes huddled at both ends of a row with a void between them.
+   * This is not a fact about the dependencies.
    *
    * Only unanchored slots move, and only up against a neighbour, so no
    * alignment the straightening earned is undone.
@@ -1256,7 +1256,7 @@ export interface NodeText extends NodeSize {
 
 /**
  * The box size and the wrapped lines of a node. Rough by construction: it works off an average glyph advance
- * rather than a real text measurement, because the layout runs before anything has a canvas context.
+ * rather than a real text measurement. This is because the layout runs before anything has a canvas context.
  * `<dag-view>` passes its own measured `charW` from the live font, which is what makes the estimate track the
  * actual rendering. The state word takes room on the first label line, so it never covers the label.
  */
@@ -1336,8 +1336,8 @@ export function panViewport(v: DagViewport, dx: number, dy: number): DagViewport
 
 /**
  * Zoom about a screen anchor: the world point under the anchor stays under
- * it. Anything else makes the content slide out from under the cursor, and
- * a reader who zooms toward a node and watches it leave has to chase it.
+ * it. Anything else makes the content slide out from under the cursor. A
+ * reader who zooms toward a node and watches it leave has to chase it.
  */
 export function zoomViewportAt(
   v: DagViewport,
@@ -1417,8 +1417,8 @@ export function layoutBounds(layout: DagLayout): WorldRect {
 
 /**
  * Keep at least `margin` screen px of the drawing on screen. A graph is
- * pannable in every direction, so this is a leash rather than a fence: it
- * stops the content being flicked into the void, and never blocks a pan
+ * pannable in every direction. This is a leash rather than a fence: it
+ * stops the content being flicked into the void. It never blocks a pan
  * that keeps something visible.
  */
 export function clampViewport(v: DagViewport, bounds: WorldRect, vw: number, vh: number, margin = 60): DagViewport {
@@ -1521,12 +1521,12 @@ export interface Neighbourhood {
 }
 
 /** Everything up-stream and down-stream of a node, plus the edges
- * connecting them. This is what the hover highlight paints: "what does this
+ * connecting them. This is what the hover highlight paints. "what does this
  * need, and what breaks if it moves" is the question a dependency graph
  * exists to answer, and on a graph past a few nodes it cannot be answered
- * by following lines with your eyes. Traversal follows the TRUE edge
- * direction, including edges that cycle-breaking reversed for layout -- the
- * highlight has to reflect the dependencies, not the drawing. */
+ * by following lines. This holds with your eyes. Traversal follows the TRUE
+ * edge direction, including edges that cycle-breaking reversed for layout
+ * -- the highlight has to reflect the dependencies, not the drawing. */
 export function neighbourhood(layout: DagLayout, index: number): Neighbourhood {
   const n = layout.nodes.length;
   const outAdj: number[][] = Array.from({ length: n }, () => []);

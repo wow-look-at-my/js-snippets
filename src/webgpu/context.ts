@@ -16,11 +16,11 @@ export interface InitWebGPUOptions {
   limits?: Record<string, number>;
 }
 
-/** Request a WebGPU device and configure a canvas context. @param canvas The
+/** Request a WebGPU device. And configure a canvas context. @param canvas The
  * canvas element to bind. @param features Optional device features to request
- * (only requested if the adapter supports them). @param options Adapter power
- * preference + limits to raise (see `InitWebGPUOptions`). @returns null if
- * WebGPU is unavailable. */
+ * (only requested if the adapter supports them). @param options Adapter
+ * power. Preference + limits to raise (see `InitWebGPUOptions`). @returns
+ * null if WebGPU is unavailable. */
 export async function initWebGPU(
   canvas: HTMLCanvasElement,
   features?: GPUFeatureName[],

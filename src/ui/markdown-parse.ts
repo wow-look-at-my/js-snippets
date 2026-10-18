@@ -28,7 +28,7 @@ export function safeHref(raw: string | null | undefined): string | null {
  * Parses markdown to an mdast tree (CommonMark + GFM), already sanitized by
  * sanitizeTree. Returns null for input that is absent, or whose tree has no
  * content -- so a caller can tell "no content" from "content that rendered
- * to nothing" and show its own empty state.
+ * to nothing". Show its own empty state.
  */
 export function parseMarkdown(source: string | null | undefined): Root | null {
   if (typeof source !== 'string' || source.trim() === '') return null;

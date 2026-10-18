@@ -71,10 +71,9 @@ page.on('pageerror', (e) => pageErrors.push(String(e)));
 await page.goto(`${pathToFileURL(resolve(file)).href}#dag-view`, { waitUntil: 'load' });
 await page.waitForTimeout(1200);
 
-// -- Upgrade -------------------------------------------------------------------
-// A demo whose import got elided sits on its light-DOM "loading..." line
-// with the build green throughout, which is the exact failure the gallery
-// exists to catch.
+// -- Upgrade A demo whose import got elided sits on its light-DOM
+// "loading..." line with the build green throughout, which is the exact
+// failure the gallery exists to catch.
 
 const upgrade = await page.evaluate(() => {
 	const out: { id: string; upgraded: boolean; hasCanvas: boolean; w: number; h: number }[] = [];
@@ -205,9 +204,9 @@ check('the nodeclick event reaches the page', /bundle/.test(selected.readout), s
 
 // -- Interaction: right-click copies the drawn state ----------------------------------
 
-// Driven as the real gesture rather than by calling the getter, because what
-// has to hold is that a reader looking at a wrong picture can hand somebody
-// the numbers. A getter nothing is wired to does not do that.
+// Driven as the real gesture rather than by calling the getter. This is
+// because what has to hold is that a reader looking at a wrong picture can
+// hand somebody the numbers. A getter nothing is wired to does not do that.
 await page.evaluate(() => {
 	const el = document.getElementById('demo-dag')!;
 	el.addEventListener('snapshotcopy', (e) => {
@@ -218,8 +217,8 @@ await page.mouse.click(nodeScreenPoint.x, nodeScreenPoint.y, { button: 'right' }
 await page.waitForTimeout(150);
 
 // The right-click opens a MENU. Copying on the click itself was invisible:
-// the browser's own menu is suppressed, so a reader who saw nothing open read
-// a working feature as a dead click.
+// the browser's own menu is suppressed. A reader who saw nothing open read a
+// working feature as a dead click.
 const menu = await page.evaluate(() => {
 	const el = document.getElementById('demo-dag') as DagViewElement;
 	const m = el.shadowRoot!.querySelector<HTMLElement>('.menu')!;
@@ -236,7 +235,7 @@ check(
 );
 
 // The component's pill rule used to be a bare `button` selector, which took
-// every menu item out of flow and drew all of them at one spot. Reading the
+// every menu item out of flow. It drew all of them at one spot. Reading the
 // text back cannot see that -- only the boxes can.
 const rows = await page.evaluate(() => {
 	const el = document.getElementById('demo-dag') as DagViewElement;
@@ -376,7 +375,7 @@ check(
 	JSON.stringify(searched),
 );
 
-// -- The empty instance says so ----------------------------------------------------------
+// -- The empty instance says. ----------------------------------------------------------
 
 const empty = await page.evaluate(() => {
 	const el = document.getElementById('demo-dag-empty') as DagViewElement;
@@ -388,7 +387,7 @@ check("the empty text is the consumer's", /No dependencies recorded/.test(empty.
 
 // -- A blocked node says WHY -------------------------------------------------------------
 // The e2e node carries a multi-line `detail` and an `href`. The tooltip, the selected-node panel and the canvas box
-// must each carry it readably: a reason that only lives in the payload is the board that said "zero detail".
+// must each carry it readably. A reason that only lives in the payload is the board that said "zero detail".
 
 const e2ePoint = await page.evaluate(() => {
 	const el = document.getElementById('demo-dag') as DagViewElement;
@@ -467,10 +466,10 @@ check(
 );
 
 // -- Dashboard scale ---------------------------------------------------------------------
-// The shape a real consumer hands this: every repository in an org is a node,
-// and a manifest sweep that read nothing leaves almost all of them edgeless.
-// The gallery's graphs are small enough that nothing here can go wrong in
-// them, which is why this case is built rather than looked up.
+// The shape a real consumer hands this: every repository in an org is a node.
+// A manifest sweep that read nothing leaves almost all of them edgeless. The
+// gallery's graphs are small enough that nothing here can go wrong in them,
+// which is why this case is built rather than looked up.
 //
 // It went wrong twice, and both failures look identical on screen -- a dark
 // box with a couple of stray lines. Its own comment names that state: "shows
@@ -549,8 +548,8 @@ if (shots) {
 		console.log(`  shot ${out}`);
 	}
 	// The README's picture, captured from the SAME live component as every
-	// other shot, so it cannot drift into showing a graph the code no
-	// longer draws. Opt-in, because it writes into the tracked tree.
+	// other shot. It cannot drift into showing a graph the code no longer
+	// draws. Opt-in, because it writes into the tracked tree.
 	if (process.argv.includes('--readme')) {
 		const el = await page.$('#demo-dag');
 		if (el !== null) {

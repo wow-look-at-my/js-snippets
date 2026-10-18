@@ -2,7 +2,9 @@
 
 `pnpm test` type-checks the project. It then runs every `*.test.ts` file under Node's own test runner. Node has no DOM. It has no canvas, no GPU, and no text loader for a `.css` or `.wgsl` import. A whole class of module here is out of reach of that runner.
 
-The rule this repo follows is simple. **Split the module. Do not fake the environment.** A module that mixes pure logic with a bound surface gets its logic moved into a sibling module. The sibling is named `-math`, `-logic` or `-parse`. It is tested in full. The bound half goes to a browser harness or to manual testing. Nothing here mocks a canvas, a GPU device or a popup. A fake environment tests the fake.
+The rule this repo follows is simple. **Split the module. Do not fake the environment.** A module that mixes pure logic with a bound surface gets its logic moved into a sibling module. The sibling is named `-math`, `-logic` or `-parse`. It is tested in full. The bound half goes to a browser harness or to manual testing.
+
+Nothing here mocks a canvas, a GPU device or a popup. A fake environment tests the fake.
 
 One consequence is worth stating plainly. **A green `pnpm test` says nothing about whether an element renders.** The browser harnesses at the bottom of this file are the checks that do.
 
@@ -25,7 +27,7 @@ These modules are left to manual and integration testing.
 - `webgl2/mesh.ts` tests `chooseIndexArray`.
 - `webgl2/fbo.ts` tests `makePingPong`. The GL-bound `createFloatFbo` and `createPingPong` are not tested.
 - `webgpu/scan.ts` keeps its pure half in `webgpu/scan-plan.ts`. That module holds the `planScan` level math. Its tests include a plan-driven JS emulation of the WGSL. The split exists because `scan.ts` imports a `.wgsl` file. That file cannot load under node. Consumer browser harnesses cover the GPU wrapper `createScan`.
-- `ui/perf-graph.ts` is the DOM and canvas-bound `<perf-graph>` element. Its logic lives in `ui/perf-graph-math.ts`. That module covers the ring buffer, the stats, the range, the ticks, the binning and the formatting. It also covers the stacked half: `SeriesRing`, the cumulative band tops and `binLast`. It is node-tested in full. The element's own stacked behavior is covered by `scripts/check-perf-graph.mjs`, which reads the painted pixels back.
+- `ui/perf-graph.ts` is the DOM and canvas-bound `<perf-graph>` element. Its logic lives in `ui/perf-graph-math.ts`. That module covers the ring buffer, the stats, the range, the ticks, the binning and the formatting. It also covers the stacked half: `SeriesRing`, the cumulative band tops and `binLast`. It is node-tested in full. `scripts/check-perf-graph.mjs` covers the element's own stacked behavior, which reads the painted pixels back.
 - `ui/timeline-view.ts` is the `<timeline-view>` element. Its `.css` text import also resolves only under the build's loader. Its logic lives in `ui/timeline-view-math.ts`. That module covers the scales, the zoom, the ticks, the packing, the label fit, the hit tests, the hues and the coverage bookkeeping.
 - `ui/combobox.ts` is the `<combo-box>` element and the select-fallback popup. It is DOM-bound. Its `.css` text import resolves only under the build's loader. Its logic lives in `ui/combobox-logic.ts`. That module covers the activation gating, the enabled-option navigation, the type-ahead and the popup placement.
 - `ui/canvas-text.ts` tests its pure fitting surface: `deriveLabelTiers`, `selectTier`, `clipToWidth` and `fitTieredText`. The canvas-bound `FadeTextPainter` is not tested.
@@ -39,9 +41,9 @@ These modules are left to manual and integration testing.
 ## What covers the gap
 
 - **`showcase/`** is the component gallery. Every DOM-bound `src/ui/` component has a section there. The gallery publishes per branch. A rendering change is therefore verifiable from a real URL before it merges. See the Showcase section of CLAUDE.md.
-- **`scripts/check-dag-view.ts`** drives `<dag-view>` in a real Chromium. Node strips its types and runs it. `ts0 build` type-checks `scripts/` too. The file imports `DagViewElement` as a type, so a call it gets wrong fails the build. It checks that the element upgrades and that the canvas paints anything at all. It checks that the cycle and rejected-edge reporting reaches the notice strip. It checks the hover tooltip, the click selection, the arrow-key graph walk and the toolbar. It checks that search highlights rather than filters. It also writes the reference screenshots.
+- **`scripts/check-dag-view.ts`** drives `<dag-view>` in a real Chromium. Node strips its types and runs it. `ts0 build` type-checks `scripts/` too. The file imports `DagViewElement` as a type. A call it gets incorrect fails the build. It checks that the element upgrades and that the canvas paints anything at all. It checks that the cycle and rejected-edge reporting reaches the notice strip. It checks the hover tooltip, the click selection, the arrow-key graph walk and the toolbar. It checks that search highlights rather than filters. It also writes the reference screenshots.
 - **`scripts/check-timeline-bounds.mjs`** does the same for `<timeline-view>`'s `minTime` and `maxTime`. Those are element-level properties that no node test can reach. It also drives the sub-span instance. It sweeps the pointer down the real element and asserts that a sub-span's row lies under its parent's. It reads the painted box back from the canvas. It checks the tooltip and the box hit.
 - **`scripts/check-perf-graph.mjs`** does the same for `<perf-graph>`'s stacked mode. It reads a pixel column back from the plot and counts the distinct colors. It does this on the per-sample path and on the binned one. It reads the plot only, between the readout row and the legend row. A legend swatch carries a band's color whether or not that band has data. It also writes the reference screenshot.
-- **`scripts/screenshot-showcase.mjs`** captures the README's `<timeline-view>` picture from the real component, so the image cannot drift.
+- **`scripts/screenshot-showcase.mjs`** captures the README's `<timeline-view>` picture from the real component. The image cannot drift.
 
 Add a line here when you add a module that mixes pure and bound code. Split it the same way. Note the gap rather than forcing a fake.
