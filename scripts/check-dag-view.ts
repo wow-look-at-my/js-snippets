@@ -19,12 +19,15 @@ interface Page {
 	goto(url: string, options?: { waitUntil?: string }): Promise<unknown>;
 	waitForTimeout(ms: number): Promise<void>;
 	evaluate<T>(fn: () => T): Promise<Awaited<T>>;
+	evaluate<T, A>(fn: (arg: A) => T, arg: A): Promise<Awaited<T>>;
+	emulateMedia(options: { reducedMotion: 'reduce' | 'no-preference' }): Promise<void>;
 	$(selector: string): Promise<ElementHandle | null>;
 	mouse: {
 		move(x: number, y: number): Promise<void>;
 		click(x: number, y: number, options?: { button?: 'left' | 'right' | 'middle' }): Promise<void>;
+		wheel(dx: number, dy: number): Promise<void>;
 	};
-	keyboard: { press(key: string): Promise<void> };
+	keyboard: { press(key: string): Promise<void>; down(key: string): Promise<void>; up(key: string): Promise<void> };
 }
 interface Browser {
 	newPage(options: {
@@ -90,7 +93,7 @@ const upgrade = await page.evaluate(() => {
 	return out;
 });
 
-check('found every gallery instance', upgrade.length === 5, `saw ${upgrade.length}`);
+check('found every gallery instance', upgrade.length === 8, `saw ${upgrade.length}`);
 for (const u of upgrade) {
 	check(`#${u.id} upgraded with a sized canvas`, u.upgraded && u.hasCanvas && u.w > 0 && u.h > 0, JSON.stringify(u));
 }
@@ -521,6 +524,402 @@ check(
 );
 check('nothing is parked off screen after the fit', scaled.offScreen === 0, `${scaled.offScreen} off screen`);
 
+// -- Active nodes The sheen is the thing that moves without input.
+
+interface Region {
+	id: string;
+	sums: number[];
+}
+
+/** Fingerprints the interior of each named box in #demo-dag-active, once per sample, a sample every `gap` ms. */
+async function sampleBoxes(ids: string[], samples: number, gap: number): Promise<Region[]> {
+	return page.evaluate(
+		async (arg: { ids: string[]; samples: number; gap: number }) => {
+			const el = document.getElementById('demo-dag-active') as DagViewElement;
+			const canvas = el.shadowRoot!.querySelector('canvas')!;
+			const ctx = canvas.getContext('2d')!;
+			const out = arg.ids.map((id) => ({ id, sums: [] as number[] }));
+			for (let step = 0; step < arg.samples; step++) {
+				const snap = el.snapshot;
+				const dpr = snap.canvas.dpr;
+				for (const region of out) {
+					const node = snap.nodes.find((n) => n.id === region.id)!;
+					const inset = 3;
+					const x = Math.round((node.screen.x + inset) * dpr);
+					const y = Math.round((node.screen.y + inset) * dpr);
+					const w = Math.max(1, Math.round((node.screen.w - 2 * inset) * dpr));
+					const h = Math.max(1, Math.round((node.screen.h - 2 * inset) * dpr));
+					const data = ctx.getImageData(x, y, w, h).data;
+					let sum = 0;
+					for (let idx = 0; idx < data.length; idx += 4) sum += data[idx] + data[idx + 1] * 3 + data[idx + 2] * 7;
+					region.sums.push(sum);
+				}
+				await new Promise((r) => setTimeout(r, arg.gap));
+			}
+			return out;
+		},
+		{ ids, samples, gap },
+	);
+}
+
+const changes = (r: Region): number => r.sums.filter((v, idx) => idx > 0 && v !== r.sums[idx - 1]).length;
+
+await page.mouse.move(2, 2);
+const activeState = await page.evaluate(() => {
+	const el = document.getElementById('demo-dag-active') as DagViewElement;
+	el.scrollIntoView({ block: 'center' });
+	const snap = el.snapshot;
+	return {
+		animating: el.animating,
+		active: snap.nodes.filter((n) => n.active).map((n) => n.id).sort(),
+		canvas: snap.canvas,
+		// Wholly inside the canvas, not merely overlapping it: a box half off the edge samples pixels that are not there.
+		inside: snap.nodes.every(
+			(n) =>
+				n.screen.x >= 0 &&
+				n.screen.y >= 0 &&
+				n.screen.x + n.screen.w <= snap.canvas.width &&
+				n.screen.y + n.screen.h <= snap.canvas.height &&
+				n.screen.w >= 40,
+		),
+	};
+});
+await page.waitForTimeout(300);
+check(
+	'the style entries and the node field mark exactly the running nodes active',
+	JSON.stringify(activeState.active) === JSON.stringify(['pr-12', 'pr-19', 'pr-33', 'pr-41']),
+	JSON.stringify(activeState.active),
+);
+check(
+	'the active board is laid out at a readable size',
+	activeState.canvas.width >= 400 && activeState.canvas.height >= 200,
+	JSON.stringify(activeState.canvas),
+);
+check('every active-board node lies wholly inside the canvas', activeState.inside);
+check('the loop runs while an active node is in view', activeState.animating);
+
+// Samples over periods: a box rests for part of each period, so one pair of frames proves nothing.
+const sweep = await sampleBoxes(['pr-12', 'pr-19', 'pr-41', 'pr-27', 'pr-45'], 10, 320);
+for (const id of ['pr-12', 'pr-19', 'pr-41']) {
+	const r = sweep.find((x) => x.id === id)!;
+	check(`active ${id}: its pixels change between frames`, changes(r) >= 2, `sums ${r.sums.join(',')}`);
+}
+for (const id of ['pr-27', 'pr-45']) {
+	const r = sweep.find((x) => x.id === id)!;
+	check(
+		`idle ${id}: its pixels do not change between frames`,
+		changes(r) === 0 && r.sums[0] > 0,
+		`sums ${r.sums.join(',')}`,
+	);
+}
+
+await page.emulateMedia({ reducedMotion: 'reduce' });
+await page.waitForTimeout(200);
+const pulse = await sampleBoxes(['pr-12', 'pr-45'], 10, 320);
+check('reduced motion: an active box still changes, as a pulse', changes(pulse[0]) >= 2, `sums ${pulse[0].sums.join(',')}`);
+check('reduced motion: an idle box stays still', changes(pulse[1]) === 0, `sums ${pulse[1].sums.join(',')}`);
+await page.emulateMedia({ reducedMotion: 'no-preference' });
+
+// -- Node links on the detail card ----------------------------------------------------
+
+const card = await page.evaluate(async () => {
+	const el = document.getElementById('demo-dag-active') as DagViewElement;
+	el.selected = 'pr-12';
+	await new Promise((r) => setTimeout(r, 100));
+	const panel = el.shadowRoot!.querySelector<HTMLElement>('.detail')!;
+	const links = [...panel.querySelectorAll<HTMLAnchorElement>('.dt-links a')].map((a) => ({
+		text: a.textContent ?? '',
+		href: a.getAttribute('href') ?? '',
+		target: a.target,
+		rel: a.rel,
+	}));
+	const snapLinks = el.snapshot.nodes.find((n) => n.id === 'pr-12')!.links;
+	const shown = !panel.hidden;
+	const open = panel.querySelector('.dt-link') !== null;
+	el.selected = null;
+	return { shown, links, snapLinks, open };
+});
+check('selecting a node with links opens the card', card.shown);
+check('the card keeps the href open link beside the named links', card.open);
+check(
+	'the card lists every safe link, in order, pointing where the node says',
+	JSON.stringify(card.links.map((l) => l.href)) ===
+		JSON.stringify([
+			'https://github.com/wow-look-at-my/go-s3-server/pull/12',
+			'#run=demo-run-12',
+			'https://github.com/wow-look-at-my/webhooks/pull/27',
+		]),
+	JSON.stringify(card.links),
+);
+check(
+	'an external link opens a new tab with rel=noopener',
+	card.links
+		.filter((l) => l.href.startsWith('https://'))
+		.every((l) => l.target === '_blank' && /\bnoopener\b/.test(l.rel)),
+	JSON.stringify(card.links),
+);
+check(
+	'a relative link stays in this tab',
+	card.links.filter((l) => l.href.startsWith('#')).every((l) => l.target === ''),
+	JSON.stringify(card.links),
+);
+check('the label is the link text', card.links[1]?.text === 'worker run', JSON.stringify(card.links));
+check('the unsafe link never renders', !card.links.some((l) => l.href.startsWith('javascript')));
+check('the snapshot reports the same links', card.snapLinks.length === 3, JSON.stringify(card.snapLinks));
+
+// -- Groups A collapsed group is ONE node, a click expands it in place, a
+// header click collapses it again, and the edges follow it each. Way.
+
+interface GroupState {
+	nodes: string[];
+	edges: string[];
+	collapsed: boolean | null;
+	scale: number;
+	stand: { x: number; y: number } | null;
+	header: { x: number; y: number } | null;
+}
+
+async function groupState(id: string): Promise<GroupState> {
+	return page.evaluate((target: string) => {
+		const el = document.getElementById(target) as DagViewElement;
+		el.scrollIntoView({ block: 'center' });
+		const snap = el.snapshot;
+		const rect = el.getBoundingClientRect();
+		const g = snap.groups[0];
+		const stand = snap.nodes.find((n) => n.id === 'group:pending');
+		const header =
+			g !== undefined && !g.collapsed
+				? {
+						x: rect.left + snap.viewport.x + (g.world.x + 20) * snap.viewport.scale,
+						y: rect.top + snap.viewport.y + (g.world.y + 8) * snap.viewport.scale,
+					}
+				: null;
+		return {
+			nodes: snap.nodes.map((n) => n.id),
+			edges: snap.edges.map((e) => `${e.from}>${e.to}`),
+			collapsed: g === undefined ? null : g.collapsed,
+			scale: snap.viewport.scale,
+			stand: stand === undefined ? null : { x: rect.left + stand.screen.x + stand.screen.w / 2, y: rect.top + stand.screen.y + stand.screen.h / 2 },
+			header,
+		};
+	}, id);
+}
+
+const closed = await groupState('demo-dag-group-closed');
+check('a collapsed group of twelve draws as ONE node', closed.nodes.length === 3 && closed.collapsed === true, JSON.stringify(closed.nodes));
+check(
+	'edges into and out of members reroute to the group node, once per pair',
+	JSON.stringify(closed.edges.slice().sort()) === JSON.stringify(['base-fix>pending-2', 'pending-4>release']),
+	JSON.stringify(closed.edges),
+);
+await page.mouse.click(closed.stand!.x, closed.stand!.y);
+await page.waitForTimeout(250);
+const opened = await groupState('demo-dag-group-closed');
+check('a click on the group node expands it to its twelve members', opened.nodes.length === 14 && opened.collapsed === false, JSON.stringify(opened.nodes));
+check(
+	'expanded, every edge reaches the member it names',
+	JSON.stringify(opened.edges.slice().sort()) ===
+		JSON.stringify(['base-fix>pending-2', 'base-fix>pending-7', 'pending-2>pending-3', 'pending-4>release']),
+	JSON.stringify(opened.edges),
+);
+check('expanding keeps the zoom', opened.scale === closed.scale, `${closed.scale} -> ${opened.scale}`);
+await page.mouse.click(opened.header!.x, opened.header!.y);
+await page.waitForTimeout(250);
+const again = await groupState('demo-dag-group-closed');
+check('a click on the header collapses it again', again.nodes.length === 3 && again.collapsed === true, JSON.stringify(again.nodes));
+const viaKey = await page.evaluate(async () => {
+	const el = document.getElementById('demo-dag-group-closed') as DagViewElement;
+	el.selected = 'group:pending';
+	el.focus();
+	el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+	await new Promise((r) => setTimeout(r, 100));
+	const n = el.snapshot.nodes.length;
+	el.setGroupCollapsed('pending', true);
+	return n;
+});
+check('Enter on the selected group node expands it', viaKey === 14, `${viaKey} nodes`);
+const openInstance = await groupState('demo-dag-group-open');
+check('a group can start expanded', openInstance.nodes.length === 14 && openInstance.collapsed === false);
+
+// -- Wheel ----------------------------------------------------------------------------
+// A plain mouse wheel belongs to the page. Ctrl + wheel zooms. A trackpad pans.
+
+const wheelTarget = await page.evaluate(() => {
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	el.scrollIntoView({ block: 'center' });
+	const r = el.getBoundingClientRect();
+	return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+});
+const viewOf = (): Promise<{ v: { x: number; y: number; scale: number }; scrollY: number; hint: boolean; source: string | null }> =>
+	page.evaluate(() => {
+		const el = document.getElementById('demo-dag') as DagViewElement;
+		const hint = el.shadowRoot!.querySelector('.wheel-hint')!;
+		// The gallery scrolls `main`, not the window.
+		const scrollY = window.scrollY + (document.querySelector('main')?.scrollTop ?? 0);
+		return { v: el.viewport, scrollY, hint: hint.classList.contains('show'), source: el.lastWheelSource };
+	});
+await page.mouse.move(wheelTarget.x, wheelTarget.y);
+await page.waitForTimeout(400);
+const w0 = await viewOf();
+await page.mouse.wheel(0, 120);
+await page.waitForTimeout(250);
+const w1 = await viewOf();
+check(
+	'a plain mouse wheel leaves the graph as it was',
+	w1.v.x === w0.v.x && w1.v.y === w0.v.y && w1.v.scale === w0.v.scale && w1.source === 'mouse',
+	JSON.stringify([w0, w1]),
+);
+check('a plain mouse wheel scrolls the page', w1.scrollY > w0.scrollY, `${w0.scrollY} -> ${w1.scrollY}`);
+check('a plain mouse wheel shows the zoom hint', w1.hint);
+await page.waitForTimeout(400);
+const w2pos = await page.evaluate(() => {
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	const r = el.getBoundingClientRect();
+	return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+});
+await page.mouse.move(w2pos.x, w2pos.y);
+const z0 = await viewOf();
+await page.keyboard.down('Control');
+await page.mouse.wheel(0, -120);
+await page.keyboard.up('Control');
+await page.waitForTimeout(250);
+const z1 = await viewOf();
+check('Ctrl + mouse wheel zooms', z1.v.scale > z0.v.scale && z1.scrollY === z0.scrollY, JSON.stringify([z0, z1]));
+await page.waitForTimeout(400);
+const pad = await page.evaluate(async () => {
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	const canvas = el.shadowRoot!.querySelector('canvas')!;
+	const r = canvas.getBoundingClientRect();
+	const before = el.viewport;
+	const scrolled = (): number => window.scrollY + (document.querySelector('main')?.scrollTop ?? 0);
+	const y0 = scrolled();
+	for (let step = 0; step < 6; step++) {
+		canvas.dispatchEvent(
+			new WheelEvent('wheel', {
+				deltaX: 3,
+				deltaY: 2.5,
+				deltaMode: 0,
+				clientX: r.left + r.width / 2,
+				clientY: r.top + r.height / 2,
+				bubbles: true,
+				cancelable: true,
+			}),
+		);
+		await new Promise((res) => setTimeout(res, 16));
+	}
+	await new Promise((res) => setTimeout(res, 100));
+	return { before, after: el.viewport, source: el.lastWheelSource, scrolled: scrolled() !== y0 };
+});
+check(
+	'a trackpad-shaped scroll pans the graph and does not zoom',
+	pad.source === 'trackpad' &&
+		(pad.after.x !== pad.before.x || pad.after.y !== pad.before.y) &&
+		pad.after.scale === pad.before.scale &&
+		!pad.scrolled,
+	JSON.stringify(pad),
+);
+await page.evaluate(() => (document.getElementById('demo-dag') as DagViewElement).fit());
+
+// -- Focus fade ----------------------------------------------------------------------
+// Hovering a node dims the rest only after a second, so a pointer that crosses the graph does not flash it.
+
+const focusSetup = await page.evaluate(async () => {
+	const el = document.getElementById('demo-dag') as DagViewElement;
+	el.scrollIntoView({ block: 'center' });
+	el.selected = null;
+	el.fit();
+	await new Promise((r) => setTimeout(r, 400));
+	const snap = el.snapshot;
+	const rect = el.getBoundingClientRect();
+	const at = (id: string): { x: number; y: number } => {
+		const n = snap.nodes.find((x) => x.id === id)!;
+		return { x: rect.left + n.screen.x + n.screen.w / 2, y: rect.top + n.screen.y + n.screen.h / 2 };
+	};
+	return { bundle: at('bundle'), off: { x: rect.left + 4, y: rect.bottom - 4 } };
+});
+const auditPixels = (): Promise<number> =>
+	page.evaluate(() => {
+		const el = document.getElementById('demo-dag') as DagViewElement;
+		const canvas = el.shadowRoot!.querySelector('canvas')!;
+		const node = el.snapshot.nodes.find((n) => n.id === 'audit')!;
+		const dpr = el.snapshot.canvas.dpr;
+		const data = canvas
+			.getContext('2d')!
+			.getImageData(
+				Math.round((node.screen.x + 3) * dpr),
+				Math.round((node.screen.y + 3) * dpr),
+				Math.max(1, Math.round((node.screen.w - 6) * dpr)),
+				Math.max(1, Math.round((node.screen.h - 6) * dpr)),
+			).data;
+		let sum = 0;
+		for (let idx = 0; idx < data.length; idx += 4) sum += data[idx] + data[idx + 1] + data[idx + 2];
+		return sum;
+	});
+await page.mouse.move(focusSetup.off.x, focusSetup.off.y);
+await page.waitForTimeout(500);
+const bright = await auditPixels();
+await page.mouse.move(focusSetup.bundle.x, focusSetup.bundle.y);
+await page.waitForTimeout(500);
+const early = await auditPixels();
+check('half a second on a node dims no other node', early === bright, `${bright} -> ${early}`);
+await page.waitForTimeout(2000);
+const late = await auditPixels();
+check('two and a half seconds on a node dims the nodes outside its neighbourhood', late < bright * 0.6, `${bright} -> ${late}`);
+await page.mouse.move(focusSetup.off.x, focusSetup.off.y);
+await page.waitForTimeout(100);
+const easing = await auditPixels();
+await page.waitForTimeout(400);
+const back = await auditPixels();
+check('leaving eases the dim back, rather than snapping', easing > late && easing < back, `${late} -> ${easing} -> ${back}`);
+check('leaving ends fully bright again', back === bright, `${bright} vs ${back}`);
+
+// A scratch element, so the gallery board stays as the screenshots need it.
+const stopped = await page.evaluate(async () => {
+	const host = document.createElement('div');
+	host.style.cssText = 'width:600px;height:300px;position:fixed;left:-4000px;top:0';
+	const el = document.createElement('dag-view') as DagViewElement;
+	el.style.cssText = 'display:block;width:100%;height:100%';
+	host.appendChild(el);
+	document.body.appendChild(host);
+	const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 250));
+	el.styles = { working: { active: true } };
+	el.setData({
+		nodes: [
+			{ id: 'run', state: 'working' },
+			{ id: 'idle', state: 'done' },
+		],
+		edges: [{ from: 'idle', to: 'run' }],
+	});
+	await tick();
+	const running = el.animating;
+	const original = el.viewport;
+	// Pan every node out of view: the loop has nothing left to animate.
+	el.viewport = { x: 1e6, y: 1e6, scale: original.scale };
+	await tick();
+	const pannedAway = el.animating;
+	el.viewport = original;
+	await tick();
+	const pannedBack = el.animating;
+	// The same nodes, and no style entry or field says active any more.
+	el.styles = { working: { pattern: 'solid' } };
+	await tick();
+	const noneActive = el.animating;
+	el.setData({ nodes: [{ id: 'run', state: 'working', active: true }], edges: [] });
+	await tick();
+	const fieldActive = el.animating;
+	el.setData({ nodes: [{ id: 'run', state: 'working' }], edges: [] });
+	await tick();
+	const fieldCleared = el.animating;
+	host.remove();
+	return { running, pannedAway, pannedBack, noneActive, fieldActive, fieldCleared };
+});
+check('scratch graph: the loop runs with an active node in view', stopped.running);
+check('the loop stops when every active node is out of view', !stopped.pannedAway);
+check('the loop starts again when an active node comes back into view', stopped.pannedBack);
+check('the loop stops when the style map no longer marks any node active', !stopped.noneActive);
+check('a node field alone starts the loop', stopped.fieldActive);
+check('the loop stops when no active node remains', !stopped.fieldCleared);
+
 // -- Screenshots -------------------------------------------------------------------------
 
 if (shots) {
@@ -534,6 +933,25 @@ if (shots) {
 	// Park the pointer off the graph first: a hover fades everything outside one neighbourhood.
 	await page.mouse.move(2, 2);
 	await page.waitForTimeout(400);
+	for (const [id, name] of [
+		['demo-dag-group-closed', 'dag-view-group-collapsed.png'],
+		['demo-dag-group-open', 'dag-view-group-expanded.png'],
+	]) {
+		const el = await page.$(`#${id}`);
+		if (el === null) continue;
+		const out = join(outDir, name);
+		await el.screenshot({ path: out });
+		console.log(`  shot ${out}`);
+	}
+	// The sheen moves, so frames apart show it at positions.
+	for (const name of ['dag-view-active-1.png', 'dag-view-active-2.png']) {
+		const el = await page.$('#demo-dag-active');
+		if (el === null) break;
+		const out = join(outDir, name);
+		await el.screenshot({ path: out });
+		console.log(`  shot ${out}`);
+		await page.waitForTimeout(450);
+	}
 	const gallery: [string, string][] = [
 		['demo-dag', 'dag-view.png'],
 		['demo-dag-cycle', 'dag-view-cycle.png'],

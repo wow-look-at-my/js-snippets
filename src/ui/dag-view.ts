@@ -19,8 +19,28 @@ import {
   neighbourhood,
   criticalPathLength,
   nodeHue,
+  isActiveNode,
+  visibleActiveNodes,
+  activePhase,
+  sheenCentre,
+  sheenHalfBand,
+  pulseLevel,
+  ACTIVE_PERIOD_MS,
+  ACTIVE_PULSE_PERIOD_MS,
   layoutNodeText,
   safeNodeHref,
+  cardLinks,
+  layoutGrouped,
+  hitTestGroupHeader,
+  groupOfNode,
+  groupMatches,
+  groupHeaderText,
+  newFocusFade,
+  focusTarget,
+  stepFocusFade,
+  lerp,
+  classifyWheelSource,
+  newWheelState,
   MIN_SCALE,
   MAX_SCALE,
 } from './dag-view-math.ts';
@@ -35,6 +55,11 @@ import type {
   Neighbourhood,
   NodeText,
   WorldRect,
+  WheelState,
+  FocusFade,
+  WheelSource,
+  DagGroup,
+  PlacedGroup,
 } from './dag-view-math.ts';
 import { categoryColor, categoryJitter, dimColor, labelHaloColor } from './color.ts';
 
@@ -63,6 +88,8 @@ export const THEME_DEFAULTS = {
   accent: '#4aa3ff',
   /** --dag-emphasis — cycle edges and the notice strip. */
   emphasis: '#ff5c5c',
+  /** --dag-active-shine — the light that sweeps across an active node. Keep it translucent: the box shows through it. */
+  activeShine: 'rgba(255, 255, 255, 0.38)',
   /** --dag-font — font family for all canvas text. */
   font: "'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Fira Code', monospace",
   /** --dag-font-size — base font size in px. */
@@ -87,6 +114,8 @@ type Theme = typeof THEME_DEFAULTS;
 export interface DagData {
   nodes?: DagNode[];
   edges?: DagEdge[];
+  /** Named groups. A node joins one with its `group` field. */
+  groups?: DagGroup[];
 }
 
 /** Fill pattern for a node `state`. */
@@ -103,6 +132,8 @@ export interface DagStyle {
   emphasis?: boolean;
   /** Renders the node and its labels at half saturation and value. */
   dim?: boolean;
+  /** Marks every node in this state active: a light sheen sweeps across it on a loop. */
+  active?: boolean;
 }
 
 /** Named style map: node/edge `state` -> treatment. */
@@ -171,6 +202,10 @@ export interface DagSnapshotNode {
   state: string | null;
   detail: string | null;
   href: string | null;
+  /** The node's links the card lists: safe hrefs only, repeats dropped. */
+  links: { label: string; href: string }[];
+  /** Whether the node carries the active sheen, from its own field or its state's style entry. */
+  active: boolean;
   layer: number;
   world: DagSnapshotRect;
   /** CSS pixels, origin at the canvas top-left. */
@@ -202,6 +237,8 @@ export interface DagSnapshot {
   info: DagInfo;
   nodes: DagSnapshotNode[];
   edges: DagSnapshotEdge[];
+  /** Every group with a member: whether it is collapsed, its member ids, and its box. */
+  groups: { id: string; label: string; collapsed: boolean; members: string[]; nodeId: string; world: DagSnapshotRect }[];
 }
 
 // -- Constants ---------------------------------------------------------------------
@@ -210,6 +247,10 @@ const MAX_DPR = 3;
 /* */
 const EDGE_HIT_TOL = 6;
 
+/** How long the mouse-wheel hint stays before it fades, in ms. */
+const WHEEL_HINT_MS = 1400;
+/** The mouse-wheel hint shows at most once per this many ms. */
+const WHEEL_HINT_EVERY_MS = 4000;
 /** How long the right-click's confirmation stays on screen, in ms. */
 const TOAST_MS = 2600;
 /** Below this scale, node labels stop being drawn. */
@@ -241,7 +282,7 @@ const NODE_PAD_Y = 7;
 
 /** The DAG element. Auto-registered as `<dag-view>` when this module loads (unless the name is taken). Data arrives via properties and methods -- `setData` / `nodes` / `edges` -- never attributes. The attributes are scalar toggles: `orientation` ("TB" or "LR"), `no-search`, `no-toolbar`, `no-fullscreen-button`, `no-minimap`, `no-detail-panel`, `empty-text`, and `fullscreen` (reflected viewport-fill mode -- see the `fullscreen` property).
  *
- * DETAIL. A selected node opens a panel with its full label, sublabel, state, `detail` text and an open link for its `href`. Ctrl/Cmd-click on a node opens the `href` at once. `no-detail-panel` turns the panel off.
+ * DETAIL. A selected node opens a panel with its full label, sublabel, state, `detail` text, an open link for its `href`, and its named `links`. Ctrl/Cmd-click on a node opens the `href` at once. `no-detail-panel` turns the panel off.
  *
  * INPUT. Drag pans. Ctrl/Cmd + wheel and pinch zoom. A PLAIN wheel pans instead of zooming, so the element never swallows a page scroll that was meant for the page. The zoom buttons and the +/- keys are the discoverable path. Clicking a node selects it. Hovering one fades everything outside its dependency neighbourhood. This is the question a dependency graph exists to answer and the thing you cannot do by following lines with your eyes.
  *
@@ -260,6 +301,12 @@ export class DagViewElement extends HTMLElement {
   private ctx: CanvasRenderingContext2D | null = null;
   private tooltipEl: HTMLDivElement;
   private toastEl: HTMLDivElement;
+  private wheelHintEl: HTMLDivElement;
+  private wheelState: WheelState = newWheelState();
+  private wheelHintAt = -Infinity;
+  private wheelHintTimer = 0;
+  /** The source the last wheel event was classified as, for a test to read. Null before any wheel. */
+  lastWheelSource: WheelSource | null = null;
   private menuEl: HTMLDivElement;
   private toastTimer = 0;
   private emptyEl: HTMLDivElement;
@@ -277,6 +324,12 @@ export class DagViewElement extends HTMLElement {
   private dirty = true;
   private lastRenderTs = 0;
   private lastInputTs = 0;
+  /** The rAF timestamp of the frame being drawn. The active sheen reads its phase from it. */
+  private frameTs = 0;
+  /** True while an active node is in view, so each frame schedules the next one. */
+  private animatingValue = false;
+  private reducedMotion = false;
+  private motionQuery: MediaQueryList | null = null;
 
   private dpr = 1;
   private cssW = 0;
@@ -291,6 +344,9 @@ export class DagViewElement extends HTMLElement {
 
   private rawNodes: DagNode[] = [];
   private rawEdges: DagEdge[] = [];
+  private rawGroups: DagGroup[] = [];
+  /** A reader's expand or collapse, by group id. It outlives a setData, so a polling page keeps what the reader opened. */
+  private groupToggles = new Map<string, boolean>();
   private layout: DagLayout = layoutDag([], []);
   private bounds: WorldRect = { x: 0, y: 0, w: 0, h: 0 };
   private view: DagViewport = { x: 0, y: 0, scale: 1 };
@@ -304,6 +360,10 @@ export class DagViewElement extends HTMLElement {
   private colorFn: ColorFn | null = null;
 
   private hoverIndex = -1;
+  /** The eased focus: which neighbourhood is drawn bright, and how far the rest has dimmed. */
+  private focusFade: FocusFade = newFocusFade();
+  /** The alpha of everything outside the focus this frame. */
+  private focusAlpha = 1;
   private hoverEdgeIndex = -1;
   private selectedIndex = -1;
   private highlight: Neighbourhood | null = null;
@@ -371,6 +431,11 @@ export class DagViewElement extends HTMLElement {
     this.toastEl.className = 'toast';
     this.toastEl.hidden = true;
     shadow.appendChild(this.toastEl);
+    this.wheelHintEl = document.createElement('div');
+    this.wheelHintEl.className = 'wheel-hint';
+    this.wheelHintEl.setAttribute('aria-hidden', 'true');
+    this.wheelHintEl.textContent = /Mac|iPhone|iPad/.test(navigator.userAgent) ? '⌘ + scroll to zoom' : 'Ctrl + scroll to zoom';
+    shadow.appendChild(this.wheelHintEl);
 
     // The right-click menu.
     this.menuEl = document.createElement('div');
@@ -436,11 +501,20 @@ export class DagViewElement extends HTMLElement {
     this.orientBtn.addEventListener('click', this.onOrientClick);
     this.fsBtn.addEventListener('click', this.onFsClick);
 
+    if (typeof matchMedia === 'function') {
+      this.motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
+      this.reducedMotion = this.motionQuery.matches;
+      this.motionQuery.addEventListener('change', this.onMotionChange);
+    }
+
     this.syncChrome();
     this.invalidate();
   }
 
   disconnectedCallback(): void {
+    this.motionQuery?.removeEventListener('change', this.onMotionChange);
+    this.motionQuery = null;
+    this.animatingValue = false;
     this.ro?.disconnect();
     this.ro = null;
     if (this.raf !== 0) cancelAnimationFrame(this.raf);
@@ -454,6 +528,7 @@ export class DagViewElement extends HTMLElement {
     this.canvas.removeEventListener('dblclick', this.onDoubleClick);
     this.canvas.removeEventListener('contextmenu', this.onContextMenu);
     clearTimeout(this.toastTimer);
+    clearTimeout(this.wheelHintTimer);
     this.removeEventListener('keydown', this.onKeyDown);
     this.searchEl.removeEventListener('input', this.onSearchInput);
     this.noticeEl.removeEventListener('click', this.onNoticeDismiss);
@@ -484,12 +559,15 @@ export class DagViewElement extends HTMLElement {
   setData(data: DagData): void {
     if (data.nodes !== undefined) this.rawNodes = data.nodes.slice();
     if (data.edges !== undefined) this.rawEdges = data.edges.slice();
+    if (data.groups !== undefined) this.rawGroups = data.groups.slice();
     this.layoutStale = true;
     // A refresh keeps the selection when the node is still there: a dashboard that polls must not close the panel a reader is reading.
     this.keepSelected = this.selectedIndex >= 0 ? this.layout.nodes[this.selectedIndex].node.id : null;
     this.selectedIndex = -1;
     this.hoverIndex = -1;
     this.highlight = null;
+    this.focusFade = newFocusFade();
+    this.focusAlpha = 1;
     this.highlightCache.clear();
     this.invalidate();
   }
@@ -519,6 +597,54 @@ export class DagViewElement extends HTMLElement {
   }
 
   /** Node/edge `state` -> treatment. Merged over DEFAULT_STYLES. */
+  get groups(): DagGroup[] {
+    return this.rawGroups.slice();
+  }
+
+  set groups(v: DagGroup[]) {
+    this.setData({ groups: v });
+  }
+
+  /** Whether the group draws as one node now: the reader's last toggle, else the group's own `collapsed`. */
+  isGroupCollapsed(id: string): boolean {
+    const g = this.rawGroups.find((x) => x.id === id);
+    return this.groupToggles.get(id) ?? g?.collapsed === true;
+  }
+
+  /**
+   * Collapse or expand a group. Pan and zoom stay as they are, and the group's
+   * top-left corner stays where it was on screen. The reader's eye does not
+   * have to find it again. Fires `groupchange` {id, collapsed}.
+   */
+  setGroupCollapsed(id: string, collapsed: boolean): void {
+    if (!this.rawGroups.some((g) => g.id === id)) return;
+    if (this.isGroupCollapsed(id) === collapsed) return;
+    this.ensureLayout();
+    const before = this.layout.groups?.find((g) => g.id === id);
+    const anchor = before !== undefined ? worldToScreen({ x: before.x, y: before.y }, this.view) : null;
+    this.groupToggles.set(id, collapsed);
+    this.keepSelected = this.selectedIndex >= 0 ? this.layout.nodes[this.selectedIndex].node.id : null;
+    this.selectedIndex = -1;
+    this.hoverIndex = -1;
+    this.highlight = null;
+    this.focusFade = newFocusFade();
+    this.focusAlpha = 1;
+    this.highlightCache.clear();
+    this.layoutStale = true;
+    this.viewTouched = true;
+    this.ensureLayout();
+    const after = this.layout.groups?.find((g) => g.id === id);
+    if (anchor !== null && after !== undefined) {
+      this.view = { ...this.view, x: anchor.x - after.x * this.view.scale, y: anchor.y - after.y * this.view.scale };
+    }
+    this.dispatchEvent(new CustomEvent('groupchange', { detail: { id, collapsed } }));
+    this.invalidate();
+  }
+
+  private toggleGroup(g: PlacedGroup): void {
+    this.setGroupCollapsed(g.id, !g.collapsed);
+  }
+
   get styles(): DagStyleMap {
     return { ...this.styleMap };
   }
@@ -588,6 +714,11 @@ export class DagViewElement extends HTMLElement {
     };
   }
 
+  /** Whether the active-node loop is running. It runs only while an active node is in view and drawn as a box, and stops when none is. */
+  get animating(): boolean {
+    return this.animatingValue;
+  }
+
   /** The whole drawn state, in both coordinate systems, as a plain object.
    * `world` is what the layout decided. `screen` is where that landed on the
    * canvas in CSS pixels, with the origin at the canvas top-left. A reader can
@@ -626,12 +757,22 @@ export class DagViewElement extends HTMLElement {
           state: n.node.state ?? null,
           detail: n.node.detail ?? null,
           href: n.node.href ?? null,
+          links: cardLinks(n.node).map((l) => ({ label: l.label, href: l.href })),
+          active: isActiveNode(n.node, this.styleMap),
           layer: n.layer,
           world: { x: round(n.x), y: round(n.y), w: round(n.w), h: round(n.h) },
           screen: { x: s.x, y: s.y, w, h },
           visible: s.x + w > 0 && s.y + h > 0 && s.x < this.cssW && s.y < this.cssH,
         };
       }),
+      groups: (this.layout.groups ?? []).map((g) => ({
+        id: g.id,
+        label: g.label,
+        collapsed: g.collapsed,
+        members: g.members.map((m) => m.id),
+        nodeId: g.nodeId,
+        world: { x: round(g.x), y: round(g.y), w: round(g.w), h: round(g.h) },
+      })),
       edges: this.layout.edges.map((e) => ({
         from: e.edge.from,
         to: e.edge.to,
@@ -698,7 +839,7 @@ export class DagViewElement extends HTMLElement {
     this.layoutStale = false;
     const t = this.theme;
     const texts = new Map<string, NodeText>();
-    this.layout = layoutDag(this.rawNodes, this.rawEdges, {
+    this.layout = layoutGrouped(this.rawNodes, this.rawEdges, this.rawGroups, (g) => this.isGroupCollapsed(g.id), {
       orientation: this.orientationValue,
       gap: t.gap,
       layerGap: t.layerGap,
@@ -909,7 +1050,9 @@ export class DagViewElement extends HTMLElement {
     if (this.searchQuery === '') return;
     this.layout.nodes.forEach((n, i) => {
       const hay = `${n.node.id} ${n.node.label ?? ''} ${n.node.sublabel ?? ''}`.toLowerCase();
-      if (hay.includes(this.searchQuery)) this.searchMatches.add(i);
+      // A match hidden inside a collapsed group lights up the group's node.
+      const group = groupOfNode(this.layout, n.node.id);
+      if (hay.includes(this.searchQuery) || (group !== null && groupMatches(group, this.searchQuery))) this.searchMatches.add(i);
     });
   }
 
@@ -983,6 +1126,24 @@ export class DagViewElement extends HTMLElement {
       a.rel = 'noopener noreferrer';
       a.textContent = 'Open ↗';
       parts.push(a);
+    }
+    const links = cardLinks(node);
+    if (links.length > 0) {
+      const list = document.createElement('ul');
+      list.className = 'dt-links';
+      for (const link of links) {
+        const a = document.createElement('a');
+        a.href = link.href;
+        a.textContent = link.external ? `${link.label} ↗` : link.label;
+        if (link.external) {
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+        }
+        const item = document.createElement('li');
+        item.appendChild(a);
+        list.appendChild(item);
+      }
+      parts.push(list);
     }
     this.detailEl.replaceChildren(...parts);
     this.detailEl.hidden = false;
@@ -1087,7 +1248,17 @@ export class DagViewElement extends HTMLElement {
     if (!wasClick) return;
 
     const w = screenToWorld(p, this.view);
+    const header = hitTestGroupHeader(this.layout, w.x, w.y);
+    if (header !== null) {
+      this.toggleGroup(header);
+      return;
+    }
     const ni = hitTestNodes(this.layout, w.x, w.y);
+    const stand = ni >= 0 ? groupOfNode(this.layout, this.layout.nodes[ni].node.id) : null;
+    if (stand !== null) {
+      this.toggleGroup(stand);
+      return;
+    }
     if (ni >= 0) {
       this.select(ni, true);
       if (e.ctrlKey || e.metaKey) this.openHref(this.layout.nodes[ni].node);
@@ -1157,12 +1328,26 @@ export class DagViewElement extends HTMLElement {
     this.lastInputTs = performance.now();
     this.closeMenu();
     const px = normalizeWheel(e.deltaY, e.deltaMode);
+    // Ctrl or Meta zooms, whatever sent it. A trackpad pinch arrives as a wheel with ctrlKey set.
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
       const p = this.localPoint(e);
       this.view = zoomViewportAt(this.view, p.x, p.y, zoomFactorForWheel(px));
       this.viewTouched = true;
       this.invalidate();
+      return;
+    }
+    const judged = classifyWheelSource(this.wheelState, {
+      deltaX: e.deltaX,
+      deltaY: e.deltaY,
+      deltaMode: e.deltaMode,
+      time: e.timeStamp,
+    });
+    this.wheelState = judged.state;
+    this.lastWheelSource = judged.source;
+    if (judged.source === 'mouse') {
+      // A plain mouse wheel belongs to the page: the graph must not catch a scroll that is only passing by.
+      this.showWheelHint();
       return;
     }
     const dx = normalizeWheel(e.deltaX, e.deltaMode);
@@ -1176,6 +1361,16 @@ export class DagViewElement extends HTMLElement {
       this.invalidate();
     }
   };
+
+  /** Says once in a while how to zoom with a mouse wheel, and fades. */
+  private showWheelHint(): void {
+    const now = performance.now();
+    if (now - this.wheelHintAt < WHEEL_HINT_EVERY_MS) return;
+    this.wheelHintAt = now;
+    this.wheelHintEl.classList.add('show');
+    clearTimeout(this.wheelHintTimer);
+    this.wheelHintTimer = window.setTimeout(() => this.wheelHintEl.classList.remove('show'), WHEEL_HINT_MS);
+  }
 
   private onKeyDown = (e: KeyboardEvent): void => {
     if (e.target === this.searchEl) return;
@@ -1217,6 +1412,11 @@ export class DagViewElement extends HTMLElement {
         if (this.selectedIndex >= 0) {
           e.preventDefault();
           const n = this.layout.nodes[this.selectedIndex];
+          const group = groupOfNode(this.layout, n.node.id);
+          if (group !== null) {
+            this.toggleGroup(group);
+            break;
+          }
           this.dispatchEvent(new CustomEvent('nodeclick', { detail: { node: n.node, placed: n } }));
         }
         break;
@@ -1351,7 +1551,19 @@ export class DagViewElement extends HTMLElement {
    * otherwise. */
   private applyHighlight(): void {
     const i = this.hoverIndex >= 0 ? this.hoverIndex : this.selectedIndex;
-    this.highlight = i >= 0 ? this.neighbourhoodOf(i) : null;
+    this.focusFade = focusTarget(this.focusFade, i, performance.now());
+    this.syncFocus(performance.now());
+    this.invalidate();
+  }
+
+  /** Steps the focus fade to `now` and takes the neighbourhood it shows. Returns whether it is still moving. */
+  private syncFocus(now: number): boolean {
+    const step = stepFocusFade(this.focusFade, now);
+    this.focusFade = step.state;
+    const shown = this.focusFade.shown;
+    this.highlight = shown >= 0 && shown < this.layout.nodes.length && this.focusFade.fade > 0 ? this.neighbourhoodOf(shown) : null;
+    this.focusAlpha = lerp(1, FADE_ALPHA, this.focusFade.fade);
+    return step.moving;
   }
 
   private neighbourhoodOf(i: number): Neighbourhood {
@@ -1466,6 +1678,7 @@ export class DagViewElement extends HTMLElement {
     t.edge = readProp(cs, '--dag-edge', THEME_DEFAULTS.edge);
     t.accent = readProp(cs, '--dag-accent', THEME_DEFAULTS.accent);
     t.emphasis = readProp(cs, '--dag-emphasis', THEME_DEFAULTS.emphasis);
+    t.activeShine = readProp(cs, '--dag-active-shine', THEME_DEFAULTS.activeShine);
     t.font = readProp(cs, '--dag-font', THEME_DEFAULTS.font);
     t.fontSize = readNum(cs, '--dag-font-size', THEME_DEFAULTS.fontSize, 6, 24);
     t.nodeRadius = readNum(cs, '--dag-node-radius', THEME_DEFAULTS.nodeRadius, 0, 20);
@@ -1535,7 +1748,58 @@ export class DagViewElement extends HTMLElement {
     if (!this.dirty) return;
     this.dirty = false;
     this.lastRenderTs = ts;
+    this.frameTs = ts;
+    const focusMoving = this.syncFocus(performance.now());
     this.draw();
+    // The sheen and the focus fade are the only things that move on their own. When neither moves, no frame is scheduled.
+    this.animatingValue = this.activeInView();
+    if (this.animatingValue || focusMoving) this.invalidate();
+  }
+
+  /** True when an active node is in view at a scale where its box, and so its sheen, is drawn. */
+  private activeInView(): boolean {
+    if (this.view.scale < LOD_MARK_SCALE || this.layout.nodes.length === 0) return false;
+    const view = visibleWorldRect(this.view, this.cssW, this.cssH);
+    return visibleActiveNodes(this.layout, view, this.styleMap).length > 0;
+  }
+
+  private readonly onMotionChange = (e: MediaQueryListEvent): void => {
+    this.reducedMotion = e.matches;
+    this.invalidate();
+  };
+
+  /**
+   * The active treatment, clipped to the node's box path, drawn over the fill
+   * and under the labels. A sweep is a diagonal band of --dag-active-shine
+   * that crosses the box. Under prefers-reduced-motion it is the same light
+   * laid over the whole box, fading in and out slowly, with nothing moving.
+   */
+  private drawActive(ctx: CanvasRenderingContext2D, id: string, x: number, y: number, w: number, h: number): void {
+    const shine = this.theme.activeShine;
+    if (shine === 'none') return;
+    ctx.save();
+    ctx.clip();
+    if (this.reducedMotion) {
+      const level = pulseLevel(activePhase(id, this.frameTs, ACTIVE_PULSE_PERIOD_MS));
+      ctx.globalAlpha *= level * 0.55;
+      ctx.fillStyle = shine;
+      ctx.fillRect(x, y, w, h);
+    } else {
+      const half = sheenHalfBand(w, h);
+      const centre = sheenCentre(activePhase(id, this.frameTs, ACTIVE_PERIOD_MS), w, h, half);
+      if (centre !== null) {
+        // A point (t, t) from the corner sits at s = 2t on the diagonal axis, so the band's ends are at half their s.
+        const a = (centre - half) / 2;
+        const b = (centre + half) / 2;
+        const grad = ctx.createLinearGradient(x + a, y + a, x + b, y + b);
+        grad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+        grad.addColorStop(0.5, shine);
+        grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, y, w, h);
+      }
+    }
+    ctx.restore();
   }
 
   private draw(): void {
@@ -1552,6 +1816,7 @@ export class DagViewElement extends HTMLElement {
 
     const view = visibleWorldRect(this.view, this.cssW, this.cssH);
     this.drawGrid(ctx, view);
+    for (const g of this.layout.groups ?? []) if (!g.collapsed) this.drawGroupBox(ctx, g);
 
     // Edges first, so a node always covers the lines that reach it.
     ctx.save();
@@ -1562,6 +1827,38 @@ export class DagViewElement extends HTMLElement {
     ctx.restore();
 
     for (const i of visibleNodes(this.layout, view)) this.drawNode(ctx, i);
+  }
+
+  /** An expanded group: a dashed box behind its members, with a header that names it and collapses it on a click. */
+  private drawGroupBox(ctx: CanvasRenderingContext2D, g: PlacedGroup): void {
+    const t = this.theme;
+    const s = this.view.scale;
+    const p = worldToScreen({ x: g.x, y: g.y }, this.view);
+    const w = g.w * s;
+    const h = g.h * s;
+    if (p.x > this.cssW || p.y > this.cssH || p.x + w < 0 || p.y + h < 0) return;
+    const r = Math.min(t.nodeRadius * 2, w / 2, h / 2);
+    ctx.save();
+    ctx.beginPath();
+    roundRect(ctx, p.x, p.y, w, h, r);
+    ctx.globalAlpha = 0.06;
+    ctx.fillStyle = t.fg;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = t.hairline;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([6, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (s >= LOD_LABEL_SCALE) {
+      // World-sized like the node text, so the header keeps its place in its strip at every zoom.
+      ctx.font = `${t.fontSize * s}px ${t.font}`;
+      ctx.fillStyle = t.muted;
+      ctx.textBaseline = 'middle';
+      const text = groupHeaderText(g.label, g.members.length);
+      ctx.fillText(fitToWidth(ctx, text, Math.max(0, w - 16 * s)), p.x + 8 * s, p.y + (g.header * s) / 2);
+    }
+    ctx.restore();
   }
 
   /*Without it a pan across empty canvas gives no motion cue at all, and the
@@ -1587,7 +1884,7 @@ export class DagViewElement extends HTMLElement {
     const style = e.edge.state !== undefined ? this.styleMap[e.edge.state] : undefined;
 
     ctx.save();
-    ctx.globalAlpha = faded ? FADE_ALPHA : 1;
+    ctx.globalAlpha = faded ? this.focusAlpha : 1;
     ctx.strokeStyle = e.reversed ? t.emphasis : style?.color ?? t.edge;
     ctx.lineWidth = (e.reversed || this.hoverEdgeIndex === index ? 2 : 1.25) / this.view.scale;
     // A cycle edge is dashed as well as colored: color alone is not a signal a colorblind reader can act on.
@@ -1616,6 +1913,7 @@ export class DagViewElement extends HTMLElement {
       this.highlight === null ||
       index === this.hoverIndex ||
       index === this.selectedIndex ||
+      index === this.focusFade.shown ||
       this.highlight.ancestors.has(index) ||
       this.highlight.descendants.has(index);
     const matched = this.searchQuery !== '' && this.searchMatches.has(index);
@@ -1626,7 +1924,7 @@ export class DagViewElement extends HTMLElement {
     const h = n.h * s;
 
     ctx.save();
-    ctx.globalAlpha = !inHighlight || searchFaded ? FADE_ALPHA : 1;
+    ctx.globalAlpha = searchFaded ? FADE_ALPHA : !inHighlight ? this.focusAlpha : 1;
 
     // Below this zoom a box is a few pixels tall. A plain filled mark reads
     // as "something is here", where a border and clipped text read as mud.
@@ -1638,6 +1936,18 @@ export class DagViewElement extends HTMLElement {
     }
 
     const r = Math.min(t.nodeRadius, w / 2, h / 2);
+    if (groupOfNode(this.layout, n.node.id) !== null) {
+      // A collapsed group reads as a stack of cards: offset edges behind the box.
+      for (const off of [6, 3]) {
+        ctx.beginPath();
+        roundRect(ctx, p.x + off, p.y + off, w, h, r);
+        ctx.fillStyle = t.bg;
+        ctx.fill();
+        ctx.strokeStyle = colors.border;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
     ctx.beginPath();
     roundRect(ctx, p.x, p.y, w, h, r);
 
@@ -1666,6 +1976,7 @@ export class DagViewElement extends HTMLElement {
       ctx.fillStyle = colors.fill;
       ctx.fill();
     }
+    if (isActiveNode(n.node, this.styleMap)) this.drawActive(ctx, n.node.id, p.x, p.y, w, h);
 
     ctx.strokeStyle = matched ? t.accent : style?.emphasis === true ? t.emphasis : colors.border;
     ctx.lineWidth = index === this.selectedIndex ? 2.5 : style?.emphasis === true || matched ? 2 : 1;
@@ -1711,7 +2022,7 @@ export class DagViewElement extends HTMLElement {
     const text = this.nodeText.get(n.node.id);
     const labelLines = text?.label ?? [n.node.label ?? n.node.id];
     const subLines = text?.sub ?? (n.node.sublabel ? [n.node.sublabel] : []);
-    const badge = text?.badge ?? n.node.state ?? '';
+    const badge = text?.badge ?? n.node.badge ?? n.node.state ?? '';
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
 

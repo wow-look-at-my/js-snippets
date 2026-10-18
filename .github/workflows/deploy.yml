@@ -65,7 +65,7 @@ jobs:
             core.info(`library site branch: ${site}`);
 
       - name: Publish library to buildhost sites
-        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master
+        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@lkgb
         with:
           server: https://pazer.build
           project: js-snippets # repo-derived: the only site project OIDC authorizes
@@ -99,7 +99,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # the tag step reads existing tags to pick the next one
-      - uses: wow-look-at-my/go-toolchain@master
+      - uses: wow-look-at-my/go-toolchain@lkgb
         with:
           working-directory: timelinewire
 
@@ -206,7 +206,7 @@ jobs:
 
       - name: Publish preview to buildhost
         if: steps.gate.outputs.publish == 'true'
-        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master
+        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@lkgb
         with:
           server: https://pazer.build
           project: js-snippets # repo-derived: the only site project OIDC authorizes

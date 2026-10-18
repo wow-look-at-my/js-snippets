@@ -313,10 +313,21 @@ button[hidden] {
   overflow-wrap: anywhere;
 }
 
+.dt-link,
+.dt-links a {
+  color: var(--dag-accent, #4aa3ff);
+}
 .dt-link {
   display: inline-block;
   margin-top: 8px;
-  color: var(--dag-accent, #4aa3ff);
+}
+.dt-links {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
 }
 
 /* -- Notice strip -------------------------------------------------------------- */
@@ -367,6 +378,34 @@ button[hidden] {
 
 .toast[hidden] {
   display: none;
+}
+
+/* The mouse-wheel hint: centred, out of the way of the pointer, and gone in a moment. */
+.wheel-hint {
+  position: absolute;
+  z-index: 3;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 6px 12px;
+  border: 1px solid var(--dag-line, #2a3040);
+  border-radius: 6px;
+  background: var(--dag-bg, #0d0f14);
+  color: var(--dag-fg, #c9d1d9);
+  font-size: var(--dag-font-size, 11px);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+.wheel-hint.show {
+  opacity: 0.92;
+  transition: opacity 0.12s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wheel-hint,
+  .wheel-hint.show {
+    transition: none;
+  }
 }
 
 /* -- Right-click menu ----------------------------------------------------------- */

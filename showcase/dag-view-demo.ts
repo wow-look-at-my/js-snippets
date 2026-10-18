@@ -2,7 +2,7 @@
 
 // SIDE-EFFECT IMPORT — this is what registers <dag-view>, and it must stay.
 import '../src/ui/dag-view.ts';
-import type { DagViewElement, DagNode, DagEdge, DagStyleMap } from '../src/ui/dag-view.ts';
+import type { DagViewElement, DagNode, DagEdge, DagStyleMap, DagGroup } from '../src/ui/dag-view.ts';
 
 /**
  * A build pipeline, hand-written rather than generated: every node here is
@@ -83,6 +83,74 @@ const CYCLE_EDGES: DagEdge[] = [
   { from: 'session', to: 'api', label: 'the cycle' },
 ];
 
+/**
+ * A CI-fix board: PR threads, some with work running now. `working` and
+ * `waiting-ci` are marked active by their style entries, `pr-41` by its
+ * own field, and the rest are not active at all. The sheen must sweep only
+ * the running boxes, each at its own offset, under every pattern.
+ */
+const ACTIVE_NODES: DagNode[] = [
+  // Named links: an external one opens a new tab, a relative one stays here. The unsafe one must never render.
+  {
+    id: 'pr-12',
+    label: 'fix flaky cache key',
+    sublabel: 'go-s3-server',
+    category: 'go-s3-server',
+    state: 'working',
+    href: '#dag-view',
+    links: [
+      { label: 'PR wow-look-at-my/go-s3-server#12', href: 'https://github.com/wow-look-at-my/go-s3-server/pull/12' },
+      { label: 'worker run', href: '#run=demo-run-12' },
+      { label: 'blocked by PR wow-look-at-my/webhooks#27', href: 'https://github.com/wow-look-at-my/webhooks/pull/27' },
+      { label: 'never rendered', href: 'javascript:alert(1)' },
+    ],
+  },
+  { id: 'pr-19', label: 'bump toolchain', sublabel: 'gosmopolitan', category: 'gosmopolitan', state: 'waiting-ci' },
+  { id: 'pr-27', label: 'schema drift', sublabel: 'webhooks', category: 'webhooks', state: 'blocked' },
+  { id: 'pr-33', label: 'wrap long labels', sublabel: 'js-snippets', category: 'js-snippets', state: 'waiting-ci' },
+  { id: 'pr-41', label: 'retry on 502', sublabel: 'buildhost', category: 'buildhost', state: 'pending', active: true },
+  { id: 'pr-45', label: 'green, idle', sublabel: 'slopfix', category: 'slopfix', state: 'fixed' },
+];
+
+const ACTIVE_EDGES: DagEdge[] = [
+  { from: 'pr-12', to: 'pr-27', label: 'blocked-by' },
+  { from: 'pr-19', to: 'pr-33' },
+  { from: 'pr-33', to: 'pr-41' },
+  { from: 'pr-45', to: 'pr-41' },
+];
+
+const ACTIVE_STYLES: DagStyleMap = {
+  working: { pattern: 'solid', active: true },
+  'waiting-ci': { pattern: 'outline', active: true },
+  blocked: { pattern: 'hatch', emphasis: true },
+  pending: { pattern: 'outline', dashed: true },
+  fixed: { pattern: 'solid', dim: true },
+};
+
+/**Expanded, the members lay out in a box of their own and the edges reach
+ * the members they name. */
+const GROUP_NODES: DagNode[] = [
+  { id: 'base-fix', label: 'fix the base branch', sublabel: 'webhooks', category: 'webhooks', state: 'working' },
+  ...Array.from({ length: 12 }, (_, idx): DagNode => ({
+    id: `pending-${idx + 1}`,
+    label: `pending PR #${101 + idx}`,
+    sublabel: ['slopfix', 'buildhost', 'webhooks', 'js-snippets'][idx % 4],
+    category: ['slopfix', 'buildhost', 'webhooks', 'js-snippets'][idx % 4],
+    state: 'pending',
+    group: 'pending',
+  })),
+  { id: 'release', label: 'release train', sublabel: 'buildhost', category: 'buildhost', state: 'blocked' },
+];
+
+const GROUP_EDGES: DagEdge[] = [
+  { from: 'base-fix', to: 'pending-2', label: 'unblocks' },
+  { from: 'base-fix', to: 'pending-7' },
+  { from: 'pending-4', to: 'release' },
+  { from: 'pending-2', to: 'pending-3' },
+];
+
+const groupsFor = (collapsed: boolean): DagGroup[] => [{ id: 'pending', label: '12 pending PRs', collapsed }];
+
 /** Extra treatments on top of the built-in states. */
 const STYLES: DagStyleMap = {
   blocked: { pattern: 'hatch', emphasis: true },
@@ -130,6 +198,20 @@ export function mountDagViewDemo(): void {
   wire(document.getElementById('demo-dag-cycle') as DagViewElement | null, CYCLE_NODES, CYCLE_EDGES);
   wire(document.getElementById('demo-dag-lr') as DagViewElement | null, BUILD_NODES, BUILD_EDGES);
   wire(document.getElementById('demo-dag-theme') as DagViewElement | null, BUILD_NODES, BUILD_EDGES);
+  const active = document.getElementById('demo-dag-active') as DagViewElement | null;
+  if (active !== null) {
+    active.styles = ACTIVE_STYLES;
+    active.setData({ nodes: ACTIVE_NODES, edges: ACTIVE_EDGES });
+  }
+  for (const [id, collapsed] of [
+    ['demo-dag-group-closed', true],
+    ['demo-dag-group-open', false],
+  ] as const) {
+    const el = document.getElementById(id) as DagViewElement | null;
+    if (el === null) continue;
+    el.styles = STYLES;
+    el.setData({ nodes: GROUP_NODES, edges: GROUP_EDGES, groups: groupsFor(collapsed) });
+  }
   // The empty one is deliberately given nothing: an empty graph must say so.
   wire(document.getElementById('demo-dag-empty') as DagViewElement | null, [], []);
 }
