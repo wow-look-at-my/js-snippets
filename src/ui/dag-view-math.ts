@@ -1727,6 +1727,11 @@ export function groupLabel(group: DagGroup, count: number): string {
   return label !== '' ? label : `${count} node${count === 1 ? '' : 's'}`;
 }
 
+/** The header line of an expanded group. The box is sized to hold it. */
+export function groupHeaderText(label: string, count: number): string {
+  return `▾ ${label}  ·  ${count}  ·  click to collapse`;
+}
+
 /** One group with its members, as collapseGroups found it. */
 export interface GroupMembers {
   group: DagGroup;
@@ -1869,7 +1874,7 @@ export function layoutGrouped(
     const id = groupNodeId(g.group.id);
     const sub = subs.get(id)!;
     // The header text must fit too, so a group of one narrow node still names itself.
-    const head = sizeOf({ id, label: `${groupLabel(g.group, g.members.length)} ▾ collapse` }, -1);
+    const head = sizeOf({ id, label: groupHeaderText(groupLabel(g.group, g.members.length), g.members.length) }, -1);
     holderSize.set(id, { w: Math.max(sub.width + 2 * GROUP_PAD, head.w), h: sub.height + GROUP_HEADER + GROUP_PAD });
   }
 

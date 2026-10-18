@@ -34,6 +34,7 @@ import {
   hitTestGroupHeader,
   groupOfNode,
   groupMatches,
+  groupHeaderText,
   classifyWheelSource,
   newWheelState,
   MIN_SCALE,
@@ -1828,7 +1829,7 @@ export class DagViewElement extends HTMLElement {
       ctx.font = `${t.fontSize * s}px ${t.font}`;
       ctx.fillStyle = t.muted;
       ctx.textBaseline = 'middle';
-      const text = `▾ ${g.label}  ·  ${g.members.length}  ·  click to collapse`;
+      const text = groupHeaderText(g.label, g.members.length);
       ctx.fillText(fitToWidth(ctx, text, Math.max(0, w - 16 * s)), p.x + 8 * s, p.y + (g.header * s) / 2);
     }
     ctx.restore();
