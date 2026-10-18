@@ -361,7 +361,7 @@ export class DagViewElement extends HTMLElement {
 
   private hoverIndex = -1;
   /** The eased focus: which neighbourhood is drawn bright, and how far the rest has dimmed. */
-  private focus: FocusFade = newFocusFade();
+  private focusFade: FocusFade = newFocusFade();
   /** The alpha of everything outside the focus this frame. */
   private focusAlpha = 1;
   private hoverEdgeIndex = -1;
@@ -566,7 +566,7 @@ export class DagViewElement extends HTMLElement {
     this.selectedIndex = -1;
     this.hoverIndex = -1;
     this.highlight = null;
-    this.focus = newFocusFade();
+    this.focusFade = newFocusFade();
     this.focusAlpha = 1;
     this.highlightCache.clear();
     this.invalidate();
@@ -627,7 +627,7 @@ export class DagViewElement extends HTMLElement {
     this.selectedIndex = -1;
     this.hoverIndex = -1;
     this.highlight = null;
-    this.focus = newFocusFade();
+    this.focusFade = newFocusFade();
     this.focusAlpha = 1;
     this.highlightCache.clear();
     this.layoutStale = true;
@@ -1551,18 +1551,18 @@ export class DagViewElement extends HTMLElement {
    * otherwise. */
   private applyHighlight(): void {
     const i = this.hoverIndex >= 0 ? this.hoverIndex : this.selectedIndex;
-    this.focus = focusTarget(this.focus, i, performance.now());
+    this.focusFade = focusTarget(this.focusFade, i, performance.now());
     this.syncFocus(performance.now());
     this.invalidate();
   }
 
   /** Steps the focus fade to `now` and takes the neighbourhood it shows. Returns whether it is still moving. */
   private syncFocus(now: number): boolean {
-    const step = stepFocusFade(this.focus, now);
-    this.focus = step.state;
-    const shown = this.focus.shown;
-    this.highlight = shown >= 0 && shown < this.layout.nodes.length && this.focus.fade > 0 ? this.neighbourhoodOf(shown) : null;
-    this.focusAlpha = lerp(1, FADE_ALPHA, this.focus.fade);
+    const step = stepFocusFade(this.focusFade, now);
+    this.focusFade = step.state;
+    const shown = this.focusFade.shown;
+    this.highlight = shown >= 0 && shown < this.layout.nodes.length && this.focusFade.fade > 0 ? this.neighbourhoodOf(shown) : null;
+    this.focusAlpha = lerp(1, FADE_ALPHA, this.focusFade.fade);
     return step.moving;
   }
 
@@ -1913,7 +1913,7 @@ export class DagViewElement extends HTMLElement {
       this.highlight === null ||
       index === this.hoverIndex ||
       index === this.selectedIndex ||
-      index === this.focus.shown ||
+      index === this.focusFade.shown ||
       this.highlight.ancestors.has(index) ||
       this.highlight.descendants.has(index);
     const matched = this.searchQuery !== '' && this.searchMatches.has(index);
