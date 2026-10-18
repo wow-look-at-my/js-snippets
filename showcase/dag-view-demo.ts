@@ -127,12 +127,8 @@ const ACTIVE_STYLES: DagStyleMap = {
   fixed: { pattern: 'solid', dim: true },
 };
 
-/**
- * Twelve pending PRs in one group, plus a chain that feeds two of them and
- * one that one of them feeds. Collapsed, the twelve are ONE node and the
- * three edges into and out of members meet it as two. Expanded, the members
- * lay out in a box of their own and the edges reach the members they name.
- */
+/**Expanded, the members lay out in a box of their own and the edges reach
+ * the members they name. */
 const GROUP_NODES: DagNode[] = [
   { id: 'base-fix', label: 'fix the base branch', sublabel: 'webhooks', category: 'webhooks', state: 'working' },
   ...Array.from({ length: 12 }, (_, idx): DagNode => ({

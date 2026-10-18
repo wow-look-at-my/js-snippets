@@ -602,7 +602,7 @@ export class DagViewElement extends HTMLElement {
 
   /**
    * Collapse or expand a group. Pan and zoom stay as they are, and the group's
-   * top-left corner stays where it was on screen, so the reader's eye does not
+   * top-left corner stays where it was on screen. The reader's eye does not
    * have to find it again. Fires `groupchange` {id, collapsed}.
    */
   setGroupCollapsed(id: string, collapsed: boolean): void {
@@ -1910,7 +1910,7 @@ export class DagViewElement extends HTMLElement {
 
     const r = Math.min(t.nodeRadius, w / 2, h / 2);
     if (groupOfNode(this.layout, n.node.id) !== null) {
-      // A collapsed group reads as a stack of cards: two offset edges behind the box.
+      // A collapsed group reads as a stack of cards: offset edges behind the box.
       for (const off of [6, 3]) {
         ctx.beginPath();
         roundRect(ctx, p.x + off, p.y + off, w, h, r);

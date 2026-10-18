@@ -1968,8 +1968,7 @@ export function layoutGrouped(
     });
   }
 
-  // Edges into one expanded group share one route to its box. Each input edge is placed on that route, attached to the
-  // member it names, so every member keeps its own edge for hit tests and highlights.
+  // Edges into one expanded group share one route to its box.
   const placedEdges: PlacedEdge[] = [];
   for (const e of outer.edges) {
     for (const input of origin.get(e.edge) ?? [e.edge]) {
@@ -2036,7 +2035,6 @@ export type WheelSource = 'mouse' | 'trackpad';
 export interface WheelSample {
   deltaX: number;
   deltaY: number;
-  /** 0 = pixels, 1 = lines, 2 = pages. */
   deltaMode: number;
   /** ms, from the event's timeStamp. */
   time: number;

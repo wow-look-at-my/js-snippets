@@ -667,9 +667,8 @@ check('the label is the link text', card.links[1]?.text === 'worker run', JSON.s
 check('the unsafe link never renders', !card.links.some((l) => l.href.startsWith('javascript')));
 check('the snapshot reports the same links', card.snapLinks.length === 3, JSON.stringify(card.snapLinks));
 
-// -- Groups --------------------------------------------------------------------------
-// A collapsed group is ONE node, a click expands it in place, a header click
-// collapses it again, and the edges follow it each way.
+// -- Groups A collapsed group is ONE node, a click expands it in place, a
+// header click collapses it again, and the edges follow it each. Way.
 
 interface GroupState {
 	nodes: string[];
