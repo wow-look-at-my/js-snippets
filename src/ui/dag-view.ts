@@ -19,6 +19,14 @@ import {
   neighbourhood,
   criticalPathLength,
   nodeHue,
+  isActiveNode,
+  visibleActiveNodes,
+  activePhase,
+  sheenCentre,
+  sheenHalfBand,
+  pulseLevel,
+  ACTIVE_PERIOD_MS,
+  ACTIVE_PULSE_PERIOD_MS,
   layoutNodeText,
   safeNodeHref,
   MIN_SCALE,
@@ -63,6 +71,8 @@ export const THEME_DEFAULTS = {
   accent: '#4aa3ff',
   /** --dag-emphasis — cycle edges and the notice strip. */
   emphasis: '#ff5c5c',
+  /** --dag-active-shine — the light that sweeps across an active node. Keep it translucent: the box shows through it. */
+  activeShine: 'rgba(255, 255, 255, 0.38)',
   /** --dag-font — font family for all canvas text. */
   font: "'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Fira Code', monospace",
   /** --dag-font-size — base font size in px. */
@@ -103,6 +113,8 @@ export interface DagStyle {
   emphasis?: boolean;
   /** Renders the node and its labels at half saturation and value. */
   dim?: boolean;
+  /** Marks every node in this state active: a light sheen sweeps across it on a loop. */
+  active?: boolean;
 }
 
 /** Named style map: node/edge `state` -> treatment. */
@@ -171,6 +183,8 @@ export interface DagSnapshotNode {
   state: string | null;
   detail: string | null;
   href: string | null;
+  /** Whether the node carries the active sheen, from its own field or its state's style entry. */
+  active: boolean;
   layer: number;
   world: DagSnapshotRect;
   /** CSS pixels, origin at the canvas top-left. */
@@ -277,6 +291,12 @@ export class DagViewElement extends HTMLElement {
   private dirty = true;
   private lastRenderTs = 0;
   private lastInputTs = 0;
+  /** The rAF timestamp of the frame being drawn. The active sheen reads its phase from it. */
+  private frameTs = 0;
+  /** True while an active node is in view, so each frame schedules the next one. */
+  private animatingValue = false;
+  private reducedMotion = false;
+  private motionQuery: MediaQueryList | null = null;
 
   private dpr = 1;
   private cssW = 0;
@@ -436,11 +456,20 @@ export class DagViewElement extends HTMLElement {
     this.orientBtn.addEventListener('click', this.onOrientClick);
     this.fsBtn.addEventListener('click', this.onFsClick);
 
+    if (typeof matchMedia === 'function') {
+      this.motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
+      this.reducedMotion = this.motionQuery.matches;
+      this.motionQuery.addEventListener('change', this.onMotionChange);
+    }
+
     this.syncChrome();
     this.invalidate();
   }
 
   disconnectedCallback(): void {
+    this.motionQuery?.removeEventListener('change', this.onMotionChange);
+    this.motionQuery = null;
+    this.animatingValue = false;
     this.ro?.disconnect();
     this.ro = null;
     if (this.raf !== 0) cancelAnimationFrame(this.raf);
@@ -596,6 +625,11 @@ export class DagViewElement extends HTMLElement {
    * one above. A description of a gap is a guess. These numbers are the gap.
    * `visible` says whether a node's box overlaps the canvas at all, so
    * everything scrolled out of view is countable rather than merely missing. */
+  /** Whether the active-node loop is running. It runs only while an active node is in view and drawn as a box, and stops when none is. */
+  get animating(): boolean {
+    return this.animatingValue;
+  }
+
   get snapshot(): DagSnapshot {
     this.ensureLayout();
     const toScreen = (p: { x: number; y: number }): { x: number; y: number } => {
@@ -626,6 +660,7 @@ export class DagViewElement extends HTMLElement {
           state: n.node.state ?? null,
           detail: n.node.detail ?? null,
           href: n.node.href ?? null,
+          active: isActiveNode(n.node, this.styleMap),
           layer: n.layer,
           world: { x: round(n.x), y: round(n.y), w: round(n.w), h: round(n.h) },
           screen: { x: s.x, y: s.y, w, h },
@@ -1466,6 +1501,7 @@ export class DagViewElement extends HTMLElement {
     t.edge = readProp(cs, '--dag-edge', THEME_DEFAULTS.edge);
     t.accent = readProp(cs, '--dag-accent', THEME_DEFAULTS.accent);
     t.emphasis = readProp(cs, '--dag-emphasis', THEME_DEFAULTS.emphasis);
+    t.activeShine = readProp(cs, '--dag-active-shine', THEME_DEFAULTS.activeShine);
     t.font = readProp(cs, '--dag-font', THEME_DEFAULTS.font);
     t.fontSize = readNum(cs, '--dag-font-size', THEME_DEFAULTS.fontSize, 6, 24);
     t.nodeRadius = readNum(cs, '--dag-node-radius', THEME_DEFAULTS.nodeRadius, 0, 20);
@@ -1535,7 +1571,57 @@ export class DagViewElement extends HTMLElement {
     if (!this.dirty) return;
     this.dirty = false;
     this.lastRenderTs = ts;
+    this.frameTs = ts;
     this.draw();
+    // The sheen is the only thing that moves on its own. With no active box in view, no frame is scheduled at all.
+    this.animatingValue = this.activeInView();
+    if (this.animatingValue) this.invalidate();
+  }
+
+  /** True when an active node is in view at a scale where its box, and so its sheen, is drawn. */
+  private activeInView(): boolean {
+    if (this.view.scale < LOD_MARK_SCALE || this.layout.nodes.length === 0) return false;
+    const view = visibleWorldRect(this.view, this.cssW, this.cssH);
+    return visibleActiveNodes(this.layout, view, this.styleMap).length > 0;
+  }
+
+  private readonly onMotionChange = (e: MediaQueryListEvent): void => {
+    this.reducedMotion = e.matches;
+    this.invalidate();
+  };
+
+  /**
+   * The active treatment, clipped to the node's box path, drawn over the fill
+   * and under the labels. A sweep is a diagonal band of --dag-active-shine
+   * that crosses the box. Under prefers-reduced-motion it is the same light
+   * laid over the whole box, fading in and out slowly, with nothing moving.
+   */
+  private drawActive(ctx: CanvasRenderingContext2D, id: string, x: number, y: number, w: number, h: number): void {
+    const shine = this.theme.activeShine;
+    if (shine === 'none') return;
+    ctx.save();
+    ctx.clip();
+    if (this.reducedMotion) {
+      const level = pulseLevel(activePhase(id, this.frameTs, ACTIVE_PULSE_PERIOD_MS));
+      ctx.globalAlpha *= level * 0.55;
+      ctx.fillStyle = shine;
+      ctx.fillRect(x, y, w, h);
+    } else {
+      const half = sheenHalfBand(w, h);
+      const centre = sheenCentre(activePhase(id, this.frameTs, ACTIVE_PERIOD_MS), w, h, half);
+      if (centre !== null) {
+        // A point (t, t) from the corner sits at s = 2t on the diagonal axis, so the band's ends are at half their s.
+        const a = (centre - half) / 2;
+        const b = (centre + half) / 2;
+        const grad = ctx.createLinearGradient(x + a, y + a, x + b, y + b);
+        grad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+        grad.addColorStop(0.5, shine);
+        grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, y, w, h);
+      }
+    }
+    ctx.restore();
   }
 
   private draw(): void {
@@ -1666,6 +1752,7 @@ export class DagViewElement extends HTMLElement {
       ctx.fillStyle = colors.fill;
       ctx.fill();
     }
+    if (isActiveNode(n.node, this.styleMap)) this.drawActive(ctx, n.node.id, p.x, p.y, w, h);
 
     ctx.strokeStyle = matched ? t.accent : style?.emphasis === true ? t.emphasis : colors.border;
     ctx.lineWidth = index === this.selectedIndex ? 2.5 : style?.emphasis === true || matched ? 2 : 1;

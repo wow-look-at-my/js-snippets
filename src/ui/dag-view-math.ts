@@ -23,6 +23,8 @@ export interface DagNode {
   detail?: string;
   /** A link for the node. The selected-node panel and Ctrl/Cmd-click open it. Only http(s) and relative links open. */
   href?: string;
+  /** Work is running on this node now. A light sheen sweeps across its box. A style entry with `active: true` marks a whole state. */
+  active?: boolean;
   /** Consumer payload, passed back untouched on every event and callback. */
   meta?: unknown;
 }
@@ -1577,3 +1579,65 @@ export function nodeHue(node: DagNode): number {
   return Math.floor(((hashString(key) * 0.61803398875) % 1) * 360);
 }
 
+
+// -- Activity ---------------------------------------------------------------------------
+
+/** One sweep of the active sheen, start to start, in ms. */
+export const ACTIVE_PERIOD_MS = 1600;
+/** One reduced-motion pulse, in ms. Slower, because the pulse replaces motion with a change of light. */
+export const ACTIVE_PULSE_PERIOD_MS = 3200;
+/** The share of a period the sheen spends crossing the box. The rest is rest, so the sweep reads as a beat and not a strobe. */
+export const ACTIVE_SWEEP_SHARE = 0.6;
+
+/** The part of a style entry the activity logic reads. */
+export interface ActiveStyle {
+  active?: boolean;
+}
+
+/** True when the node itself says `active: true`, or its state's style entry does. */
+export function isActiveNode(node: DagNode, styles: Readonly<Record<string, ActiveStyle | undefined>>): boolean {
+  if (node.active === true) return true;
+  return node.state !== undefined && styles[node.state]?.active === true;
+}
+
+/** Indices of the active nodes that intersect `view`, in layout order. The element animates only while this is non-empty. */
+export function visibleActiveNodes(
+  layout: DagLayout,
+  view: WorldRect,
+  styles: Readonly<Record<string, ActiveStyle | undefined>>,
+): number[] {
+  return visibleNodes(layout, view).filter((idx) => isActiveNode(layout.nodes[idx].node, styles));
+}
+
+/**
+ * Where one node is in its loop, 0 (inclusive) to 1 (exclusive). Each id
+ * gets its own fixed offset into the period, so active nodes never beat in
+ * lockstep, and one node keeps its offset across redraws and reloads.
+ */
+export function activePhase(id: string, nowMs: number, periodMs: number = ACTIVE_PERIOD_MS): number {
+  const offset = (hashString(id) / 0x100000000) * periodMs;
+  const t = (((nowMs + offset) % periodMs) + periodMs) % periodMs;
+  return t / periodMs;
+}
+
+/**
+ * The sheen's centre on the box's diagonal axis, where `s = x + y` runs
+ * from 0 at the top-left corner to `w + h` at the bottom-right. Returns
+ * null outside the sweep share of the period. The band enters fully off
+ * the box and leaves fully off it, so no frame starts or ends mid-box.
+ */
+export function sheenCentre(phase: number, w: number, h: number, halfBand: number): number | null {
+  if (phase >= ACTIVE_SWEEP_SHARE) return null;
+  const k = phase / ACTIVE_SWEEP_SHARE;
+  return -halfBand + k * (w + h + 2 * halfBand);
+}
+
+/** Half the sheen band's width on the diagonal axis, for a `w` x `h` box. */
+export function sheenHalfBand(w: number, h: number): number {
+  return Math.max(6, (w + h) * 0.14);
+}
+
+/** The reduced-motion pulse: 0 at the start of the period, 1 at its middle, a cosine between. */
+export function pulseLevel(phase: number): number {
+  return 0.5 - 0.5 * Math.cos(2 * Math.PI * phase);
+}
