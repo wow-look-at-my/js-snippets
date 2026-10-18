@@ -1824,11 +1824,12 @@ export class DagViewElement extends HTMLElement {
     ctx.stroke();
     ctx.setLineDash([]);
     if (s >= LOD_LABEL_SCALE) {
-      ctx.font = this.fontLabel;
+      // World-sized like the node text, so the header keeps its place in its strip at every zoom.
+      ctx.font = `${t.fontSize * s}px ${t.font}`;
       ctx.fillStyle = t.muted;
       ctx.textBaseline = 'middle';
       const text = `▾ ${g.label}  ·  ${g.members.length}  ·  click to collapse`;
-      ctx.fillText(fitToWidth(ctx, text, Math.max(0, w - 16)), p.x + 8, p.y + (g.header * s) / 2);
+      ctx.fillText(fitToWidth(ctx, text, Math.max(0, w - 16 * s)), p.x + 8 * s, p.y + (g.header * s) / 2);
     }
     ctx.restore();
   }
