@@ -2,7 +2,7 @@
 
 // SIDE-EFFECT IMPORT — this is what registers <dag-view>, and it must stay.
 import '../src/ui/dag-view.ts';
-import type { DagViewElement, DagNode, DagEdge, DagStyleMap } from '../src/ui/dag-view.ts';
+import type { DagViewElement, DagNode, DagEdge, DagStyleMap, DagGroup } from '../src/ui/dag-view.ts';
 
 /**
  * A build pipeline, hand-written rather than generated: every node here is
@@ -127,6 +127,34 @@ const ACTIVE_STYLES: DagStyleMap = {
   fixed: { pattern: 'solid', dim: true },
 };
 
+/**
+ * Twelve pending PRs in one group, plus a chain that feeds two of them and
+ * one that one of them feeds. Collapsed, the twelve are ONE node and the
+ * three edges into and out of members meet it as two. Expanded, the members
+ * lay out in a box of their own and the edges reach the members they name.
+ */
+const GROUP_NODES: DagNode[] = [
+  { id: 'base-fix', label: 'fix the base branch', sublabel: 'webhooks', category: 'webhooks', state: 'working' },
+  ...Array.from({ length: 12 }, (_, idx): DagNode => ({
+    id: `pending-${idx + 1}`,
+    label: `pending PR #${101 + idx}`,
+    sublabel: ['slopfix', 'buildhost', 'webhooks', 'js-snippets'][idx % 4],
+    category: ['slopfix', 'buildhost', 'webhooks', 'js-snippets'][idx % 4],
+    state: 'pending',
+    group: 'pending',
+  })),
+  { id: 'release', label: 'release train', sublabel: 'buildhost', category: 'buildhost', state: 'blocked' },
+];
+
+const GROUP_EDGES: DagEdge[] = [
+  { from: 'base-fix', to: 'pending-2', label: 'unblocks' },
+  { from: 'base-fix', to: 'pending-7' },
+  { from: 'pending-4', to: 'release' },
+  { from: 'pending-2', to: 'pending-3' },
+];
+
+const groupsFor = (collapsed: boolean): DagGroup[] => [{ id: 'pending', label: '12 pending PRs', collapsed }];
+
 /** Extra treatments on top of the built-in states. */
 const STYLES: DagStyleMap = {
   blocked: { pattern: 'hatch', emphasis: true },
@@ -178,6 +206,15 @@ export function mountDagViewDemo(): void {
   if (active !== null) {
     active.styles = ACTIVE_STYLES;
     active.setData({ nodes: ACTIVE_NODES, edges: ACTIVE_EDGES });
+  }
+  for (const [id, collapsed] of [
+    ['demo-dag-group-closed', true],
+    ['demo-dag-group-open', false],
+  ] as const) {
+    const el = document.getElementById(id) as DagViewElement | null;
+    if (el === null) continue;
+    el.styles = STYLES;
+    el.setData({ nodes: GROUP_NODES, edges: GROUP_EDGES, groups: groupsFor(collapsed) });
   }
   // The empty one is deliberately given nothing: an empty graph must say so.
   wire(document.getElementById('demo-dag-empty') as DagViewElement | null, [], []);

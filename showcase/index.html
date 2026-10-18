@@ -98,8 +98,9 @@
 			<section id="dag-view">
 				<h2>&lt;dag-view&gt;</h2>
 				<p class="hint">
-					Drag to pan &middot; ctrl/&#8984;+wheel or pinch to zoom &middot; a plain wheel pans, so the
-					page never gets its scroll stolen &middot; the toolbar and the <code>+</code>/<code>-</code>/<code>0</code>
+					Drag to pan &middot; ctrl/&#8984;+wheel or pinch to zoom &middot; a two-finger trackpad scroll pans &middot;
+					a plain mouse wheel is left to the page, so scrolling past a graph never gets caught, and a hint says
+					how to zoom &middot; the toolbar and the <code>+</code>/<code>-</code>/<code>0</code>
 					keys do the same thing &middot; hover a node to fade everything outside its dependency
 					neighbourhood &middot; click to pin that, double-click to zoom to it &middot; arrow keys walk the
 					graph along its edges once something is selected &middot; type in the box to highlight matches
@@ -125,6 +126,12 @@
 
 				<h3>active nodes <span class="sub">(work running now: <code>working</code> and <code>waiting-ci</code> are marked by <code>active: true</code> on their style entries, <code>pr-41</code> by its own <code>active</code> field. A light sheen sweeps each running box about every 1.6&thinsp;s, offset per node so they never beat together, under a solid fill and an outline alike. Under <code>prefers-reduced-motion</code> it becomes a slow fade instead. The idle boxes stay still, and the loop stops when no running box is in view)</span></h3>
 				<dag-view id="demo-dag-active" orientation="LR" no-search></dag-view>
+
+				<h3>a collapsed group <span class="sub">(twelve pending PRs that name <code>group: 'pending'</code> draw as ONE node that says how many it holds, stacked like cards. The three edges into and out of members meet it as two. Click it, or select it and press Enter, to expand it in place. Searching for a member lights the group up)</span></h3>
+				<dag-view id="demo-dag-group-closed" orientation="LR"></dag-view>
+
+				<h3>an expanded group <span class="sub">(the same data with the group open: its members lay out as a graph of their own inside a dashed box, and the edges reach the members they name. Click the header to collapse it. Pan and zoom stay where they were)</span></h3>
+				<dag-view id="demo-dag-group-open" orientation="LR" no-search></dag-view>
 
 				<h3>empty <span class="sub">(a graph with nothing in it says so, rather than looking broken)</span></h3>
 				<dag-view id="demo-dag-empty" empty-text="No dependencies recorded yet." no-search></dag-view>

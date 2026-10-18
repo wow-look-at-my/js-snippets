@@ -34,7 +34,7 @@ import {
   hitTestGroupHeader,
   groupOfNode,
   groupMatches,
-  classifyWheel,
+  classifyWheelSource,
   newWheelState,
   MIN_SCALE,
   MAX_SCALE,
@@ -1323,7 +1323,7 @@ export class DagViewElement extends HTMLElement {
       this.invalidate();
       return;
     }
-    const judged = classifyWheel(this.wheelState, {
+    const judged = classifyWheelSource(this.wheelState, {
       deltaX: e.deltaX,
       deltaY: e.deltaY,
       deltaMode: e.deltaMode,

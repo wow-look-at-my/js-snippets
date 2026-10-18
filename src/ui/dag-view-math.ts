@@ -2056,7 +2056,7 @@ export function newWheelState(): WheelState {
  * a fractional delta. A small integer delta that says neither is a trackpad,
  * because a mouse notch is never that small in pixels.
  */
-export function classifyWheel(state: WheelState, e: WheelSample): { state: WheelState; source: WheelSource } {
+export function classifyWheelSource(state: WheelState, e: WheelSample): { state: WheelState; source: WheelSource } {
   const fresh = e.time - state.lastTime > WHEEL_BURST_GAP_MS;
   const absY = Math.abs(e.deltaY);
   let source = fresh ? null : state.source;
