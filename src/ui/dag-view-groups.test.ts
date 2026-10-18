@@ -107,6 +107,7 @@ test('layoutGrouped: expanded draws every member inside one box, under its heade
   const nodes: DagNode[] = [{ id: 'root' }, ...pending(4), { id: 'tail' }];
   const edges: DagEdge[] = [
     { from: 'root', to: 'p1' },
+    { from: 'root', to: 'p0' },
     { from: 'p1', to: 'p2' },
     { from: 'p3', to: 'tail' },
   ];
@@ -124,8 +125,9 @@ test('layoutGrouped: expanded draws every member inside one box, under its heade
     const inside = p.x < box.x + box.w && p.x + p.w > box.x && p.y < box.y + box.h && p.y + p.h > box.y;
     assert.ok(!inside, `${id} stays outside the box`);
   }
-  // Every input edge is drawn once and attached to the member it names.
-  assert.equal(lay.edges.length, 3);
+  // Every input edge is drawn once and attached to the member it names, even two that share a route to the box.
+  assert.equal(lay.edges.length, 4);
+  assert.equal(lay.edges.find((e) => e.edge.to === 'p0')?.to, lay.byId.get('p0'));
   const into = lay.edges.find((e) => e.edge.from === 'root')!;
   assert.equal(into.to, lay.byId.get('p1'));
   const inner = lay.edges.find((e) => e.edge.from === 'p1')!;

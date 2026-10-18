@@ -1885,19 +1885,23 @@ export function layoutGrouped(
       outerNodes.push({ id: hid });
     }
   }
-  const origin = new Map<DagEdge, DagEdge>();
+  const origin = new Map<DagEdge, DagEdge[]>();
   const outerEdges: DagEdge[] = [];
   {
-    const seen = new Set<string>();
+    const seen = new Map<string, DagEdge>();
     for (const e of flat.edges) {
       const from = memberGroup.get(e.from) ?? e.from;
       const to = memberGroup.get(e.to) ?? e.to;
       if (from === to && (from !== e.from || to !== e.to)) continue;
       const key = `${from}\u0000${to}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
+      const shared = seen.get(key);
+      if (shared !== undefined) {
+        origin.get(shared)!.push(e);
+        continue;
+      }
       const outer = from === e.from && to === e.to ? e : { ...e, from, to };
-      origin.set(outer, e);
+      seen.set(key, outer);
+      origin.set(outer, [e]);
       outerEdges.push(outer);
     }
   }
@@ -1959,13 +1963,15 @@ export function layoutGrouped(
     });
   }
 
-  // An outer edge that ends at a holder is attached to the member its input edge named.
+  // Edges into one expanded group share one route to its box. Each input edge is placed on that route, attached to the
+  // member it names, so every member keeps its own edge for hit tests and highlights.
   const placedEdges: PlacedEdge[] = [];
   for (const e of outer.edges) {
-    const input = origin.get(e.edge) ?? e.edge;
-    const from = byId.get(input.from) ?? byId.get(e.edge.from) ?? -1;
-    const to = byId.get(input.to) ?? byId.get(e.edge.to) ?? -1;
-    placedEdges.push({ ...e, edge: input, from, to, index: placedEdges.length });
+    for (const input of origin.get(e.edge) ?? [e.edge]) {
+      const from = byId.get(input.from) ?? byId.get(e.edge.from) ?? -1;
+      const to = byId.get(input.to) ?? byId.get(e.edge.to) ?? -1;
+      placedEdges.push({ ...e, edge: input, from, to, index: placedEdges.length });
+    }
   }
   for (const e of subEdges) placedEdges.push({ ...e, index: placedEdges.length });
   const cycleEdges: number[] = [];

@@ -755,7 +755,9 @@ const viewOf = (): Promise<{ v: { x: number; y: number; scale: number }; scrollY
 	page.evaluate(() => {
 		const el = document.getElementById('demo-dag') as DagViewElement;
 		const hint = el.shadowRoot!.querySelector('.wheel-hint')!;
-		return { v: el.viewport, scrollY: window.scrollY, hint: hint.classList.contains('show'), source: el.lastWheelSource };
+		// The gallery scrolls `main`, not the window.
+		const scrollY = window.scrollY + (document.querySelector('main')?.scrollTop ?? 0);
+		return { v: el.viewport, scrollY, hint: hint.classList.contains('show'), source: el.lastWheelSource };
 	});
 await page.mouse.move(wheelTarget.x, wheelTarget.y);
 await page.waitForTimeout(400);
@@ -790,7 +792,8 @@ const pad = await page.evaluate(async () => {
 	const canvas = el.shadowRoot!.querySelector('canvas')!;
 	const r = canvas.getBoundingClientRect();
 	const before = el.viewport;
-	const y0 = window.scrollY;
+	const scrolled = (): number => window.scrollY + (document.querySelector('main')?.scrollTop ?? 0);
+	const y0 = scrolled();
 	for (let step = 0; step < 6; step++) {
 		canvas.dispatchEvent(
 			new WheelEvent('wheel', {
@@ -806,7 +809,7 @@ const pad = await page.evaluate(async () => {
 		await new Promise((res) => setTimeout(res, 16));
 	}
 	await new Promise((res) => setTimeout(res, 100));
-	return { before, after: el.viewport, source: el.lastWheelSource, scrolled: window.scrollY !== y0 };
+	return { before, after: el.viewport, source: el.lastWheelSource, scrolled: scrolled() !== y0 };
 });
 check(
 	'a trackpad-shaped scroll pans the graph and does not zoom',
