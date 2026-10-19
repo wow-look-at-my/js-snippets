@@ -79,7 +79,7 @@ Responsive multi-tier canvas text with alpha-fade truncation. A label is an orde
 
 Generic — no timeline types. <timeline-view> drives its bar/gutter labels through it.
 
-  deriveLabelTiers(label) → string[] — the full text. Then a leading `owner/` path segment stripped (only when that segment contains no whitespace). Then each leading ' · ' segment dropped in turn, because a ' · ' title goes general to specific ('webhooks · wow-dind runner · job 42' → 'wow-dind runner · job 42' → 'job 42'). Then everything from the first ' - ' on stripped. Inapplicable tiers are skipped. Always >= 1 tier. 'wow-look-at-my/gosmopolitan - workflow_job' → ['wow-look-at-my/gosmopolitan - workflow_job', 'gosmopolitan - workflow_job', 'gosmopolitan'].
+  deriveLabelTiers(label) → string[] — the full text. Then a leading `owner/` path segment stripped (only when that segment contains no whitespace). Then everything from the first ' - ' on stripped. Inapplicable tiers are skipped. Always >= 1 tier. 'wow-look-at-my/gosmopolitan - workflow_job' → ['wow-look-at-my/gosmopolitan - workflow_job', 'gosmopolitan - workflow_job', 'gosmopolitan'].
 
   selectTier(tiers, availPx, measure) → index of the largest (earliest).
 
@@ -90,6 +90,13 @@ Generic — no timeline types. <timeline-view> drives its bar/gutter labels thro
   `tiers` may be a plain string (a single tier). class FadeTextPainter — paint(ctx, text, x, y, width, fadePx, fill, halo?, haloWidth?) fills text (left-aligned. Width = its measured width) with the last fadePx px alpha-fading to transparent, the optional halo stroked under the fill with the same fade. Clear() drops cached gradients (call on theme changes). One cached gradient per (color, fade width) spans [0, fadePx] in user space and ctx.translate positions it per label — no per-label createLinearGradient, ever. FADE_TAIL_CHARS (2.5) — recommended fade width in character widths (fadePx = FADE_TAIL_CHARS * charW). MIN_CLIP_CHARS (3).
 
 Types: MeasureText, FittedText, FitTieredOptions
+
+### ui/fit-label.js
+The timeline's bar-label fitting for DOM text: the same tiers (deriveLabelTiers, or explicit ones). The same widest-tier-that-fits rule, and the same fading tail of FADE_TAIL_CHARS average characters when even the most compact tier is. Clipped. Never an ellipsis. Below a 3-character clip the text is empty.
+
+  fitLabel(el, label, tiers?) — fits `label` into `el` at its current width. `el` needs a width of its own (a block, or a flex/grid item with min-width: 0). The text goes in a child span. The full label goes in el.title. fitLabelsIn(root) — fits every `[data-fit-label]` element under root from that attribute, and again when root changes size.
+
+  Call it after each redraw. It watches a root once.
 
 ### ui/combobox.js
 Custom `<select>` dropdown replacement for browsers whose native dropdown is broken or unusable — the motivating case is Tesla's in-car browser. This renders the native dropdown in a separate OS window the page never captures. As a result, the option list is invisible. Replaces a `<select>` with an in-page popup listbox built from ordinary DOM and appended to `<body>`, so no native dropdown is ever opened. The original `<select>` stays in the DOM as the model: it is hidden. However, it keeps its value, and choosing an option sets that value and dispatches `input` + `change`, so any existing listener (or framework, e.g. lil-gui) runs unchanged.

@@ -20,11 +20,13 @@ export interface FittedText {
   width: number;
 }
 
-/**The full text. Without a leading `owner/` path segment (one with no
- * whitespace). Without each leading ` · ` segment in turn. A ` · ` title
- * goes from the general to the specific, like `repo · runner · job 42`, so
- * the tail is the part that tells labels apart. Everything before the first `
- * - `. Inapplicable tiers are skipped. Always returns at least one tier. */
+/**
+ * Derive tiers from a single label: the full text. This also covers
+ * then with a leading `owner/` path segment stripped (only when that
+ * segment contains no whitespace). This also covers then with
+ * everything from the first ` - ` on stripped. Inapplicable tiers are
+ * skipped; always returns >= 1 tier.
+ */
 export function deriveLabelTiers(label: string): string[] {
   const tiers = [label];
   let s = label;
@@ -35,11 +37,6 @@ export function deriveLabelTiers(label: string): string[] {
       tiers.push(rest);
       s = rest;
     }
-  }
-  const parts = s.split(' · ');
-  for (let i = 1; i < parts.length; i++) {
-    const tail = parts.slice(i).join(' · ');
-    if (tail.trim() !== '') tiers.push(tail);
   }
   const sep = s.indexOf(' - ');
   if (sep > 0) {
