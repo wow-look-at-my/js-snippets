@@ -92,9 +92,11 @@ Generic — no timeline types. <timeline-view> drives its bar/gutter labels thro
 Types: MeasureText, FittedText, FitTieredOptions
 
 ### ui/fit-label.js
-The timeline's bar-label fitting for DOM text: the same tiers (deriveLabelTiers, or explicit ones). The same widest-tier-that-fits rule, and the same fading tail of FADE_TAIL_CHARS average characters when even the most compact tier is. Clipped. Never an ellipsis. Below a 3-character clip the text is empty.
+Fits one line of DOM text by dropping pieces of the label until it fits. No fade and no ellipsis. When even the shortest form does not fit, the element's edge cuts it.
 
-  fitLabel(el, label, tiers?) — fits `label` into `el` at its current width. `el` needs a width of its own (a block, or a flex/grid item with min-width: 0). The text goes in a child span. The full label goes in el.title. fitLabelsIn(root) — fits every `[data-fit-label]` element under root from that attribute, and again when root changes size.
+  fitLabelTiers(label) → string[] — the forms, longest first: each deriveLabelTiers form, followed by itself with its leading ' · ' pieces dropped in turn. 'wow-look-at-my/webhooks · wow-dind runner · job 42' → [full, 'webhooks · wow-dind runner · job 42', 'wow-dind runner · job 42', 'job 42'].
+
+  fitLabel(el, label, tiers?) — shows in `el` the longest form that fits its current width. `el` needs a width of its own (a block, or a flex/grid item with min-width: 0). `tiers` replaces the derived forms. The full label goes in el.title. fitLabelsIn(root) — fits every `[data-fit-label]` element under root from that attribute, and again when root changes size.
 
   Call it after each redraw. It watches a root once.
 

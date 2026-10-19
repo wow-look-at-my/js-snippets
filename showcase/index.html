@@ -187,9 +187,9 @@
 			<section id="fit-label">
 				<h2>fitLabel</h2>
 				<p class="hint">
-					The label fitting of the timeline's bars, for DOM text. Each row is the same title in a
-					narrower box. The text keeps the widest tier that fits whole, then the most compact tier
-					fades out at the right edge. Drag the window narrower to watch it refit.
+					DOM text that drops pieces of its label until it fits. Each row is the same title in a
+					narrower box. The owner goes first, then each leading " · " piece, then a " - " suffix.
+					The shortest form is cut at the edge when even it does not fit: no fade, no ellipsis.
 				</p>
 				<div id="demo-fit-label" class="fit-rows"></div>
 			</section>

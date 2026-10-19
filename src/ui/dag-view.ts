@@ -1926,11 +1926,31 @@ export class DagViewElement extends HTMLElement {
     ctx.save();
     ctx.globalAlpha = searchFaded ? FADE_ALPHA : !inHighlight ? this.focusAlpha : 1;
 
-    // Below this zoom a box is a few pixels tall. A plain filled mark reads
-    // as "something is here", where a border and clipped text read as mud.
+    // Below this zoom a box is a few pixels tall: a plain rectangle, no text, no rounding.
+    // It still draws its state. A filled box for an outline state hides a
+    // waiting or failed node among the done ones.
     if (s < LOD_MARK_SCALE) {
-      ctx.fillStyle = colors.fill;
-      ctx.fillRect(p.x, p.y, Math.max(2, w), Math.max(2, h));
+      const mw = Math.max(2, w);
+      const mh = Math.max(2, h);
+      const markPattern = style?.pattern ?? 'solid';
+      if (markPattern === 'solid') {
+        ctx.fillStyle = colors.fill;
+        ctx.fillRect(p.x, p.y, mw, mh);
+      } else if (markPattern === 'hatch' || markPattern === 'stipple') {
+        const prev = ctx.globalAlpha;
+        ctx.globalAlpha = prev * PATTERN_TINT;
+        ctx.fillStyle = colors.fill;
+        ctx.fillRect(p.x, p.y, mw, mh);
+        ctx.globalAlpha = prev;
+      }
+      const emphasis = style?.emphasis === true;
+      if (markPattern !== 'solid' || emphasis || style?.dashed === true) {
+        ctx.strokeStyle = emphasis ? t.emphasis : colors.border;
+        ctx.lineWidth = emphasis ? 1.5 : 1;
+        if (style?.dashed === true) ctx.setLineDash([3, 2]);
+        ctx.strokeRect(p.x + 0.5, p.y + 0.5, mw - 1, mh - 1);
+        ctx.setLineDash([]);
+      }
       ctx.restore();
       return;
     }
