@@ -11,6 +11,8 @@ concurrency:
 permissions:
   contents: read
   id-token: write # buildhost OIDC auth
+  deployments: write # the publish registers a GitHub Deployment
+  artifact-metadata: write # the publish records the site on the artifacts page
   # The buildhost-publish-site action (consumed @master) now front-runs the org's no-all-builds shadow guard, which scans this run's jobs. The head commit's check runs — it FAILS CLOSED without these two reads.
   actions: read
   checks: read
@@ -69,6 +71,8 @@ jobs:
     runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       id-token: write # buildhost OIDC auth
+      deployments: write # the publish registers a GitHub Deployment
+      artifact-metadata: write # the publish records the site on the artifacts page
       contents: read
       # Job-level permissions REPLACE the workflow-level block, so the publish guard's two reads (see the workflow-level comment) must be re-granted here too.
       actions: read
