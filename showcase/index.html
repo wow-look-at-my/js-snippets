@@ -25,6 +25,7 @@
 				<a href="#activity-feed">&lt;activity-feed&gt;</a>
 					<a href="#dag-view">&lt;dag-view&gt;</a>
 				<a href="#perf-graph">&lt;perf-graph&gt;</a>
+				<a href="#fit-label">fitLabel</a>
 			</nav>
 		</header>
 		<main>
@@ -182,6 +183,15 @@
 					<perf-graph id="demo-perf-empty" label="idle" unit="%" compact></perf-graph>
 					<perf-graph id="demo-perf-stacked-empty" label="no columns yet" unit=""></perf-graph>
 				</div>
+			</section>
+			<section id="fit-label">
+				<h2>fitLabel</h2>
+				<p class="hint">
+					DOM text that drops pieces of its label until it fits. Each row is the same title in a
+					narrower box. The owner goes first, then each leading " · " piece, then a " - " suffix.
+					The shortest form is cut at the edge when even it does not fit: no fade, no ellipsis.
+				</p>
+				<div id="demo-fit-label" class="fit-rows"></div>
 			</section>
 		</main>
 		<script type="module" src="./main.ts"></script>
