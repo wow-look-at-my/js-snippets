@@ -8,6 +8,7 @@ import {
   topoOrder,
   insertDummies,
   orderLayers,
+  ORDER_SWEEPS,
   countCrossings,
   crossingsBetween,
   assignCoordinates,
@@ -502,6 +503,117 @@ test('orderLayers: identical input gives an identical arrangement', () => {
     return proper.layers.map((row) => row.map((s) => s.node));
   };
   assert.deepEqual(build(), build());
+});
+
+function bruteCrossings(proper: ReturnType<typeof insertDummies>, l: number): number {
+  const lowerPos = new Map(proper.layers[l + 1].map((s, i) => [slotIdentity(s), i]));
+  const pairs: [number, number][] = [];
+  proper.layers[l].forEach((s, i) => {
+    for (const k of proper.succ.get(slotIdentity(s)) ?? []) pairs.push([i, lowerPos.get(k)!]);
+  });
+  let c = 0;
+  for (let i = 0; i < pairs.length; i++) {
+    for (let j = i + 1; j < pairs.length; j++) {
+      if ((pairs[i][0] - pairs[j][0]) * (pairs[i][1] - pairs[j][1]) < 0) c++;
+    }
+  }
+  return c;
+}
+
+/** A random DAG over `n` nodes, with long edges and repeated edges, from a fixed seed. */
+function randomProper(seed: number, n: number, m: number): ReturnType<typeof insertDummies> {
+  let x = seed;
+  const rnd = (k: number): number => {
+    x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+    return (x >>> 8) % k;
+  };
+  const names = Array.from({ length: n }, (_, i) => `v${i}`);
+  const edges: DagEdge[] = [];
+  for (let e = 0; e < m; e++) {
+    const a = rnd(n);
+    const b = rnd(n);
+    if (a !== b) edges.push({ from: names[Math.min(a, b)], to: names[Math.max(a, b)] });
+  }
+  const g = buildGraph(nodesFrom(names), edges);
+  const acyclic = breakCycles(g);
+  return insertDummies(g, acyclic, assignLayers(g, acyclic));
+}
+
+test('crossingsBetween: agrees with the pair rule on random layerings', () => {
+  for (let seed = 1; seed <= 40; seed++) {
+    const proper = randomProper(seed, 18, 40);
+    for (let l = 0; l + 1 < proper.layers.length; l++) {
+      assert.equal(crossingsBetween(proper, l), bruteCrossings(proper, l), `seed ${seed} layer ${l}`);
+    }
+  }
+});
+
+test('orderLayers: no adjacent swap in the result removes a crossing', () => {
+  // This is the stop condition of the transpose pass, checked with the pair
+  // rule. A wrong swap decision leaves a swap that helps, or takes one that hurts.
+  for (let seed = 1; seed <= 40; seed++) {
+    const proper = randomProper(seed, 18, 40);
+    orderLayers(proper);
+    const local = (l: number): number =>
+      (l > 0 ? bruteCrossings(proper, l - 1) : 0) + (l + 1 < proper.layers.length ? bruteCrossings(proper, l) : 0);
+    proper.layers.forEach((row, l) => {
+      for (let i = 0; i + 1 < row.length; i++) {
+        const before = local(l);
+        [row[i], row[i + 1]] = [row[i + 1], row[i]];
+        const after = local(l);
+        [row[i], row[i + 1]] = [row[i + 1], row[i]];
+        assert.ok(after >= before, `seed ${seed} layer ${l} slot ${i}: swap gives ${after} < ${before}`);
+      }
+    });
+  }
+});
+
+test('wrapWideLayers: a dense layer stays one row, a fan still wraps', () => {
+  // Every edge of a wrapped node routes through the rows between it and the next layer.
+  const hubs = ['a', 'b', 'c', 'd', 'e', 'f'];
+  const names = [...hubs, ...Array.from({ length: 60 }, (_, i) => `w${i}`)];
+  const edges: DagEdge[] = [];
+  for (let i = 0; i < 60; i++) for (const h of hubs) edges.push({ from: `w${i}`, to: h });
+  const dense = buildGraph(nodesFrom(names), edges);
+  const denseLayers = wrapWideLayers(assignLayers(dense, breakCycles(dense)), 14, dense);
+  assert.equal(denseLayers.maxLayer, 1, 'the 60 tasks with an edge to each hub keep one row');
+
+  const fan = buildGraph(
+    nodesFrom(['root', ...Array.from({ length: 90 }, (_, i) => `leaf${i}`)]),
+    Array.from({ length: 90 }, (_, i) => ({ from: 'root', to: `leaf${i}` })),
+  );
+  const fanLayers = wrapWideLayers(assignLayers(fan, breakCycles(fan)), 14, fan);
+  assert.ok(fanLayers.maxLayer > 1, 'a fan of leaves with one edge each still wraps');
+});
+
+test('orderLayers: a spent work budget stops the sweeps and keeps a true count', () => {
+  const proper = randomProper(7, 40, 200);
+  const before = countCrossings(proper);
+  const after = orderLayers(proper, ORDER_SWEEPS, 1000);
+  assert.ok(after <= before, `${after} <= ${before}`);
+  assert.equal(after, countCrossings(proper), 'the count matches the order it left behind');
+});
+
+test('layoutDag: a dense scheduler graph lays out in a fraction of a second', () => {
+  // The shape of webhook-runner's scheduler page.
+  const holders = 40;
+  const waiters = 300;
+  const nodes: DagNode[] = [{ id: 'cap' }, { id: 'cpu' }, { id: 'group' }];
+  const edges: DagEdge[] = [];
+  for (let h = 0; h < holders; h++) {
+    nodes.push({ id: `h${h}` });
+    edges.push({ from: `h${h}`, to: 'cap' }, { from: `h${h}`, to: 'cpu' }, { from: `h${h}`, to: 'group' });
+  }
+  for (let w = 0; w < waiters; w++) {
+    nodes.push({ id: `w${w}` });
+    edges.push({ from: `w${w}`, to: 'group' });
+    for (let h = 0; h < holders; h++) edges.push({ from: `w${w}`, to: `h${h}` });
+  }
+  const t0 = performance.now();
+  const layout = layoutDag(nodes, edges);
+  const ms = performance.now() - t0;
+  assert.equal(layout.nodes.length, nodes.length);
+  assert.ok(ms < 3000, `layout took ${Math.round(ms)}ms`);
 });
 
 // -- assignCoordinates ------------------------------------------------------------------

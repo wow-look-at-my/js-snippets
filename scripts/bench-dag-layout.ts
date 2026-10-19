@@ -86,7 +86,7 @@ for (const e of layout.edges) {
 // How much of each row is boxes, and how much is edge routing.
 const graph = buildGraph(nodes, edges);
 const acyclic = breakCycles(graph);
-const layered = wrapWideLayers(assignLayers(graph, acyclic));
+const layered = wrapWideLayers(assignLayers(graph, acyclic), undefined, graph);
 const proper = insertDummies(graph, acyclic, layered);
 orderLayers(proper);
 

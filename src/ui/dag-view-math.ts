@@ -261,23 +261,46 @@ export function assignLayers(graph: DagGraph, acyclic: CycleResult, opts: LayerO
 /** Nodes per row before a layer wraps onto another row. */
 export const DEFAULT_MAX_LAYER_WIDTH = 14;
 
+/** Routing slots per node that a wrap may add before the layer stays one row (see wrapWideLayers). */
+export const WRAP_ROUTING_PER_NODE = 8;
+
 /** Break a layer that is too wide to read into consecutive rows. The graph is
  *not empty and it is not broken. It is unreadable, which the reader cannot
  *tell apart. */
-export function wrapWideLayers(layout: LayerResult, max = DEFAULT_MAX_LAYER_WIDTH): LayerResult {
+export function wrapWideLayers(layout: LayerResult, max = DEFAULT_MAX_LAYER_WIDTH, graph?: DagGraph): LayerResult {
   if (max <= 0) return layout;
   const members: number[][] = [];
   for (let i = 0; i <= layout.maxLayer; i++) members.push([]);
   layout.layers.forEach((l, v) => members[l].push(v));
+
+  const near: number[][] = layout.layers.map(() => []);
+  for (const e of graph?.edges ?? []) {
+    near[e.from].push(e.to);
+    near[e.to].push(e.from);
+  }
 
   const layers = layout.layers.slice();
   let next = 0;
   let maxLayer = 0;
   for (const row of members) {
     // An empty layer still consumes its index, so a pinned node that named a far layer keeps the gap it asked for.
-    const rows = row.length === 0 ? 1 : Math.ceil(row.length / max);
+    let rows = row.length === 0 ? 1 : Math.ceil(row.length / max);
     // Widen to the flattest split rather than filling every row to `max` and leaving a remainder of one.
-    const per = row.length === 0 ? 0 : Math.ceil(row.length / rows);
+    let per = row.length === 0 ? 0 : Math.ceil(row.length / rows);
+    // Each edge of a wrapped node routes through the rows between it and the
+    // layer it connects to. A dense layer stays one row, because wrapping it
+    // multiplies the drawing many times over and makes it no easier to read.
+    if (rows > 1) {
+      let routing = 0;
+      row.forEach((v, i) => {
+        const r = Math.floor(i / per);
+        for (const w of near[v]) routing += layout.layers[w] > layout.layers[v] ? rows - 1 - r : r;
+      });
+      if (routing > row.length * WRAP_ROUTING_PER_NODE) {
+        rows = 1;
+        per = row.length;
+      }
+    }
     row.forEach((v, i) => {
       layers[v] = next + Math.floor(i / per);
     });
@@ -396,6 +419,9 @@ export function insertDummies(graph: DagGraph, acyclic: CycleResult, layout: Lay
 /** Sweeps of the median heuristic run before the transpose pass gives up. */
 export const ORDER_SWEEPS = 16;
 
+/** Neighbour positions the transpose passes of one orderLayers call may read. */
+export const ORDER_WORK_BUDGET = 5_000_000;
+
 /**
  * Reorder the slots inside each layer to reduce edge crossings: the
  * weighted-median heuristic, swept down and up alternately. Those slots
@@ -408,8 +434,9 @@ export const ORDER_SWEEPS = 16;
  * discarded, and every tie breaks on the slot's current position. Mutates
  * `proper.layers` in place and returns the crossing count it settled on.
  */
-export function orderLayers(proper: ProperLayering, sweeps = ORDER_SWEEPS): number {
+export function orderLayers(proper: ProperLayering, sweeps = ORDER_SWEEPS, work = ORDER_WORK_BUDGET): number {
   const { layers, succ, pred } = proper;
+  const budget = { left: work };
   let best = layers.map((l) => l.slice());
   let bestCrossings = countCrossings(proper);
 
@@ -445,13 +472,14 @@ export function orderLayers(proper: ProperLayering, sweeps = ORDER_SWEEPS): numb
       });
       layers[l] = withIdx.map((w) => w.slot);
     }
-    transpose(proper);
+    transpose(proper, budget);
     const c = countCrossings(proper);
     // A TIE is accepted, not an improvement.
     if (c <= bestCrossings) {
       bestCrossings = c;
       best = layers.map((x) => x.slice());
     }
+    if (budget.left <= 0) break;
   }
   for (let l = 0; l < layers.length; l++) layers[l] = best[l];
   return bestCrossings;
@@ -459,27 +487,72 @@ export function orderLayers(proper: ProperLayering, sweeps = ORDER_SWEEPS): numb
 
 /** Adjacent-exchange pass: swap neighbouring slots whenever the swap
  * strictly reduces the crossings between this layer and its neighbours. Runs
- * until a full pass changes nothing, or the guard trips. A heuristic that
- * cannot terminate would hang the layout, and the guard is what makes that
- * impossible rather than unlikely. */
-function transpose(proper: ProperLayering): void {
+ * until a full pass changes nothing, the guard trips, or the work budget is
+ * spent. A heuristic that cannot terminate would hang the layout, and the
+ * guard is what makes that impossible rather than unlikely. */
+function transpose(proper: ProperLayering, budget: { left: number }): void {
+  // A swap of adjacent slots u and v changes only the crossings between an edge of u and an edge of v.
+  const index = new Map<string, number>();
+  proper.layers.forEach((row) => row.forEach((s) => index.set(slotIdentity(s), index.size)));
+  const pos = new Int32Array(index.size);
+  proper.layers.forEach((row) => row.forEach((s, i) => (pos[index.get(slotIdentity(s))!] = i)));
+  const toIdx = (ids: string[] | undefined): number[] =>
+    (ids ?? []).map((k) => index.get(k)).filter((k): k is number => k !== undefined);
+  const up: number[][] = [];
+  const down: number[][] = [];
+  for (const [id, k] of index) {
+    up[k] = toIdx(proper.pred.get(id));
+    down[k] = toIdx(proper.succ.get(id));
+  }
+
+  const rowIdx = proper.layers.map((row) => row.map((s) => index.get(slotIdentity(s))!));
+  // A layer whose last visit swapped nothing, with both neighbour layers unchanged since, would swap nothing again.
+  const settled = proper.layers.map(() => false);
+  const sortedPos = (ks: number[]): number[] => ks.map((k) => pos[k]).sort((x, y) => x - y);
+
   let improved = true;
   let guard = 0;
   while (improved && guard++ < TRANSPOSE_PASS_CAP) {
     improved = false;
     for (let l = 0; l < proper.layers.length; l++) {
+      if (settled[l]) continue;
       const row = proper.layers[l];
+      const idx = rowIdx[l];
+      // A swap in this layer moves no slot of the layers next to it.
+      const ups = new Map<number, number[]>();
+      const downs = new Map<number, number[]>();
+      for (const k of idx) {
+        ups.set(k, sortedPos(up[k]));
+        downs.set(k, sortedPos(down[k]));
+      }
+      let swaps = 0;
       for (let i = 0; i + 1 < row.length; i++) {
-        const before = localCrossings(proper, l);
-        const tmp = row[i];
-        row[i] = row[i + 1];
-        row[i + 1] = tmp;
-        if (localCrossings(proper, l) < before) {
-          improved = true;
-        } else {
-          row[i + 1] = row[i];
-          row[i] = tmp;
+        const u = idx[i];
+        const v = idx[i + 1];
+        const uUp = ups.get(u)!;
+        const vUp = ups.get(v)!;
+        const uDown = downs.get(u)!;
+        const vDown = downs.get(v)!;
+        budget.left -= 1 + uUp.length + vUp.length + uDown.length + vDown.length;
+        if (budget.left <= 0) return;
+        const a = pairCrossings(uUp, vUp);
+        const b = pairCrossings(uDown, vDown);
+        if (a.swapped + b.swapped < a.kept + b.kept) {
+          const tmp = row[i];
+          row[i] = row[i + 1];
+          row[i + 1] = tmp;
+          idx[i] = v;
+          idx[i + 1] = u;
+          pos[u] = i + 1;
+          pos[v] = i;
+          swaps++;
         }
+      }
+      settled[l] = swaps === 0;
+      if (swaps > 0) {
+        improved = true;
+        if (l > 0) settled[l - 1] = false;
+        if (l + 1 < settled.length) settled[l + 1] = false;
       }
     }
   }
@@ -488,12 +561,20 @@ function transpose(proper: ProperLayering): void {
 /** Full transpose passes before the exchange loop stops (see transpose). */
 const TRANSPOSE_PASS_CAP = 64;
 
-/** Crossings between `layer` and its immediate neighbours only. */
-function localCrossings(proper: ProperLayering, layer: number): number {
-  let c = 0;
-  if (layer > 0) c += crossingsBetween(proper, layer - 1);
-  if (layer + 1 < proper.layers.length) c += crossingsBetween(proper, layer);
-  return c;
+/** Crossings between the edges of adjacent slots, as is and swapped. `a` and `b` are their sorted
+ * neighbour positions. A shared endpoint crosses in neither order. */
+function pairCrossings(a: number[], b: number[]): { kept: number; swapped: number } {
+  let kept = 0;
+  let swapped = 0;
+  let lo = 0;
+  let hi = 0;
+  for (const p of a) {
+    while (lo < b.length && b[lo] < p) lo++;
+    while (hi < b.length && b[hi] <= p) hi++;
+    kept += lo;
+    swapped += b.length - hi;
+  }
+  return { kept, swapped };
 }
 
 /** Total crossings across every adjacent layer pair. */
@@ -510,21 +591,25 @@ export function crossingsBetween(proper: ProperLayering, l: number): number {
   const lower = proper.layers[l + 1];
   const lowerPos = new Map<string, number>();
   lower.forEach((s, i) => lowerPos.set(slotIdentity(s), i));
-  const pairs: { u: number; v: number }[] = [];
-  upper.forEach((s, i) => {
-    for (const k of proper.succ.get(slotIdentity(s)) ?? []) {
-      const v = lowerPos.get(k);
-      if (v !== undefined) pairs.push({ u: i, v });
+  // Upper slots are visited left to right, so the pairs come out in upper order.
+  const tree = new Int32Array(lower.length + 1);
+  let seen = 0;
+  let c = 0;
+  upper.forEach((s) => {
+    const vs = (proper.succ.get(slotIdentity(s)) ?? [])
+      .map((k) => lowerPos.get(k))
+      .filter((v): v is number => v !== undefined)
+      .sort((x, y) => x - y);
+    for (const v of vs) {
+      let atOrBelow = 0;
+      for (let k = v + 1; k > 0; k -= k & -k) atOrBelow += tree[k];
+      c += seen - atOrBelow;
+    }
+    for (const v of vs) {
+      for (let k = v + 1; k <= lower.length; k += k & -k) tree[k]++;
+      seen++;
     }
   });
-  let c = 0;
-  for (let i = 0; i < pairs.length; i++) {
-    for (let j = i + 1; j < pairs.length; j++) {
-      const a = pairs[i];
-      const b = pairs[j];
-      if ((a.u - b.u) * (a.v - b.v) < 0) c++;
-    }
-  }
   return c;
 }
 
@@ -586,16 +671,21 @@ export function fitToDesired(desired: readonly number[], gap: readonly number[])
     while (blockValues.length > 1) {
       const b = blockValues.length - 1;
       if (median(blockValues[b - 1]) <= median(blockValues[b])) break;
-      const merged: number[] = [];
-      let i = 0;
-      let j = 0;
+      // The smaller block goes into the larger one.
       const left = blockValues[b - 1];
       const right = blockValues[b];
-      while (i < left.length || j < right.length) {
-        if (j >= right.length || (i < left.length && left[i] <= right[j])) merged.push(left[i++]);
-        else merged.push(right[j++]);
+      const [big, small] = left.length >= right.length ? [left, right] : [right, left];
+      for (const x of small) {
+        let lo = 0;
+        let hi = big.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (big[mid] <= x) lo = mid + 1;
+          else hi = mid;
+        }
+        big.splice(lo, 0, x);
       }
-      blockValues.splice(b - 1, 2, merged);
+      blockValues.splice(b - 1, 2, big);
       blockCount.splice(b - 1, 2, blockCount[b - 1] + blockCount[b]);
     }
   }
@@ -681,14 +771,16 @@ export function assignCoordinates(
     return out;
   });
 
+  // The order is fixed from here on, so one lookup serves every pass. An identity names one slot in one layer.
+  const posByIdentity = new Map<string, number>();
+  rows.forEach((row) => row.forEach((t, ti) => posByIdentity.set(slotIdentity(t), ti)));
+
   const neighbourMedian = (l: number, i: number, up: boolean): number | null => {
     const s = rows[l][i];
     const keys = (up ? proper.pred : proper.succ).get(slotIdentity(s)) ?? [];
     if (keys.length === 0) return null;
     const target = up ? l - 1 : l + 1;
     if (target < 0 || target >= rows.length) return null;
-    const posByIdentity = new Map<string, number>();
-    rows[target].forEach((t, ti) => posByIdentity.set(slotIdentity(t), ti));
     const cs = keys
       .map((k) => posByIdentity.get(k))
       .filter((p): p is number => p !== undefined)
@@ -747,8 +839,6 @@ export function assignCoordinates(
     let sum = 0;
     rows.forEach((row, l) => {
       if (l + 1 >= rows.length) return;
-      const posByIdentity = new Map<string, number>();
-      rows[l + 1].forEach((t, ti) => posByIdentity.set(slotIdentity(t), ti));
       row.forEach((s, i) => {
         for (const key of proper.succ.get(slotIdentity(s)) ?? []) {
           const ti = posByIdentity.get(key);
@@ -1101,7 +1191,7 @@ function layoutConnected(
   const orientation = opts.orientation ?? 'TB';
   const graph = buildGraph(nodes, edges);
   const acyclic = breakCycles(graph);
-  const layered = wrapWideLayers(assignLayers(graph, acyclic, opts), opts.maxLayerWidth);
+  const layered = wrapWideLayers(assignLayers(graph, acyclic, opts), opts.maxLayerWidth, graph);
   const proper = insertDummies(graph, acyclic, layered);
   const crossings = orderLayers(proper, opts.sweeps);
   const sizeOf = opts.sizeOf ?? ((n: DagNode): NodeSize => measureNode(n));
