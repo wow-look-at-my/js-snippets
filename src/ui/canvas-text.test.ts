@@ -34,6 +34,19 @@ test('deriveLabelTiers: suffix strip cuts at the FIRST separator', () => {
   assert.deepEqual(deriveLabelTiers('a - b - c'), ['a - b - c', 'a']);
 });
 
+test('deriveLabelTiers: a · title drops its leading segments, keeping the specific tail', () => {
+  assert.deepEqual(deriveLabelTiers('wow-look-at-my/webhooks · wow-dind runner · job 117925653277'), [
+    'wow-look-at-my/webhooks · wow-dind runner · job 117925653277',
+    'webhooks · wow-dind runner · job 117925653277',
+    'wow-dind runner · job 117925653277',
+    'job 117925653277',
+  ]);
+});
+
+test('deriveLabelTiers: a · title with no owner', () => {
+  assert.deepEqual(deriveLabelTiers('CI · test-hooks (fork-sync)'), ['CI · test-hooks (fork-sync)', 'test-hooks (fork-sync)']);
+});
+
 test('deriveLabelTiers: plain label is a single tier', () => {
   assert.deepEqual(deriveLabelTiers('just-a-label'), ['just-a-label']);
   assert.deepEqual(deriveLabelTiers(''), ['']);

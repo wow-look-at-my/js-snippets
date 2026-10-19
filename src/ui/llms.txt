@@ -79,7 +79,7 @@ Responsive multi-tier canvas text with alpha-fade truncation. A label is an orde
 
 Generic — no timeline types. <timeline-view> drives its bar/gutter labels through it.
 
-  deriveLabelTiers(label) → string[] — the full text. Then a leading `owner/` path segment stripped (only when that segment contains no whitespace). Then everything from the first ' - ' on stripped. Inapplicable tiers are skipped. Always >= 1 tier. 'wow-look-at-my/gosmopolitan - workflow_job' → ['wow-look-at-my/gosmopolitan - workflow_job', 'gosmopolitan - workflow_job', 'gosmopolitan'].
+  deriveLabelTiers(label) → string[] — the full text. Then a leading `owner/` path segment stripped (only when that segment contains no whitespace). Then each leading ' · ' segment dropped in turn, because a ' · ' title goes general to specific ('webhooks · wow-dind runner · job 42' → 'wow-dind runner · job 42' → 'job 42'). Then everything from the first ' - ' on stripped. Inapplicable tiers are skipped. Always >= 1 tier. 'wow-look-at-my/gosmopolitan - workflow_job' → ['wow-look-at-my/gosmopolitan - workflow_job', 'gosmopolitan - workflow_job', 'gosmopolitan'].
 
   selectTier(tiers, availPx, measure) → index of the largest (earliest).
 
