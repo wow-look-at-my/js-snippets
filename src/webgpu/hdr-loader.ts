@@ -1,5 +1,5 @@
-// Radiance RGBE (.hdr) parser
-// Returns { width, height, data: Float32Array } with 4 floats per pixel (RGBA).
+// Radiance RGBE (.hdr) parser Returns { width, height, data: Float32Array }
+// with multiple floats per pixel (RGBA).
 
 export interface HdrImage {
   width: number;

@@ -1,10 +1,7 @@
 // First-person fly ("noclip") camera: the look half comes from
-// `applyLookDrag` in camera.ts (drag-to-look, pointer-up = look-up), and this
+// `applyLookDrag` in camera.ts (drag-to-look, pointer-up = look-up). This
 // module adds the movement half — WASD-style key flight, wheel dolly along
-// the view direction, and two-finger pinch dolly. The pure helpers
-// (`flyMoveDelta`, `dollyDelta`) have no DOM dependency;
-// `createFlyController` wires pointer/key/wheel/touch events onto an element.
-// Backend-agnostic (WebGL or WebGPU — it only produces positions/matrices).
+// the view direction, and two-finger pinch dolly.
 
 import { applyLookDrag, dirFromAzEl } from './camera.ts';
 import type { LookDragOptions, LookState } from './camera.ts';
@@ -35,10 +32,6 @@ const DEG = Math.PI / 180;
  *   the camera.ts drag-convention note).
  * - `up`/`down` move along the world `up` axis (default `[0,1,0]`), NOT the
  *   camera's tilted up vector.
- *
- * Opposite keys cancel. Returns the summed displacement; add it to your
- * position. Diagonals are intentionally not renormalized (holding
- * forward+right moves √2 faster, the classic noclip feel).
  */
 export function flyMoveDelta(
   look: LookState,
@@ -58,35 +51,26 @@ export function flyMoveDelta(
   return out;
 }
 
-/**
- * Displacement for a dolly of `amount` world units along the view direction
- * (pure). Positive = toward what you're looking at. Feed wheel deltas as
- * `-e.deltaY * unit * wheelSpeed` (wheel-up dollies in) and pinch deltas as
- * `(dist - lastDist) * pinchSpeed` (pinch-out dollies in).
- */
+/** * Displacement for a dolly of `amount` world units along the view direction
+    * (pure). Positive = toward what you're looking at. */
 export function dollyDelta(look: LookState, amount: number): Vec3 {
   return scale(dirFromAzEl(look.azDeg * DEG, look.elDeg * DEG), amount);
 }
 
 /** Options for `createFlyController`. */
 export interface FlyControllerOptions extends LookDragOptions {
-  /** Initial eye position (default [0, 0, 0]). */
   position?: Vec3;
-  /** Initial yaw in degrees (default 0; see `LookState`). */
+  /** Initial yaw in degrees (the first default; see `LookState`). */
   azDeg?: number;
-  /** Initial pitch in degrees (default 0). */
+  /** Initial pitch in degrees (the initial pitch in degrees). */
   elDeg?: number;
-  /** Key-held movement speed in world units/second (default 5). */
+  /** Key-held movement speed in world units/second (a later default). */
   moveSpeed?: number;
-  /** Wheel dolly in world units per (normalized) wheel pixel (default 0.01). */
   wheelSpeed?: number;
-  /** Pinch dolly in world units per pixel of two-finger separation change (default 0.08). */
   pinchSpeed?: number;
-  /** World up axis for strafing/vertical movement (default [0, 1, 0]). */
   up?: Vec3;
   /** `KeyboardEvent.code` → movement mapping (default WASD + Space/E up, Q down). */
   keyMap?: Record<string, keyof FlyMoveState>;
-  /** Mouse buttons that start a look drag (default [0, 2] — left and right). */
   dragButtons?: number[];
 }
 
@@ -115,15 +99,10 @@ const DEFAULT_KEY_MAP: Record<string, keyof FlyMoveState> = {
   KeyQ: 'down',
 };
 
-/**
- * Attach fly controls to `element`: drag to look (via `applyLookDrag`, so
+/**Attach fly controls to `element`: drag to look (via `applyLookDrag`, so
  * pointer-up = look-up unless `invertY`), keys to fly (`update(dt)` applies
- * them), wheel and two-finger pinch to dolly along the view direction. Key
- * events bind to the element's document so the canvas needs no tabindex; when
- * `dragButtons` includes 2, `contextmenu` on the element is suppressed so
- * right-drag can look. Read/set `position`/`azDeg`/`elDeg` directly at any
- * time.
- */
+ * them), wheel and two-finger pinch to dolly along the view direction.
+ * Read/set `position`/`azDeg`/`elDeg` directly at any time. */
 export function createFlyController(
   element: HTMLElement,
   options: FlyControllerOptions = {},
@@ -186,7 +165,6 @@ export function createFlyController(
 
   const onWheel = (e: WheelEvent) => {
     e.preventDefault();
-    // Normalise deltaMode: 0 = pixels, 1 = lines (~16px), 2 = pages (~viewport).
     const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? element.clientHeight || 800 : 1;
     controller.position = add(
       controller.position,

@@ -1,13 +1,3 @@
-// Showcase wiring: two <timeline-view> instances fed by the deterministic
-// fake generator in ./fake-data.ts. The page adds NOTHING interactive of its
-// own — pan/zoom/hover/click/fullscreen are the component's — it only feeds
-// data on the real advancing clock and prunes so a day-long tab stays lean.
-//
-// Feature-detection: everything here targets the component API on THIS
-// branch's ../src/ui. Post-#39 extras (the legend's consumer rows, the
-// built-in 'cancelled' style) are detected at runtime, so the same page
-// builds and runs before and after that PR lands — the new visuals simply
-// light up once the bundled component has them.
 
 import {
   DEFAULT_STYLES,
@@ -42,13 +32,11 @@ const els: TimelineViewElement[] = [main, mini];
 // -- Styles: consumer style-map keys on top of the built-ins ---------------------
 
 const styles: StyleMap = {
-  // A consumer-defined terminal treatment: like 'failed' but with a dashed
-  // emphasis border, used by the fan-out and retry lanes' timed-out runs.
+  // A consumer-defined terminal treatment.
   timeout: { pattern: 'stipple', border: { width: 2, emphasis: true, dash: [5, 3] }, glyph: 'bang' },
 };
 if (!('cancelled' in DEFAULT_STYLES)) {
-  // Pre-#39 components have no built-in 'cancelled' treatment — register a
-  // matching consumer style so the canary lane reads the same either way.
+  // Pre-#components have no built-in 'cancelled' treatment — register a matching consumer style.
   styles['cancelled'] = { pattern: 'outline', border: { width: 1.5, dash: [4, 3] } };
 }
 for (const el of els) el.styles = styles;
@@ -118,9 +106,7 @@ function feed(el: TimelineViewElement, t0: number, now: number, reset: boolean):
 // Boot: pre-roll recent history so the default view is already populated.
 for (const el of els) feed(el, boot - PREROLL_MS, boot, true);
 
-// Live tick: re-snapshot every run overlapping the recent window. Plans are
-// pure functions of absolute time, so a throttled/late tick (hidden tab)
-// self-heals — the next merge re-emits every affected run in final form.
+// Live tick: re-snapshot every run overlapping the recent window.
 setInterval(() => {
   const now = Date.now();
   const t0 = Math.max(lastTick - 5 * SEC, now - KEEP_MS);
@@ -149,8 +135,7 @@ for (const el of els) {
 }
 
 // Prune: while following, periodically reset to the recent window so the
-// merged set can't grow without bound in a long-lived tab. History the user
-// pans back to simply re-loads through loadRange — same bytes, same ids.
+// merged set can't grow without bound in a long-lived tab.
 setInterval(() => {
   const now = Date.now();
   for (const el of els) {

@@ -1,11 +1,4 @@
 // Tests for the byte-preserving tokenizer + syntax classifier.
-//
-// The defining contract is byte-preservation: concatenating every token's
-// `text` must reproduce the input exactly. We assert that round-trip for a
-// range of C-like snippets (comments, strings, numbers, operators), that
-// classify assigns the expected roles (keyword / function / member / number /
-// string), and that resolveLanguage falls back to the C-like preset on unknown
-// or missing input.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

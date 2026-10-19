@@ -1,14 +1,14 @@
-// Pure math for the <perf-graph> element: a fixed-capacity Float32Array ring
-// buffer, stats / display-range / tick helpers, a min-max downsampler for
+// Pure math for the <perf-graph> element. A fixed-capacity Float32Array ring
+// buffer, stats / display-range / tick helpers. A min-max downsampler for
 // more-samples-than-pixels rendering, and the HUD value formatter. No DOM or
 // browser APIs — everything here runs (and is tested) under node;
 // ui/perf-graph.ts is the canvas-bound half that consumes it.
 //
 // Hot paths are allocation-free by design: SampleRing allocates only in the
 // constructor and setCapacity(), and computeStats / binMinMax write into
-// caller-owned outputs, so a per-frame HUD redraw performs no allocation.
+// caller-owned outputs. A per-frame HUD redraw performs no allocation.
 // niceTicks is the one allocating helper — call it only when the display
-// range actually changes.
+// range changes.
 
 // -- Ring buffer ---------------------------------------------------------------
 
@@ -22,7 +22,6 @@ export class SampleRing {
   private head = 0; // next write position
   private count = 0; // valid samples (<= capacity)
 
-  /** `capacity` is floored and clamped to >= 1. */
   constructor(capacity: number) {
     this.buf = new Float32Array(clampCapacity(capacity));
   }
@@ -44,7 +43,7 @@ export class SampleRing {
     if (this.count < this.buf.length) this.count++;
   }
 
-  /** Sample by age: at(0) is the oldest, at(length - 1) the newest. NaN out of range. */
+  /** NaN out of range. */
   at(i: number): number {
     if (i < 0 || i >= this.count) return NaN;
     const cap = this.buf.length;
@@ -98,12 +97,10 @@ export interface PerfStats {
   max: number;
 }
 
-/**
- * Fill `out` with the stats of the ring's contents. Non-finite samples are
- * skipped for avg/min/max (all three are NaN when no finite sample exists);
+/**Fill `out` with the stats of the ring's contents. Non-finite samples are
+ * skipped for avg/min/max (all of them are NaN when no finite sample exists);
  * `current` is the raw latest sample. Writes into the caller-owned object —
- * no allocation — and returns it.
- */
+ * no allocation — and returns it. */
 export function computeStats(ring: SampleRing, out: PerfStats): PerfStats {
   let n = 0;
   let sum = 0;
@@ -132,9 +129,7 @@ export interface AutoRangeOptions {
   fixedMin?: number;
   /** Pin the high end exactly (no padding is applied to a pinned end). */
   fixedMax?: number;
-  /** Fraction of the data span added to each un-pinned end (default 0.1). */
   pad?: number;
-  /** Extend the un-pinned low/high end to include 0 (default false). */
   includeZero?: boolean;
 }
 
@@ -144,12 +139,11 @@ export interface DisplayRange {
   max: number;
 }
 
-/**
- * Padded display range for the given data extremes. Degenerate-safe: empty
+/**Padded display range for the given data extremes. Degenerate-safe: empty
  * (non-finite) or flat data still yields a usable nonzero span. fixedMin /
  * fixedMax pin their end exactly. With includeZero, a zero floor pulled in
- * from non-negative data is kept at exactly 0 rather than padded below it.
- */
+ * from non-negative data is kept at a set value rather than padded below
+ * it. */
 export function autoRange(dataMin: number, dataMax: number, opts: AutoRangeOptions = {}): DisplayRange {
   const pad = opts.pad !== undefined && Number.isFinite(opts.pad) ? opts.pad : 0.1;
   let lo = Number.isFinite(dataMin) ? dataMin : 0;
@@ -189,10 +183,6 @@ export function autoRange(dataMin: number, dataMax: number, opts: AutoRangeOptio
 
 const NICE_MANTISSAS = [1, 2, 5];
 
-/**
- * The smallest "nice" step (1, 2 or 5 × 10^k) that divides `span` into at
- * most `maxTicks` intervals. Returns 1 for a non-positive/non-finite span.
- */
 export function niceStep(span: number, maxTicks: number): number {
   if (!Number.isFinite(span) || span <= 0) return 1;
   const max = Math.max(1, Math.floor(maxTicks));
@@ -206,12 +196,8 @@ export function niceStep(span: number, maxTicks: number): number {
   }
 }
 
-/**
- * Tick positions on the 1-2-5 × 10^k grid within [lo, hi], using
- * niceStep(hi - lo, maxTicks) — so at most maxTicks + 1 ticks. Returns []
- * for an empty/invalid range. Allocates (the element calls it only when the
- * display range changes).
- */
+/**Returns [] for an empty/invalid range. Allocates (the element calls it
+ * only when the display range changes). */
 export function niceTicks(lo: number, hi: number, maxTicks: number): number[] {
   if (!Number.isFinite(lo) || !Number.isFinite(hi) || !(hi > lo)) return [];
   const step = niceStep(hi - lo, maxTicks);
@@ -224,15 +210,11 @@ export function niceTicks(lo: number, hi: number, maxTicks: number): number[] {
 
 // -- Min-max downsampling --------------------------------------------------------
 
-/**
- * Min-max downsample of the ring into `bins` buckets — the classic
- * more-samples-than-pixels reduction. Sample i (0 = oldest) lands in bin
- * floor(i * bins / count), so every finite sample influences exactly one bin
- * and outMin[b] <= outMax[b] for every non-empty bin. Empty bins (and both
- * arrays past a clamped `bins`) are NaN. `bins` is clamped to the shorter
- * out array. Writes only into the caller-owned arrays — no allocation.
- * Returns the number of non-empty bins (min(bins, count) for finite data).
- */
+/**Min-max downsample of the ring into `bins` buckets — the classic
+ * more-samples-than-pixels reduction. Empty bins (and both arrays past a
+ * clamped `bins`) are NaN. `bins` is clamped to the shorter out array.
+ * Writes only into the caller-owned arrays — no allocation. Returns the
+ * number of non-empty bins (min(bins, count) for finite data). */
 export function binMinMax(ring: SampleRing, bins: number, outMin: Float32Array, outMax: Float32Array): number {
   const nBins = Math.min(Math.max(0, Math.floor(bins)), outMin.length, outMax.length);
   for (let b = 0; b < nBins; b++) {
@@ -261,12 +243,7 @@ export function binMinMax(ring: SampleRing, bins: number, outMin: Float32Array, 
 
 // -- Value formatting --------------------------------------------------------------
 
-/**
- * Deterministic HUD value formatting. Non-finite → '—'. Unit 'ms' → adaptive
- * decimals (|v| >= 100 → 0, >= 10 → 1, else 2) + 'ms'; 'fps' → Math.round +
- * 'fps'; any other non-empty unit → 1 decimal + the unit as a suffix; '' →
- * the bare adaptive number.
- */
+/**Deterministic HUD value formatting. Non-finite → '—'. */
 export function formatValue(v: number, unit: string): string {
   if (!Number.isFinite(v)) return '—';
   if (unit === 'fps') return `${Math.round(v)}fps`;

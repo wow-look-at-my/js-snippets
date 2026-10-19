@@ -1,10 +1,4 @@
-// Tests for the linear-sampling separable Gaussian kernel builder. Ported from
-// the local-contrast scratchpad's smoke.mjs oracle (the kernel half; the remap
-// half is scratchpad-specific and not part of this library).
-//
-// Verifies the kernel is unbiased: the merged bilinear taps expand back to the
-// exact discrete Gaussian and the effective integer-tap weights sum to 1, plus
-// the sigma edge cases.
+// Tests for the linear-sampling separable Gaussian kernel builder.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -45,7 +39,7 @@ for (const sigma of [1, 2, 4, 8, 16, 32, 64]) {
     const k = buildGaussianKernel(sigma);
     const R = k.radius;
 
-    // Reference discrete Gaussian (two-sided, normalised to 1).
+    // Reference discrete Gaussian (two-sided, normalised to a set limit).
     const ref: number[] = [];
     let tot = 0;
     for (let m = 0; m <= R; m++) {
@@ -80,7 +74,6 @@ test('sigma is clamped to a positive floor and a tiny sigma still has a centre t
   assert.ok(k.sigma >= 1e-3, `clamped sigma = ${k.sigma}`);
   assert.ok(k.radius >= 1, `radius = ${k.radius}`);
   assert.ok(k.entries.length >= 1, 'has at least the centre tap');
-  // The centre tap is at offset 0.
   assert.equal(k.entries[0][0], 0);
 });
 

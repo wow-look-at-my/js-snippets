@@ -1,13 +1,17 @@
 name: CI / Deploy
 
-on: push
+on:
+  push:
+    branches: ['**']
+
+concurrency:
+  group: gha_${{ github.repository }}_${{ github.workflow }}_${{ github.ref != 'refs/heads/master' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 permissions:
   contents: read
   id-token: write # buildhost OIDC auth
-  # The buildhost-publish-site action (consumed @master) now front-runs the
-  # org's no-all-builds shadow guard, which scans this run's jobs and the
-  # head commit's check runs — it FAILS CLOSED without these two reads.
+  # The buildhost-publish-site action (consumed @master) now front-runs the org's no-all-builds shadow guard, which scans this run's jobs. The head commit's check runs — it FAILS CLOSED without these two reads.
   actions: read
   checks: read
 
@@ -16,7 +20,7 @@ env:
 
 jobs:
   build:
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -24,47 +28,22 @@ jobs:
         with:
           node-version: 22
 
-      # pnpm, pinned via package.json "packageManager" and provisioned by
-      # corepack (ships with Node) — no third-party setup action needed.
+      # pnpm, pinned via package.json "packageManager" and provisioned by corepack (ships with Node) — no third-party setup action needed.
       - name: Enable pnpm
         run: corepack enable
 
-      # No lockfile is committed (so ts0 is never pinned to a commit) — `pnpm
-      # install` resolves the ts0 branch dependency to its current HEAD on every
-      # run. ts0's git-dep build script is allowlisted via package.json
-      # "pnpm.onlyBuiltDependencies".
+      # No lockfile is committed (so ts0 is never pinned to a commit) — `pnpm install` resolves the ts0 branch dependency to its current HEAD on every run. ts0's git-dep build script is allowlisted via package.json "pnpm.onlyBuiltDependencies".
       - run: pnpm install
 
       - name: Test
-        # ts0 test type-checks the project (sources + *.test.ts) and runs them
-        # under Node's built-in test runner. A failing test fails CI, and — the
-        # publish step being later in this same job — gates the deploy too.
-        run: pnpm test
+        # ts0 test type-checks the project (sources + *.test.ts) and runs them under Node's built-in test runner. A failing test fails CI, and — the publish step being later in this same job — gates the deploy too.
+        run: ./node_modules/.bin/ts0 test
 
       - name: Build
-        # ts0 build type-checks (tsc --noEmit) and compiles src/ -> dist/;
-        # the build script then assembles dist/llms.txt.
-        run: pnpm build
+        # ts0 build type-checks (tsc --noEmit) and compiles src/ -> dist/; the build script then assembles dist/llms.txt.
+        run: ./node_modules/.bin/ts0 build && node scripts/build-llms.mjs
 
-      # The library used to deploy to GitHub Pages, but GH Pages deploys
-      # ride Actions artifacts and the org's artifact storage quota is
-      # exhausted — the Pages deploy has failed since 2026-07-19
-      # ("Artifact storage quota has been hit"), freezing the published
-      # library at its 07-15 content. Same migration as webhook-runner#93:
-      # buildhost-publish-site PUTs one tar.gz straight to
-      # sites.pazer.build (GitHub OIDC auth) — no Actions artifacts
-      # anywhere. master publishes the stable 'library' site (the
-      # canonical consumption URL); every other branch publishes
-      # 'library-<flattened-branch>' so a change can be verified from a
-      # real URL before merge. The bare flattened branch name is the
-      # showcase preview's site (below) — the 'library-' prefix keeps the
-      # two from overwriting each other. The repo is private, so the
-      # buildhost project is private; `public: 'true'` (the X-Public-Site
-      # mechanism) opens just these library site branches for anonymous
-      # reads — consumers (the webhook-runner dashboard) import the
-      # component at runtime with no credential, exactly like the old
-      # github.io URL. The legacy GitHub Pages site keeps serving its
-      # frozen 2026-07-15 content — nothing is deleted here.
+      # The library used to deploy to GitHub Pages, but GH Pages deploys ride Actions artifacts. The org's artifact storage quota is exhausted — the Pages deploy has failed since 2026-07-19 ("Artifact storage quota has been hit"), freezing the published library at its 07-15 content. Same migration as webhook-runner#93: buildhost-publish-site PUTs one tar.gz straight to sites.pazer.build (GitHub OIDC auth) — no Actions artifacts anywhere. master publishes the stable 'library' site (the canonical consumption URL). Every other branch publishes 'library-<flattened-branch>' so a change can be verified from a real URL before merge. The bare flattened branch name is the showcase preview's site (below) — the 'library-' prefix keeps the two from overwriting each other. The repo is private. The buildhost project is private. `public: 'true'` (the X-Public-Site mechanism) opens just these library site branches for anonymous reads. It consumers (the webhook-runner dashboard) import the component at runtime with no credential, exactly like the old github.io URL. The legacy GitHub Pages site keeps serving its frozen 2026-07-15 content — nothing is deleted here.
       - name: Library site name
         id: sitename
         uses: wow-look-at-my/actions@typescript#latest
@@ -78,7 +57,7 @@ jobs:
             core.info(`library site branch: ${site}`);
 
       - name: Publish library to buildhost sites
-        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master
+        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@lkgb
         with:
           server: https://pazer.build
           project: js-snippets # repo-derived: the only site project OIDC authorizes
@@ -86,24 +65,13 @@ jobs:
           source_dir: dist
           public: 'true' # the library must stay anonymously importable
 
-  # Publish the timeline showcase — showcase/'s single self-contained HTML
-  # demo of <timeline-view> on fake local data — to buildhost as a per-branch
-  # static site: https://sites.pazer.build/js-snippets/branch/<branch>/.
-  # The project MUST be "js-snippets": buildhost's OIDC auto-provisioning
-  # authorizes a repo's identity only for the project named after the repo
-  # (or its slash-namespace), and the sites router takes single-segment
-  # project names only — any other name 404s ("project not found").
-  # Publishes only when the BRANCH touches the chart or the showcase (always
-  # on master); otherwise the steps no-op and the job still succeeds, so the
-  # org's all-builds aggregation never trips over it.
+  # Publish the timeline showcase. Showcase/'s single self-contained HTML demo of <timeline-view> on fake local data. To buildhost as a per-branch static site: https://sites.pazer.build/js-snippets/branch/<branch>/. The project MUST be "js-snippets": buildhost's OIDC auto-provisioning authorizes a repo's identity only for the project named after the repo (or its slash-namespace). The sites router takes single-segment project names only — any other name 404s ("project not found"). Publishes only when the BRANCH touches the chart or the showcase (always on master). Otherwise the steps no-op and the job still succeeds, so the org's all-builds aggregation never trips over it.
   showcase:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || vars.CI_RUNNER || 'ubuntu-latest' }}
     permissions:
       id-token: write # buildhost OIDC auth
       contents: read
-      # Job-level permissions REPLACE the workflow-level block, so the
-      # publish guard's two reads (see the workflow-level comment) must be
-      # re-granted here too.
+      # Job-level permissions REPLACE the workflow-level block, so the publish guard's two reads (see the workflow-level comment) must be re-granted here too.
       actions: read
       checks: read
     steps:
@@ -151,14 +119,13 @@ jobs:
       - run: pnpm install
         if: steps.gate.outputs.publish == 'true'
 
-      # ts0's single-HTML target: type-checks, bundles the branch's own
-      # src/ui/timeline-view.ts (CSS inlined), emits showcase/dist/index.html.
-      - run: pnpm build:showcase
+      # ts0's single-HTML target: type-checks, bundles the branch's own src/ui/timeline-view.ts (CSS inlined), emits showcase/dist/index.html.
+      - run: cd showcase && ../node_modules/.bin/ts0 build
         if: steps.gate.outputs.publish == 'true'
 
       - name: Publish preview to buildhost
         if: steps.gate.outputs.publish == 'true'
-        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@master
+        uses: wow-look-at-my/buildhost/.github/actions/buildhost-publish-site@lkgb
         with:
           server: https://pazer.build
           project: js-snippets # repo-derived: the only site project OIDC authorizes

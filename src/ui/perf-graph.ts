@@ -1,36 +1,4 @@
-/**
- * <perf-graph> — a compact, stackable, canvas-rendered performance graph.
- *
- * One element = one scrolling metric strip (frame time, fps, heap MB, any
- * numeric gauge). push(value) appends a sample; the newest sample hugs the
- * right edge and history scrolls left. EVERY pixel — including all text — is
- * drawn on the one <canvas> via fillText (zero DOM text nodes, no layout),
- * so a whole column of stacked instances costs N canvases and nothing else.
- * Dependency-free.
- *
- *   import 'https://…/js-snippets/ui/perf-graph.js'; // registers <perf-graph>
- *
- *   <perf-graph label="frame" unit="ms" budget="16.7"></perf-graph>
- *
- *   const g = document.querySelector('perf-graph');
- *   requestAnimationFrame(function tick(now) {
- *     g.push(now - last); last = now;
- *     requestAnimationFrame(tick);
- *   });
- *
- * Cheap by construction: a redraw happens only when new data / size / theme
- * arrived (dirty flag, at most one rAF pending, none when idle), drawing is
- * skipped entirely while the tab is hidden or the element is scrolled out of
- * view (one deferred draw runs on becoming visible), the backing store is
- * DPR-exact (crisp on HiDPI), and a steady-state draw allocates nothing —
- * stats/bins go into preallocated buffers, tick arrays rebuild only when the
- * display range moves, font strings are cached (transient formatted value
- * strings are the accepted exception).
- *
- * Theme via --perf-graph-* CSS custom properties (see THEME_DEFAULTS; dark
- * "Scratch Proto" defaults). The pure math lives in ui/perf-graph-math.ts
- * (node-tested) and is re-exported here so one import serves both.
- */
+/** <perf-graph> — a compact, stackable, canvas-rendered performance graph. */
 
 import {
   SampleRing,
@@ -89,14 +57,9 @@ type Theme = typeof THEME_DEFAULTS;
 
 // -- The custom element ----------------------------------------------------------
 
-/**
- * The graph element. Auto-registered as `<perf-graph>` when this module loads
- * (unless that name is already taken). Attributes (all optional, mirrored by
- * properties): `label`, `unit` ('ms' default | 'fps' | custom suffix | ''),
- * `history` (sample count, default 240), `height` (CSS px, default 48),
- * `min` / `max` (fixed scale ends; absent → autoscale), `budget` (dashed
- * guide value, e.g. 16.7). API: push(value), clear(), refreshTheme().
- */
+/**The graph element. Auto-registered as `<perf-graph>` when this module loads
+ * (unless that name is already taken). API: push(value), clear(),
+ * refreshTheme(). */
 export class PerfGraphElement extends HTMLElement {
   static get observedAttributes(): string[] {
     return ['label', 'unit', 'history', 'height', 'min', 'max', 'budget'];
@@ -108,8 +71,7 @@ export class PerfGraphElement extends HTMLElement {
   private ring = new SampleRing(DEFAULT_HISTORY);
   private stats: PerfStats = { current: NaN, avg: NaN, min: NaN, max: NaN };
 
-  // Attribute caches (kept in sync by attributeChangedCallback) so a draw
-  // never re-parses attributes.
+  // Attribute caches (kept in sync by attributeChangedCallback) so a draw never re-parses attributes.
   private aLabel = '';
   private aUnit = DEFAULT_UNIT;
   private aMin: number | null = null;
@@ -131,8 +93,7 @@ export class PerfGraphElement extends HTMLElement {
   private ticks: number[] = [];
   private rangeOpts: AutoRangeOptions = { pad: 0.08 };
 
-  // Cached theme + prebuilt ctx font strings (rebuilt on connect / resize /
-  // DPR change / refreshTheme(), never per frame).
+  // Cached theme + prebuilt ctx font strings.
   private theme: Theme = { ...THEME_DEFAULTS };
   private fontText = '';
   private fontValue = '';
@@ -238,7 +199,7 @@ export class PerfGraphElement extends HTMLElement {
     this.setAttribute('unit', v ?? '');
   }
 
-  /** Number of samples kept and displayed (default 240). */
+  /** Number of samples kept and displayed (a later default). */
   get history(): number {
     return this.ring.capacity;
   }
@@ -246,7 +207,7 @@ export class PerfGraphElement extends HTMLElement {
     this.setAttribute('history', String(v));
   }
 
-  /** Element height in CSS px (default 48). */
+  /** Element height in CSS px (a later default). */
   get height(): number {
     return parseNum(this.getAttribute('height')) ?? DEFAULT_HEIGHT;
   }
@@ -382,9 +343,10 @@ export class PerfGraphElement extends HTMLElement {
   // -- Range ---------------------------------------------------------------------
 
   /**
-   * Display range: fixed ends win; otherwise autoRange over data (+ budget),
-   * with the free ends quantized outward to a nice step so the range — and
-   * therefore the tick array — only rebuilds when data crosses a grid line.
+   * Display range: fixed ends win. Otherwise autoRange over data (+ budget).
+   * That autoRange is with the free ends quantized outward to a nice step so
+   * the range — and therefore the tick array. Only rebuilds when data
+   * crosses a grid line.
    */
   private updateRange(): void {
     let dLo = this.stats.min;
@@ -464,15 +426,14 @@ export class PerfGraphElement extends HTMLElement {
       }
     }
 
-    // Data: min-max columns when samples outnumber device pixels, else a
-    // polyline (+ soft area fill). Newest sample at the right edge.
+    // Data: min-max columns when samples outnumber device pixels, else a polyline (+ soft area fill).
     const count = this.ring.length;
     const cap = this.ring.capacity;
     const plotWdev = this.canvas.width;
     if (count > plotWdev) {
       const binsUsed = Math.max(1, Math.min(plotWdev, Math.floor((plotWdev * count) / cap)));
       binMinMax(this.ring, binsUsed, this.binMin, this.binMax);
-      const x0 = w - binsUsed * hairline; // right-aligned, 1 device px per bin
+      const x0 = w - binsUsed * hairline;
       ctx.fillStyle = t.line;
       for (let bin = 0; bin < binsUsed; bin++) {
         const mn = this.binMin[bin];

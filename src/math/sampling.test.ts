@@ -1,8 +1,4 @@
 // Tests for the low-discrepancy + hemisphere sampling helpers.
-//
-// Asserts: radicalInverse2 known bit-reversal values, hammersley(0,n) == [0,0]
-// and components in [0,1), and that uniformHemisphere / cosineHemisphere return
-// unit-length vectors on the +Z hemisphere (z >= 0).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

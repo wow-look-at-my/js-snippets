@@ -68,7 +68,6 @@ test('normalize returns a unit vector', () => {
 });
 
 test('normalize guards the zero vector (no NaN / divide-by-zero)', () => {
-  // The implementation falls back to a length of 1, so a zero vector stays zero.
   const n = normalize([0, 0, 0]);
   assert.deepEqual(n, [0, 0, 0]);
   assert.ok(n.every((c) => Number.isFinite(c)));
