@@ -1523,6 +1523,27 @@ export function fitViewport(
   };
 }
 
+/**
+ * The first viewport a graph gets. It is `fitViewport`, unless that fit is below `legible`. Then the graph opens at
+ * `legible`, centered on any axis that fits and anchored at its top-left on any axis that does not. A board too big to
+ * fit opens readable and pans, and the fit button still shows the whole of it.
+ */
+export function legibleViewport(
+  rect: WorldRect,
+  vw: number,
+  vh: number,
+  legible: number,
+  pad = 24,
+  maxScale = MAX_SCALE,
+): DagViewport {
+  const fit = fitViewport(rect, vw, vh, pad, MIN_SCALE, maxScale);
+  if (fit.scale >= legible) return fit;
+  const scale = legible;
+  const place = (start: number, size: number, view: number): number =>
+    size * scale <= view - pad * 2 ? (view - size * scale) / 2 - start * scale : pad - start * scale;
+  return { x: place(rect.x, rect.w, vw), y: place(rect.y, rect.h, vh), scale };
+}
+
 /** Bounding box of the placed nodes, including their edges' bend points. */
 export function layoutBounds(layout: DagLayout): WorldRect {
   let x0 = Infinity;

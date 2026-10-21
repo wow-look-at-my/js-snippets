@@ -23,6 +23,7 @@ import {
   zoomViewportAt,
   zoomFactorForWheel,
   fitViewport,
+  legibleViewport,
   layoutBounds,
   clampViewport,
   visibleWorldRect,
@@ -985,6 +986,25 @@ test('fitViewport: a degenerate rect still yields a usable viewport', () => {
 test('fitViewport: obeys the scale clamps on a huge graph', () => {
   const v = fitViewport({ x: 0, y: 0, w: 100000, h: 100000 }, 400, 300);
   assert.equal(v.scale, MIN_SCALE);
+});
+
+test('legibleViewport: a graph that fits at a legible scale gets the plain fit', () => {
+  const rect = { x: 0, y: 0, w: 100, h: 100 };
+  assert.deepEqual(legibleViewport(rect, 400, 200, 0.4, 20), fitViewport(rect, 400, 200, 20));
+});
+
+test('legibleViewport: a board too big to fit opens at the legible scale, anchored top-left', () => {
+  const v = legibleViewport({ x: 0, y: 0, w: 4031, h: 3623 }, 1371, 576, 0.4, 32);
+  assert.equal(v.scale, 0.4);
+  assert.equal(v.x, 32, 'the left edge sits at the pad');
+  assert.equal(v.y, 32, 'the top edge sits at the pad');
+});
+
+test('legibleViewport: an axis that fits at the legible scale stays centered', () => {
+  const v = legibleViewport({ x: 0, y: 0, w: 1000, h: 5000 }, 1371, 576, 0.4, 32);
+  assert.equal(v.scale, 0.4);
+  assert.ok(Math.abs(v.x - (1371 - 400) / 2) < 1e-9, 'the 400 px wide drawing is centered');
+  assert.equal(v.y, 32);
 });
 
 test('clampViewport: a pan that keeps content on screen is untouched', () => {
