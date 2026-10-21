@@ -5,6 +5,7 @@ import {
   layoutDag,
   layoutBounds,
   fitViewport,
+  legibleViewport,
   clampViewport,
   zoomViewportAt,
   zoomFactorForWheel,
@@ -826,10 +827,10 @@ export class DagViewElement extends HTMLElement {
     this.select(i, true);
   }
 
-  /** Fit the graph on the next frame if the consumer has not set a viewport. */
+  /** Fit the graph on the next frame if the consumer has not set a viewport. It never opens below label scale. */
   private fitIfUntouched(): void {
     if (this.viewTouched || this.layout.nodes.length === 0 || this.cssW <= 0) return;
-    this.view = fitViewport(this.bounds, this.cssW, this.cssH, 32, MIN_SCALE, 1);
+    this.view = legibleViewport(this.bounds, this.cssW, this.cssH, LOD_LABEL_SCALE, 32, 1);
   }
 
   // -- Layout ----------------------------------------------------------------------
