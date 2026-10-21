@@ -63,6 +63,8 @@ import type {
   PlacedGroup,
 } from './dag-view-math.ts';
 import { categoryColor, categoryJitter, dimColor, labelHaloColor } from './color.ts';
+import { dagToSvg, dagToMermaid, exportFileName, pngScale } from './dag-export.ts';
+import type { ExportNode, ExportEdge } from './dag-export.ts';
 
 export * from './dag-view-math.ts';
 
@@ -243,6 +245,13 @@ export interface DagSnapshot {
 }
 
 // -- Constants ---------------------------------------------------------------------
+
+/** A right-click menu entry: an action, or a flyout of more entries. */
+interface MenuItem {
+  label: string;
+  run?: () => void;
+  sub?: MenuItem[];
+}
 
 const MAX_DPR = 3;
 /* */
@@ -738,7 +747,7 @@ export class DagViewElement extends HTMLElement {
       capturedAt: new Date().toISOString(),
       orientation: this.orientation,
       canvas: { width: round(this.cssW), height: round(this.cssH), dpr: this.dpr },
-      viewport: { x: round(this.view.x), y: round(this.view.y), scale: this.view.scale },
+      viewport: { x: round(this.view.x), y: round(this.view.y), scale: Math.round(this.view.scale * 1000) / 1000 },
       bounds: {
         x: round(this.bounds.x),
         y: round(this.bounds.y),
@@ -942,8 +951,17 @@ export class DagViewElement extends HTMLElement {
     // The tooltip sits where the menu is about to, and it describes the node the menu now names.
     this.hideTooltip();
     this.menuEl.textContent = '';
-    const items: { label: string; run: () => void }[] = [
+    const items: MenuItem[] = [
       { label: 'Copy graph state (JSON)', run: () => this.copySnapshot() },
+      {
+        label: 'Download graph',
+        sub: [
+          { label: 'JSON', run: () => this.downloadJson() },
+          { label: 'SVG', run: () => this.downloadSvg() },
+          { label: 'PNG', run: () => this.downloadPng() },
+          { label: 'Mermaid', run: () => this.downloadMermaid() },
+        ],
+      },
     ];
     if (node !== null) {
       const target = this.layout.nodes[this.layout.byId.get(node) ?? -1]?.node;
@@ -951,19 +969,7 @@ export class DagViewElement extends HTMLElement {
       items.push({ label: `Copy id of "${node}"`, run: () => this.copyNodeID(node) });
     }
     items.push({ label: 'Fit on screen', run: () => this.fit() });
-
-    for (const item of items) {
-      const btn = document.createElement('button');
-      btn.className = 'menu-item';
-      btn.type = 'button';
-      btn.setAttribute('role', 'menuitem');
-      btn.textContent = item.label;
-      btn.addEventListener('click', () => {
-        this.closeMenu();
-        item.run();
-      });
-      this.menuEl.appendChild(btn);
-    }
+    this.fillMenu(this.menuEl, items);
 
     // Placed, then nudged back inside: the size is not known until it is in the document.
     this.menuEl.hidden = false;
@@ -976,12 +982,211 @@ export class DagViewElement extends HTMLElement {
     this.menuEl.querySelector<HTMLButtonElement>('.menu-item')?.focus();
   }
 
+  /**
+   * One button per item. An item with `sub` opens a flyout beside it on hover, on a click and on
+   * ArrowRight. ArrowLeft and Escape in the flyout go back to its parent item.
+   */
+  private fillMenu(menu: HTMLElement, items: readonly MenuItem[]): void {
+    for (const item of items) {
+      const btn = document.createElement('button');
+      btn.className = 'menu-item';
+      btn.type = 'button';
+      btn.setAttribute('role', 'menuitem');
+      btn.textContent = item.label;
+      menu.appendChild(btn);
+      const run = item.run;
+      if (run !== undefined) {
+        btn.addEventListener('click', () => {
+          this.closeMenu();
+          run();
+        });
+        btn.addEventListener('mouseenter', () => this.closeSubmenus(menu));
+        continue;
+      }
+      const subItems = item.sub ?? [];
+      btn.classList.add('has-sub');
+      btn.setAttribute('aria-haspopup', 'menu');
+      btn.setAttribute('aria-expanded', 'false');
+      const sub = document.createElement('div');
+      sub.className = 'menu sub';
+      sub.setAttribute('role', 'menu');
+      sub.hidden = true;
+      this.fillMenu(sub, subItems);
+      menu.appendChild(sub);
+      const open = (focus: boolean): void => {
+        this.closeSubmenus(menu);
+        sub.hidden = false;
+        btn.setAttribute('aria-expanded', 'true');
+        sub.style.top = `${btn.offsetTop - 4}px`;
+        sub.style.left = '100%';
+        sub.style.right = '';
+        // A flyout that would leave the element opens on the left side of the menu.
+        if (sub.getBoundingClientRect().right > this.getBoundingClientRect().right) {
+          sub.style.left = '';
+          sub.style.right = '100%';
+        }
+        if (focus) sub.querySelector<HTMLButtonElement>('.menu-item')?.focus();
+      };
+      btn.addEventListener('mouseenter', () => open(false));
+      btn.addEventListener('click', () => open(true));
+      btn.addEventListener('keydown', (e) => {
+        if (e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        e.stopPropagation();
+        open(true);
+      });
+      sub.addEventListener('keydown', (e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'Escape') return;
+        e.preventDefault();
+        e.stopPropagation();
+        sub.hidden = true;
+        btn.setAttribute('aria-expanded', 'false');
+        btn.focus();
+      });
+    }
+  }
+
+  private closeSubmenus(menu: HTMLElement): void {
+    for (const el of Array.from(menu.children)) {
+      if (el instanceof HTMLElement && el.classList.contains('sub')) el.hidden = true;
+      if (el instanceof HTMLElement && el.classList.contains('has-sub')) el.setAttribute('aria-expanded', 'false');
+    }
+  }
+
   private closeMenu(): void {
     this.menuEl.hidden = true;
   }
 
+  // -- Downloads -------------------------------------------------------------------
+
+  private download(blob: Blob, ext: string): void {
+    const name = exportFileName(this.getAttribute('download-name') ?? 'graph', new Date().toISOString(), ext);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // The browser reads the URL after this task ends, so the revoke waits.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    this.toast(`Downloaded ${name}: ${blob.size} bytes`);
+    this.dispatchEvent(new CustomEvent('graphdownload', { detail: { name, format: ext, bytes: blob.size }, bubbles: true }));
+  }
+
+  private downloadJson(): void {
+    this.download(new Blob([JSON.stringify(this.snapshot)], { type: 'application/json' }), 'json');
+  }
+
+  private downloadMermaid(): void {
+    this.ensureLayout();
+    const text = dagToMermaid(
+      this.layout.nodes.map((n) => ({ id: n.node.id, label: n.node.label ?? null, state: n.node.state ?? null })),
+      this.layout.edges.map((e) => ({ from: e.edge.from, to: e.edge.to, label: e.edge.label ?? null })),
+      this.orientationValue,
+    );
+    this.download(new Blob([text], { type: 'text/vnd.mermaid' }), 'mmd');
+  }
+
+  private downloadSvg(): void {
+    this.ensureLayout();
+    const t = this.theme;
+    const nodes: ExportNode[] = this.layout.nodes.map((n) => {
+      const style = n.node.state !== undefined ? this.styleMap[n.node.state] : undefined;
+      const colors = this.colorsFor(n.node);
+      const text = this.nodeText.get(n.node.id);
+      return {
+        id: n.node.id,
+        label: text?.label ?? [n.node.label ?? n.node.id],
+        sub: text?.sub ?? [],
+        x: n.x,
+        y: n.y,
+        w: n.w,
+        h: n.h,
+        fill: colors.fill,
+        border: colors.border,
+        outline: (style?.pattern ?? 'solid') !== 'solid',
+        dashed: style?.dashed === true,
+        emphasis: style?.emphasis === true,
+      };
+    });
+    const edges: ExportEdge[] = this.layout.edges.map((e) => {
+      const style = e.edge.state !== undefined ? this.styleMap[e.edge.state] : undefined;
+      return {
+        from: e.edge.from,
+        to: e.edge.to,
+        label: e.edge.label ?? null,
+        points: e.points,
+        color: e.reversed ? t.emphasis : style?.color ?? t.edge,
+        dashed: e.reversed || style?.dashed === true,
+      };
+    });
+    const svg = dagToSvg(nodes, edges, this.bounds, {
+      bg: t.bg,
+      fg: t.fg,
+      muted: t.muted,
+      font: t.font,
+      fontSize: t.fontSize,
+      radius: t.nodeRadius,
+    });
+    this.download(new Blob([svg], { type: 'image/svg+xml' }), 'svg');
+  }
+
+  /**
+   * The whole graph at full size, drawn by the same code that paints the canvas. The element's own
+   * size, view and canvas are swapped out for the draw and put back after it.
+   */
+  private downloadPng(): void {
+    this.ensureLayout();
+    if (this.layout.nodes.length === 0) {
+      this.toast('The graph is empty. There is nothing to draw.');
+      return;
+    }
+    const pad = 24;
+    const b = this.bounds;
+    const w = Math.ceil(b.w + 2 * pad);
+    const h = Math.ceil(b.h + 2 * pad);
+    const dpr = pngScale(w, h, Math.max(1, this.dpr));
+    const out = document.createElement('canvas');
+    out.width = Math.max(1, Math.floor(w * dpr));
+    out.height = Math.max(1, Math.floor(h * dpr));
+    const ctx = out.getContext('2d', { alpha: false });
+    if (ctx === null) {
+      this.toast('The browser gave no canvas for the PNG.');
+      console.error('dag-view: no 2d context for the PNG export');
+      return;
+    }
+    const saved = { ctx: this.ctx, cssW: this.cssW, cssH: this.cssH, dpr: this.dpr, view: this.view, touched: this.viewTouched };
+    try {
+      this.ctx = ctx;
+      this.cssW = w;
+      this.cssH = h;
+      this.dpr = dpr;
+      this.view = { x: pad - b.x, y: pad - b.y, scale: 1 };
+      this.viewTouched = true;
+      this.draw();
+    } finally {
+      this.ctx = saved.ctx;
+      this.cssW = saved.cssW;
+      this.cssH = saved.cssH;
+      this.dpr = saved.dpr;
+      this.view = saved.view;
+      this.viewTouched = saved.touched;
+      this.invalidate();
+    }
+    out.toBlob((blob) => {
+      if (blob === null) {
+        this.toast('The browser could not encode the PNG.');
+        console.error('dag-view: toBlob returned null', { width: out.width, height: out.height });
+        return;
+      }
+      this.download(blob, 'png');
+    }, 'image/png');
+  }
+
   private copySnapshot(): void {
-    const text = JSON.stringify(this.snapshot, null, '\t');
+    const text = JSON.stringify(this.snapshot);
     void this.copyText(text).then(
       () => {
         const n = this.layout.nodes.length;
@@ -2140,9 +2345,9 @@ export class DagViewElement extends HTMLElement {
 
 // -- Drawing helpers -----------------------------------------------------------------
 
-/** A coordinate to decimals: a person reads the snapshot. */
+/** A coordinate to the whole pixel: a fraction of a pixel tells the reader of a snapshot nothing and doubles its size. */
 function round(v: number): number {
-  return Math.round(v * 100) / 100;
+  return Math.round(v);
 }
 
 function roundedPolyline(ctx: CanvasRenderingContext2D, pts: readonly { x: number; y: number }[], r: number): void {
