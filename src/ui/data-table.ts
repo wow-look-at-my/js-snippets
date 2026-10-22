@@ -1,6 +1,7 @@
 /** <data-table> — a declarative, filterable, sortable table. */
 
 import TABLE_CSS from './data-table.css';
+import { upgradeProperties } from './upgrade-properties.ts';
 import {
   hiddenFromStored,
   isFiltering,
@@ -376,16 +377,8 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
   // -- Lifecycle ------------------------------------------------------------
 
   connectedCallback(): void {
-    // Property upgrade: this module is fetched at runtime, so a consumer
-    // script setting properties BEFORE it loads is the normal case, not an
-    // edge case. Re-assign through the prototype so nothing is lost.
-    for (const prop of ['columns', 'rows', 'facets', 'sort', 'rowClass', 'rowId', 'searchText', 'filter'] as const) {
-      if (Object.prototype.hasOwnProperty.call(this, prop)) {
-        const value = this[prop];
-        delete (this as Partial<this>)[prop];
-        (this as DataTableElement<Row>)[prop] = value as never;
-      }
-    }
+    // Property upgrade: this module is fetched at runtime, so a consumer script setting properties BEFORE it loads is the normal case.
+    upgradeProperties(this, DataTableElement.prototype);
     if (!this.restored) {
       this.restored = true;
       this.restoreFilter();

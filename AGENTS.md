@@ -76,6 +76,8 @@ src/
 │   │                        uniform dim transform, the label halo
 │   ├── hit-test.ts        ← shared pointer hit shapes: HitRect, rect and
 │   │                        polyline tests, distSqToSegment
+│   ├── upgrade-properties.ts ← custom-element property upgrade, derived
+│   │                        from the class's setters (+ colocated test)
 │   ├── dag-view-math.ts   ← pure layered (Sugiyama) DAG layout: cycle
 │   │                        breaking, layering, crossing reduction,
 │   │                        coordinates, routing, viewport, hit tests,

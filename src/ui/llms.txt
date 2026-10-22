@@ -615,3 +615,8 @@ Pointer hit-testing primitives for canvas-painted components. A canvas has no DO
 Coordinates are CSS px in whatever space the caller works in. Nothing here transforms, so a component with a viewport maps the pointer in first.
 
 Types: HitRect.
+
+### ui/upgrade-properties.js
+The custom-element property upgrade that <data-table> and <activity-feed> run in connectedCallback. A consumer can set a property before the module loads. That value sits on the instance and hides the setter. Pure. No DOM.
+
+  upgradeProperties(el, proto) → void Re-assigns every own property of el that shadows a setter on proto, through that setter, in declaration order. The list comes from the prototype. A new setter needs no edit here.

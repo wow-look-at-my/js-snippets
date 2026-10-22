@@ -2,6 +2,7 @@
 
 import ACTIVITY_CSS from './activity-feed.css';
 import { DataTableElement, type FacetGroup, type TableColumn } from './data-table.ts';
+import { upgradeProperties } from './upgrade-properties.ts';
 import {
   SEVERITIES,
   familyOf,
@@ -178,18 +179,8 @@ export class ActivityFeedElement extends HTMLElement {
   // -- Lifecycle ------------------------------------------------------------
 
   connectedCallback(): void {
-    // Property upgrade: a consumer script that ran BEFORE this module loaded
-    // (the component is fetched at runtime, so that is the normal case, not
-    // an edge case) will have set instance properties that now shadow these
-    // accessors. Re-assign them through the prototype so the values are not
-    // silently lost.
-    for (const prop of ['entries', 'messageRenderer', 'timeFormatter', 'familyAliases', 'columns', 'filter'] as const) {
-      if (Object.prototype.hasOwnProperty.call(this, prop)) {
-        const value = this[prop];
-        delete (this as Partial<this>)[prop];
-        (this as ActivityFeedElement)[prop] = value as never;
-      }
-    }
+    // Property upgrade: a consumer script that ran BEFORE this module loaded.
+    upgradeProperties(this, ActivityFeedElement.prototype);
     this.syncAttributes();
     if (!this.restored) {
       this.restored = true;
