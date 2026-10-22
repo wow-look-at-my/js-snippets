@@ -14,12 +14,19 @@
   the number is backed by a sustained window, not by a handful of frames.
   See the driver comment below for why the ramp only ever goes up.
 
-  Run: node scripts/run-bench.mjs bench/bench-gl.html
+  Run: NODE_PATH=/opt/node22/lib/node_modules node scripts/run-bench.mjs bench/bench-gl.html
        (add ?warmup=0 to skip the 30 s thermal warmup while iterating)
 
   A GPU-less runner falls back to SwiftShader, which understates every GL
   row badly; the renderer string is reported so a result can never be read
   without knowing which machine produced it.
+
+  On an M1 the ordering is GL quads >800k > sprite blit 30k > canvas2d
+  path 4.6k markers/frame. SwiftShader inverts it, so no drawing decision
+  comes from a SwiftShader run. That M1 run predates the per-method size
+  caps and the per-round ramp deadline, so its GL rows are FLOORS. Run it
+  again before you quote a GL ceiling. For the span rows only the
+  sub-pixel 9-patch variants mean anything: see docs/timeline/span-9patch.md.
 -->
 <style>
 	body { font: 13px ui-monospace, monospace; background: #14161a; color: #d6dde6; }

@@ -10,7 +10,9 @@ See "Deploy".
 
 ## Directory Layout
 
-[docs/directory-layout.md](docs/directory-layout.md) holds this section.
+Run [overview](https://github.com/wow-look-at-my/overview) for the file map: every file git lists, with the first sentence of its header comment. `overview src/ui` narrows it to one directory. Install it with `go install github.com/wow-look-at-my/overview@latest`. Never write a hand-kept layout here. A fact about one file belongs in that file's header.
+
+Domain groups modules: `apng/`, `auto-refresh/`, `editor/`, `math/`, `ui/`, `webgpu/`, `webgl2/`. The deployed URL mirrors `src/` without the `src/` prefix: `src/webgpu/sky.ts` → `https://…/webgpu/sky.js`.
 
 ## Build
 
@@ -141,3 +143,4 @@ You may reads any `llms.txt` and notice ANY inaccuracy, missing module, incorrec
 - Keep modules self-contained — a consumer must only need one import
 - **No TypeScript parameter properties** (`constructor(private x: T)`) anywhere under `src/`: `just test` runs the `.ts` through node's STRIP-ONLY type removal, which rejects any syntax that emits code. Declare the field and assign it.
 - `ui/timeline-wire.ts` (decoder) and `timelinewire/` (Go encoder) are the halves of ONE format, and they live together here. A producer imports the package instead of restating the layout, which is how it used to drift. ONE fixture holds they, `timelinewire/testdata/golden-v1.b64`. The Go test asserts the encoder still emits it. The TS test decodes it. Changing the layout is a NEW VERSION (new magic, new media type) with its own fixture, not an edit to that one.
+- `timelinewire/` is a NESTED Go module. The repo root stays TypeScript and a Go producer pulls only this. Every master push that changes it cuts the next `timelinewire/vX.Y.Z` tag (deploy.yml's `go` job). A consumer runs `go get github.com/wow-look-at-my/js-snippets/timelinewire@latest` and pins a RELEASE. A pseudoversion names a commit sha that says nothing, and it rots when its branch is deleted.
