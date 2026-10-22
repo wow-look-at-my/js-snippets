@@ -1,4 +1,4 @@
-/** ui/activity-feed-math — the pure half of <activity-feed>. */
+/** ui/data-table-feed-math — the pure half of <data-table variant="feed">. */
 
 /** One row of a feed. `time` accepts anything `new Date()` understands. */
 export interface ActivityEntry {
@@ -64,7 +64,7 @@ export function timeOf(entry: ActivityEntry): number {
  * box. Every whitespace-separated term must match somewhere (AND), which is
  * what makes "manager failed" useful.
  */
-export function matchesQuery(entry: ActivityEntry, query: string): boolean {
+export function entryMatchesQuery(entry: ActivityEntry, query: string): boolean {
   const terms = String(query ?? '')
     .toLowerCase()
     .split(/\s+/)
@@ -114,14 +114,14 @@ export function selectEntries(entries: readonly ActivityEntry[] | null | undefin
     severityCounts.set(sev, (severityCounts.get(sev) ?? 0) + 1);
     familyCounts.set(fam, (familyCounts.get(fam) ?? 0) + 1);
     if (hiddenSev.has(sev) || hiddenFam.has(fam)) continue;
-    if (!matchesQuery(entry, query)) continue;
+    if (!entryMatchesQuery(entry, query)) continue;
     shown.push(entry);
   }
   return { shown, severityCounts, familyCounts, hiddenCount: (entries?.length ?? 0) - shown.length };
 }
 
 /** Is any facet or query actually narrowing the feed? */
-export function isFiltering(filter: FeedFilter = {}): boolean {
+export function isFeedFiltering(filter: FeedFilter = {}): boolean {
   return (
     String(filter.query ?? '').trim() !== '' ||
     [...(filter.hiddenSeverities ?? [])].length > 0 ||
@@ -129,8 +129,7 @@ export function isFiltering(filter: FeedFilter = {}): boolean {
   );
 }
 
-/** Serialize/parse a filter for persistence (localStorage) and for the
- * `activity-filter-change` event. */
+/** Serialize/parse a filter for persistence (localStorage). */
 export interface StoredFilter {
   query: string;
   hiddenSeverities: string[];

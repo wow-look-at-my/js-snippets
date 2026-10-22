@@ -9,10 +9,11 @@ import {
   type TimelineHit,
 } from '../src/ui/timeline-view.ts';
 import { LANES, batchForRange, type RunPlan } from './fake-data.ts';
-import { mountActivityFeedDemo } from './activity-feed-demo.ts';
 import { mountDataTableDemo } from './data-table-demo.ts';
+import { mountDataTableFeedDemo } from './data-table-feed-demo.ts';
 import { mountDagViewDemo } from './dag-view-demo.ts';
 import { mountPerfGraphDemo } from './perf-graph-demo.ts';
+import { mountBarChartDemo } from './bar-chart-demo.ts';
 import { mountFitLabelDemo } from './fit-label-demo.ts';
 import PAGE_CSS from './page.css';
 import { installTabs } from './tabs.ts';
@@ -25,9 +26,10 @@ installTabs();
 {
   const now = Date.now();
   mountDataTableDemo(now);
-  mountActivityFeedDemo(now);
+  mountDataTableFeedDemo(now);
   mountDagViewDemo();
   mountPerfGraphDemo();
+  mountBarChartDemo();
   mountFitLabelDemo();
 }
 

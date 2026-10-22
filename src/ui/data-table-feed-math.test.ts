@@ -5,16 +5,16 @@ import {
   SEVERITIES,
   familyOf,
   formatTimestamp,
-  isFiltering,
-  matchesQuery,
+  isFeedFiltering as isFiltering,
+  entryMatchesQuery as matchesQuery,
   messageOf,
   parseStoredFilter,
   selectEntries,
   severityOf,
   timeOf,
   toStoredFilter,
-} from './activity-feed-math.ts';
-import type { ActivityEntry } from './activity-feed-math.ts';
+} from './data-table-feed-math.ts';
+import type { ActivityEntry } from './data-table-feed-math.ts';
 
 const entry = (kind: string, message = '', extra: Partial<ActivityEntry> = {}): ActivityEntry => ({
   time: '2026-07-31T10:00:00Z',
