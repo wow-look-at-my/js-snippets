@@ -25,6 +25,7 @@
 				<a href="#activity-feed">&lt;activity-feed&gt;</a>
 					<a href="#dag-view">&lt;dag-view&gt;</a>
 				<a href="#perf-graph">&lt;perf-graph&gt;</a>
+				<a href="#bar-chart">&lt;bar-chart&gt;</a>
 				<a href="#fit-label">fitLabel</a>
 			</nav>
 		</header>
@@ -182,6 +183,46 @@
 				<div class="perf-column">
 					<perf-graph id="demo-perf-empty" label="idle" unit="%" compact></perf-graph>
 					<perf-graph id="demo-perf-stacked-empty" label="no columns yet" unit=""></perf-graph>
+				</div>
+			</section>
+
+			<section id="bar-chart">
+				<h2>&lt;bar-chart&gt;</h2>
+				<p class="hint">
+					Horizontal bars, each a stack of segments, in SVG. Hover a segment for its value, its
+					share of the row and the row total. The whole row band is the hover target, so a thin
+					segment is easy to hit.
+				</p>
+
+				<h3>disk composition <span class="sub">(one bar, a muted "free" series, a warning marker at the floor)</span></h3>
+				<div class="bar-column">
+					<bar-chart id="demo-bar-disk"><p>loading&hellip;</p></bar-chart>
+				</div>
+
+				<h3>bytes per run <span class="sub">(long labels, a zero row, a missing key, a segment under 1px, junk values, <code>show-values</code>)</span></h3>
+				<p class="hint">
+					A row-click listener is wired, so rows without a link are focusable buttons: tab to one and
+					press Enter. The second row carries an <code>href</code>, so its label is a link and it
+					sends no row-click.
+				</p>
+				<div class="bar-column">
+					<bar-chart id="demo-bar-runs" show-values><p>loading&hellip;</p></bar-chart>
+					<p id="demo-bar-clicked" class="hint">row-click: (none yet)</p>
+				</div>
+
+				<h3>hash colours <span class="sub">(no series sets a color: each key picks a stable one)</span></h3>
+				<div class="bar-column">
+					<bar-chart id="demo-bar-hashed" show-values><p>loading&hellip;</p></bar-chart>
+				</div>
+
+				<h3>off the scale <span class="sub">(a fixed max of 100: a row past it is cut at the edge, a marker past it and one under 0 sit at the edges)</span></h3>
+				<div class="bar-column">
+					<bar-chart id="demo-bar-beyond" show-values no-legend><p>loading&hellip;</p></bar-chart>
+				</div>
+
+				<h3>empty <span class="sub">(no rows: the chart says so instead of drawing an axis)</span></h3>
+				<div class="bar-column">
+					<bar-chart id="demo-bar-empty" empty-text="No runs recorded yet."><p>loading&hellip;</p></bar-chart>
 				</div>
 			</section>
 			<section id="fit-label">

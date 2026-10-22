@@ -1,6 +1,7 @@
 // The <dag-view> custom element: a canvas-painted, pan/zoom directed acyclic graph.
 
 import dagCss from './dag-view.css';
+import { adoptShadowStyles } from './shadow-styles.ts';
 import {
   layoutDag,
   layoutBounds,
@@ -393,15 +394,7 @@ export class DagViewElement extends HTMLElement {
   constructor() {
     super();
     const shadow = this.attachShadow({ mode: 'open' });
-    if (typeof CSSStyleSheet !== 'undefined' && 'replaceSync' in CSSStyleSheet.prototype) {
-      const sheet = new CSSStyleSheet();
-      sheet.replaceSync(dagCss);
-      shadow.adoptedStyleSheets = [sheet];
-    } else {
-      const style = document.createElement('style');
-      style.textContent = dagCss;
-      shadow.appendChild(style);
-    }
+    adoptShadowStyles(shadow, dagCss);
 
     this.canvas = document.createElement('canvas');
     shadow.appendChild(this.canvas);

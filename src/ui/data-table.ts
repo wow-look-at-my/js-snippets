@@ -1,6 +1,8 @@
 /** <data-table> — a declarative, filterable, sortable table. */
 
 import TABLE_CSS from './data-table.css';
+import { onFirstListener } from './listener-watch.ts';
+import { adoptShadowStyles } from './shadow-styles.ts';
 import { upgradeProperties } from './upgrade-properties.ts';
 import {
   hiddenFromStored,
@@ -93,15 +95,7 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
   constructor() {
     super();
     this.root = this.attachShadow({ mode: 'open' });
-    try {
-      const sheet = new CSSStyleSheet();
-      sheet.replaceSync(TABLE_CSS);
-      this.root.adoptedStyleSheets = [sheet];
-    } catch {
-      const style = document.createElement('style');
-      style.textContent = TABLE_CSS;
-      this.root.append(style);
-    }
+    adoptShadowStyles(this.root, TABLE_CSS);
 
     this.barEl = document.createElement('div');
     this.barEl.className = 'bar';
@@ -144,6 +138,13 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     this.emptyEl.hidden = true;
 
     this.root.append(this.barEl, this.tableEl, this.emptyEl);
+
+    // Rows become keyboard-reachable exactly when someone listens for
+    // `row-click`.
+    onFirstListener(this, 'row-click', () => {
+      this._interactiveRows = true;
+      this.render();
+    });
   }
 
   // -- Properties -----------------------------------------------------------
@@ -354,23 +355,6 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
       );
     } else {
       td.append(content);
-    }
-  }
-
-  /** Rows become keyboard-reachable exactly when someone is listening for
-   * `row-click`. Detecting it from the listener rather than exposing yet
-   * another flag keeps both facts that must agree — "clicking a row does
-   * something" and "a keyboard can reach a row" — impossible to set
-   * inconsistently. */
-  addEventListener(
-    type: string,
-    listener: EventListenerOrEventListenerObject | null,
-    options?: boolean | AddEventListenerOptions,
-  ): void {
-    if (listener !== null) super.addEventListener(type, listener, options);
-    if (type === 'row-click' && !this._interactiveRows) {
-      this._interactiveRows = true;
-      this.render();
     }
   }
 

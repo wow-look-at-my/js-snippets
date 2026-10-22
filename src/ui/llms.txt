@@ -234,6 +234,76 @@ A non-finite sample counts as 0, so one bad reading shortens its own band and le
 
 Types: PerfStats, AutoRangeOptions, DisplayRange, SeriesSpec
 
+### ui/bar-chart.js
+Horizontal bar chart as a <bar-chart> custom element, drawn in SVG inside a shadow root. Each row is one bar made of stacked segments, one per series, with optional vertical value markers across every row. Use it for a composition bar (a disk split into "used", "other", "free" with a "10% free floor" marker) or for one bar per item (bytes per CI run). Re-exports everything from ui/bar-chart-math.js, so one import serves both.
+
+Importing the module auto-registers <bar-chart> (unless that tag is taken).
+
+  import '.../ui/bar-chart.js';
+  const chart = document.querySelector('bar-chart');
+  chart.series = [{ key: 'run', label: 'run files' }, { key: 'other', label: 'other data' }, { key: 'free', muted: true }];
+  chart.rows = [{ id: 'disk', label: '/data', values: { run: 120e9, other: 300e9, free: 80e9 } }];
+  chart.markers = [{ value: 450e9, label: '10% free floor', kind: 'warning' }];
+
+  <bar-chart show-values empty-text="No runs yet."></bar-chart>
+
+Properties (each may be set before the module loads., muted? Array order is the stack order, left to right, and the legend order. js categoryHue + categoryColor). The same key is the same color everywhere. muted. The same key true draws a quiet neutral fill (free space, a remainder) and takes no hover emphasis. rows.
+
+BarRow[] — { id, label, values: Record<string, number>, href?, detail? }, drawn top to bottom. A row stacks its values in series order. A missing key, a negative value or a value that is not finite counts as 0. markers: BarMarker[] — { value, label, kind? 'default' | 'warning' | 'critical' }, a vertical line across all rows with its label above them. A marker past the scale end is held at the plot edge, drawn dashed, and its label points the way (`label ▸`). max. Number | null — the scale end. null (the default) is the largest row total, rounded up to a 1-2-5 step. format: (value) => string — tick.
+
+This also covers value and tooltip text, default formatCompact. showValues: boolean — reflects `show-values`. legend: boolean (default true) — reflects `no-legend`, inverted.
+
+Attributes: show-values — draw each row total at the right end of its bar. no-legend — hide the legend. Without it, a legend shows when there are 2 or more series. empty-text — the centered line of a chart with no rows (default "No data").
+
+Layout: width follows the host (ResizeObserver). Height comes from the row count. Height rows of 22px with a 2px gap. Height also rows an x axis with 3 to a set limit nice ticks below them, and a marker lane above them when markers exist. A left gutter holds the row labels. A long label is cut with an ellipsis.
+
+The tooltip gives it in full. A row with href renders its label as a link. Segments have 2px of background between them. Only the outer (right) end of a stack rounded 4px corners.
+
+Hover: the hit target is the whole row band, gap included. Hovering a segment dims the other series. Hovering a segment opens an HTML tooltip with the row label and the series label. Hovering a segment also opens its value and share of the row, the row total and the row's detail text. Hovering the label gutter or the empty part of a row shows the row with no series.
+
+Events (all bubble and compose): row-click (detail { row }) when a row with no href is clicked. Adding a row-click listener is also what makes rows focusable buttons (tabindex, role=button, Enter/Space). A chart with no listener keeps its rows out of the tab order. segment-hover (detail { row, series }). This happens when the hovered row or series changes. series is null over the gutter or the empty part of a row. Both are null when the pointer leaves the bars.
+
+Accessibility: the SVG is role="img" with an aria-label that names each row and its total (role="group" when rows are focusable). A visually hidden <table> in the shadow root holds the same numbers.
+
+CSS custom properties, with dark defaults. Text always uses the theme text colors, not a series color.
+
+```
+--bar-chart-bg               transparent
+--bar-chart-fg               primary text
+--bar-chart-text-muted       ticks, legend, tooltip detail
+--bar-chart-grid             gridlines
+--bar-chart-axis             the x axis line
+--bar-chart-muted-fill       the fill of a muted series
+--bar-chart-link             a row label with href
+--bar-chart-focus            the focus ring of a focusable row
+--bar-chart-tooltip-bg       tooltip background
+--bar-chart-tooltip-border   tooltip border
+--bar-chart-marker           a default marker (neutral)
+--bar-chart-marker-warning   a warning marker (amber)
+--bar-chart-marker-critical  a critical marker (red)
+--bar-chart-font             font family
+--bar-chart-font-size        font size
+```
+
+Exports: class BarChartElement extends HTMLElement (register under another name with customElements.define). ROW_HEIGHT, ROW_GAP, SEGMENT_GAP, END_RADIUS. Types BarRowClickDetail, BarSegmentHoverDetail. Plus everything from ui/bar-chart-math.js.
+
+### ui/bar-chart-math.js
+The pure geometry of <bar-chart>. No DOM (unit-tested under node).
+
+Exports: cleanValue(v) → number. A value that is not a finite number above no reads as 0. rowTotal(row, series) → number. The sum over the keys the series name. barScale(totals, fixedMax = null, maxTicks = 5) → BarScale { max, step, ticks }. A finite fixedMax above 0 is the end as given.
+
+Otherwise the end is the largest total rounded up to a 1-2-5 step. All-zero totals give 0..1. Ticks start at 0, land on the step and stop at max. scaleX(value, scaleMax, plotWidth) → px. stackRow(row, series, scaleMax, plotWidth) → StackedRow { total, segments, overflow }. One BarSegment { key, value, share, x, width, tiny, end } per series with a value, in series order.
+
+Widths add up to the scaled total. A total past scaleMax is cut at the plot edge and overflow is true. tiny flags a width under 1px. end flags the last segment.
+
+segmentRect(seg, gap) → { x, width } — the rectangle to paint: every segment but the end gives up `gap` px, and none goes under 1px. placeMarkers(markers, scaleMax, plotWidth) → PlacedMarker[] { marker, x, offScale }. A value under 0, past scaleMax or not finite is held at the nearest edge and flagged. rowY(index, layout) → px. hitTestBars(x, y, layout: BarRowLayout, rows: StackedRow[]) → BarHit { rowIndex, seriesKey } | null. The whole row band, gap included, belongs to the row.
+
+seriesKey is null left of the plot or past the last segment. A tiny segment is hit over its 1px. shareOf(value, total) → 0..1. formatShare(share) → '0%', '<1%', '25%', '>99%', '100%'. formatCompact(value) → '0', '12.5', '999', '1.2k', '12k', '1M', '-1.5k', '—' for a value that is not finite.
+
+ellipsize(text, availPx, measure) → string cut with '…' to fit. gutterWidth(hostWidth, widestLabelPx, min?, maxShare?, pad?) → px. summarize(rows, series, format) → the aria-label text. DEFAULT_MAX_TICKS.
+
+Types: BarSeries, BarRow, BarMarker, BarMarkerKind, BarScale, BarSegment, StackedRow, PlacedMarker, BarRowLayout, BarHit.
+
 ### ui/timeline-view.js
 Canvas-rendered realtime swimlane timeline as a <timeline-view> custom element. A shared horizontal time axis across the full width. Stacked labeled lanes (left gutter. Labels too wide for it clip with a fade-out tail — see ui/canvas-text.js — full text via tooltip. Lane order = exactly the order supplied — never re-sorted internally), each a band of interval bars (left = start, right = end). A lane grows extra sub-tracks when intervals VISIBLE in the current window overlap.
 
@@ -617,6 +687,16 @@ Coordinates are CSS px in whatever space the caller works in. Nothing here trans
 Types: HitRect.
 
 ### ui/upgrade-properties.js
-The custom-element property upgrade that <data-table> and <activity-feed> run in connectedCallback. A consumer can set a property before the module loads. That value sits on the instance and hides the setter. Pure. No DOM.
+The custom-element property upgrade that <data-table>, <activity-feed> and <bar-chart> run in connectedCallback. A consumer can set a property before the module loads. That value sits on the instance and hides the setter. Pure. No DOM.
 
   upgradeProperties(el, proto) → void Re-assigns every own property of el that shadows a setter on proto, through that setter, in declaration order. The list comes from the prototype. A new setter needs no edit here.
+
+### ui/shadow-styles.js
+How every component in this folder attaches its stylesheet.
+
+  adoptShadowStyles(root: ShadowRoot, css: string) → void Adopts css as a constructed stylesheet. An engine without constructed stylesheets gets a <style> element appended to the root.
+
+### ui/listener-watch.js
+Lets a component turn a behavior on when a page first listens for one of its events. <data-table> and <bar-chart> use it. So that rows reach the keyboard only when a row-click listener exists.
+
+  onFirstListener(target: EventTarget, type: string, onFirst: () => void) → void Calls onFirst one time, when the first non-null listener for type is added to target. Call it in the constructor: a listener added before the call is not seen.

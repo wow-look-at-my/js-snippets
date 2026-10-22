@@ -256,6 +256,11 @@ activity-feed {
 	flex: 1 1 0;
 }
 
+/* -- <bar-chart> ------------------------------------------------------------ */
+.bar-column {
+	max-width: 720px;
+}
+
 /* -- Tabs ----------------------------------------------------------------------
  *
  * One component per view: the TOC is a tab bar, and main.ts shows only the
