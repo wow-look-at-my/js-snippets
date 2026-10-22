@@ -1,7 +1,7 @@
 /** <bar-chart>: a horizontal bar chart in SVG. Each row is a stack of segments, with optional value markers. */
 
 import CHART_CSS from './bar-chart.css';
-import * as palette from './color.ts';
+import { categoryColor, categoryHue } from './color.ts';
 import { onFirstListener } from './listener-watch.ts';
 import { adoptShadowStyles } from './shadow-styles.ts';
 import { upgradeProperties } from './upgrade-properties.ts';
@@ -240,7 +240,7 @@ export class BarChartElement extends HTMLElement {
   }
 
   private colorOf(s: BarSeries): string {
-    return s.color ?? palette.categoryColor(palette.categoryHue(s.key));
+    return s.color ?? categoryColor(categoryHue(s.key));
   }
 
   private swatch(s: BarSeries): HTMLSpanElement {

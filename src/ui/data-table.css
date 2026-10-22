@@ -7,8 +7,9 @@
  *
  * Every --table-* falls back to a generic (--fg/--muted/--border/--panel/
  * --accent), so a host that already defines a palette needs no
- * configuration at all. Subclasses that want their own prefix (see
- * <activity-feed>) map their vars onto these on the host element.
+ * configuration at all. The feed variant adds the severity colors
+ * --table-bad/-warn/-good/-skip/-info, which fall back to --failure/
+ * --running/--success/--skipped/--accent.
  */
 
 :host {
@@ -156,3 +157,62 @@ tbody tr.detail-row > td {
 }
 tbody tr.detail-row .detail-pending { color: var(--table-muted); font-style: italic; }
 tbody tr.detail-row .detail-error { color: var(--table-failure, var(--failure, #f85149)); }
+
+/* -- Feed variant (variant="feed") -----------------------------------------
+ *
+ * SEVERITY is the pill tint and FAMILY is the leading dot: two axes, both
+ * derived from the kind string (data-table-feed-math.ts), so a kind the
+ * producer adds tomorrow is styled the first time it appears. A stylesheet
+ * that lists known kinds drifts, and everything unlisted shares one grey.
+ */
+:host([variant="feed"]) {
+  --table-bad: var(--failure, #f85149);
+  --table-warn: var(--running, #d29922);
+  --table-good: var(--success, #3fb950);
+  --table-skip: var(--skipped, #a371f7);
+  --table-info: var(--accent, #2f81f7);
+}
+
+:host([variant="feed"]) .time { white-space: nowrap; color: var(--table-muted); }
+:host([variant="feed"]) .msg { overflow-wrap: anywhere; }
+/* A messageRenderer link sits in the shadow root, where no host rule reaches it. */
+:host([variant="feed"]) .msg a { color: var(--table-accent); }
+
+:host([variant="feed"]) .kind {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-family: var(--table-mono);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--table-muted);
+  white-space: nowrap;
+}
+
+/* The badge tint and the chip tint are one rule: a chip must read as the
+   same thing as the rows it hides. */
+:host([variant="feed"]) .sev-bad:is(.kind, .chip) { background: rgba(248, 81, 73, 0.15); color: var(--table-bad); }
+:host([variant="feed"]) .sev-warn:is(.kind, .chip) { background: rgba(210, 153, 34, 0.15); color: var(--table-warn); }
+:host([variant="feed"]) .sev-good:is(.kind, .chip) { background: rgba(63, 185, 80, 0.15); color: var(--table-good); }
+:host([variant="feed"]) .sev-skip:is(.kind, .chip) { background: rgba(163, 113, 247, 0.15); color: var(--table-skip); }
+:host([variant="feed"]) .sev-info:is(.kind, .chip) { background: rgba(47, 129, 247, 0.13); color: var(--table-info); }
+
+/* The family dot, on the badge and on the family chip alike. --fam-hue is
+   set per element from the family's derived hue, so an unmapped family
+   still gets a stable distinct color. */
+:host([variant="feed"]) .kind::before,
+:host([variant="feed"]) .chip.fam::before {
+  content: "";
+  display: inline-block;
+  width: 0.45em;
+  height: 0.45em;
+  margin-right: 0.4em;
+  border-radius: 50%;
+  vertical-align: 0.08em;
+  background: hsl(var(--fam-hue, 210) 60% 68%);
+}
+
+/* Row-level severity accent: a thin left rule, so a wall of rows still reads
+   at a glance when scrolled past reading speed. */
+:host([variant="feed"]) tbody tr.sev-bad { border-left-color: var(--table-bad); }
+:host([variant="feed"]) tbody tr.sev-warn { border-left-color: var(--table-warn); }

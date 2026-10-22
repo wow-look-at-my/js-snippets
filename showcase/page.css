@@ -205,10 +205,9 @@ main section .hint {
 }
 
 /* The demo tables and feeds inherit the page palette through the shadow
-   boundary: the components read --table-*/--activity-*, each falling back
-   to these generics, so theming them is setting five variables once. */
-data-table,
-activity-feed {
+   boundary: the component reads --table-*, each falling back to these
+   generics, so theming them is setting five variables once. */
+data-table {
 	--fg: #e8ecf4;
 	--muted: #6b7280;
 	--border: rgba(200, 205, 216, 0.14);

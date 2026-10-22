@@ -1,41 +1,20 @@
-### ui/activity-feed.js
-Filterable activity/event log table as an <activity-feed> custom element. One element = one feed of timestamped, kinded events, presented with a free-text query plus severity toggle chips (optionally family chips) with live counts. This is a "showing N of M" readout and a clear-filter button. Dependency-free. Re-exports ui/activity-feed-math.js so one import serves both.
-
-IT IS A <data-table> UNDERNEATH (ui/data-table.js): rows, chips, counts, the empty states and the filter plumbing are that component's. This module supplies only what is feed-specific — three columns, the kind badge, and the severity/family derivation. The public API below is unchanged, including the persisted filter shape.
-
-COLOR IS DERIVED, not ENUMERATED: severity comes from the ACTION half of a dotted kind ("manager.inbox_dropped" -> bad) and tints the badge pill. Family comes from the NAMESPACE half and picks a stable hue for the badge's leading dot. A kind the producer adds tomorrow is styled the first time it appears — a stylesheet enumerating known kinds drifts silently. This is everything unlisted shares one grey.
-
-Entry text is rendered as TEXT NODES, not innerHTML, so producer strings cannot inject markup. `messageRenderer` is the opt-in hook for richer message DOM (the consumer owns that DOM's safety).
-
-  <activity-feed empty-text="Nothing yet." storage-key="app.activity" family-chips placeholder="filter activity..."> <p>loading activity...</p> <!-- light DOM: shown until upgrade --> </activity-feed>
-
-Properties (all settable BEFORE the module loads — connectedCallback performs the standard property upgrade, so a consumer script that ran first never loses its values): entries: ActivityEntry[] rows, rendered in the given order messageRenderer. (message, entry) => Node | string | null timeFormatter: (time, entry) => string (default: locale date-time) familyAliases: Record<string,string> e.g. {hooks: 'hook'} columns. Partial<ColumnLabels> {time, kind, message} headings emptyText / storageKey / familyChips mirror the attributes filter: StoredFilter get/set the whole filter clearFilter() drop query + every facet
-
-Attributes: empty-text, storage-key (localStorage key for the filter. Unset = no persistence), family-chips (boolean), placeholder.
-
-Event: `activity-filter-change` (bubbles, composed) — detail is the StoredFilter. Fired on every query/chip/clear change, not on data changes.
-
-Theme via --activity-* custom properties (activity-feed.css). These fall back to generic --fg/--muted/--border/--panel/--accent plus --failure/--running/--success/--skipped, so a host that already defines. A status palette needs no configuration.
-
-Exports: class ActivityFeedElement, familyHue(family) -> number (0..359, stable per name), types MessageRenderer, ColumnLabels — plus everything from ui/activity-feed-math.js.
-
-### ui/activity-feed-math.js
-The feed's pure half. No DOM (unit-tested under node).
+### ui/data-table-feed-math.js
+The pure half of <data-table variant="feed">. No DOM (unit-tested under node). ui/data-table.js re-exports all of it.
 
 Exports: SEVERITIES — ['bad','warn','skip','good','info'], loudest-first (the chip order). SEVERITY_RULES — ordered [severity, RegExp] pairs matched against the action half, FIRST match wins. The order is load-bearing: 'hook.disabled_rejected' must be bad (not warn on "disabled") and 'reload.unverified' must be warn (not good on "verified"). severityOf(kind) -> Severity. This is anything unclaimed is 'info' (ordinary lifecycle chatter). Degenerate kinds ('', no dot, undefined) -> 'info'.
 
 familyOf(kind, aliases?) -> string — the namespace half. `aliases` folds spellings ({hooks:'hook'}).
 
-Explicitly a map, not automatic plural stripping, which will turn the ordinary family 'status' into 'statu'. messageOf(entry) / timeOf(entry) — the message (accepts `message` or the `msg` alias). Epoch ms (NaN when absent/unparseable). matchesQuery(entry, query) -> boolean — case-insensitive over kind, message and field VALUES. Whitespace-separated terms are ANDed. selectEntries(entries, filter?) -> FeedSelection — { shown, severityCounts, familyCounts, hiddenCount }.
+Explicitly a map, not automatic plural stripping, which will turn the ordinary family 'status' into 'statu'. messageOf(entry) / timeOf(entry) — the message (accepts `message` or the `msg` alias). Epoch ms (NaN when absent/unparseable). entryMatchesQuery(entry, query) -> boolean — case-insensitive over kind, message and field VALUES. Whitespace-separated terms are ANDed. selectEntries(entries, filter?) -> FeedSelection — { shown, severityCounts, familyCounts, hiddenCount }.
 
-Counts cover the WHOLE input (a chip must keep showing what it hides) while `shown` is what survives every facet. Input order is preserved. isFiltering(filter?) -> boolean — is the feed actually narrowed (whitespace-only queries are not). toStoredFilter(filter?) / parseStoredFilter(raw) -> StoredFilter — stable sorted {query, hiddenSeverities. This is hiddenFamilies} for persistence and the change event.
+Counts cover the WHOLE input (a chip must keep showing what it hides) while `shown` is what survives every facet. Input order is preserved. isFeedFiltering(filter?) -> boolean — is the feed actually narrowed (whitespace-only queries are not). toStoredFilter(filter?) / parseStoredFilter(raw) -> StoredFilter — stable sorted {query, hiddenSeverities, hiddenFamilies}, the shape a feed persists under its storage-key.
 
 Parsing degrades to "no filter" on anything malformed rather than throwing. formatTimestamp(value) -> string — locale date-time. '' for a missing/unparseable time, so a row never shows "Invalid Date".
 
 Types: ActivityEntry, Severity, FeedFilter, FeedSelection, StoredFilter
 
 ### ui/data-table.js
-Declarative filterable/sortable table as a <data-table> custom element. You declare columns and hand over rows. It owns the header and sort cycle, the free-text query, the facet chip groups, the "showing N of M" readout and the distinct empty states. Dependency-free. Re-exports ui/data-table-math.js so one import serves both. <activity-feed> is built on it -- nothing about tables is implemented twice.
+Declarative filterable/sortable table as a <data-table> custom element. You declare columns and hand over rows. It owns the header and sort cycle, the free-text query, the facet chip groups, the "showing N of M" readout and the distinct empty states. Dependency-free. Re-exports ui/data-table-math.js and ui/data-table-feed-math.js, so one import serves all three.
 
 VALUE vs RENDER vs TEXT is the column contract: `value` SORTS, `render` DISPLAYS, `text` SEARCHES (defaulting to value's string). A duration column sorts by milliseconds, shows "1.2s" and is searched as "1.2s". Collapse them and the table sorts "10s" before "9s".
 
@@ -59,7 +38,21 @@ Accessibility: headers carry scope=col and aria-sort, sortable headers are focus
 
 Theme via --table-* custom properties (data-table.css), falling back to generic --fg/--muted/--border/--panel/--accent.
 
-Exports: class DataTableElement, types CellRenderer, TableColumn, FacetGroup -- plus everything from ui/data-table-math.js.
+FEED VARIANT (variant="feed", attribute or `variant` property): the table becomes an activity/event log of timestamped, kinded entries. It then OWNS columns, facets, searchText, rowClass and rows (do not set those), always shows the query box, and adds severity chips (plus family chips with `family-chips`). Columns are time, kind (a badge) and message.
+
+COLOR IS DERIVED, not ENUMERATED: severity comes from the ACTION half of a dotted kind ("manager.inbox_dropped" -> bad) and tints the badge pill. This also covers the chip and (bad/warn) the row's left rule. Family comes from the NAMESPACE half and picks a stable hue for the badge's leading dot. A kind the producer adds tomorrow is styled the first time it appears.
+
+  <data-table variant="feed" empty-text="Nothing yet." storage-key="app.activity" family-chips placeholder="filter activity...">
+    <p>loading activity...</p>
+  </data-table>
+
+Feed properties (settable before the module loads, like the rest): entries: ActivityEntry[] (newest-first as given, order preserved) messageRenderer: (message, entry) => Node | string (the linkify hook. A Node is the consumer's DOM and its safety is the consumer's) timeFormatter: (time, entry) => string (default: locale date-time) familyAliases: Record<string,string> e.g. {hooks. 'hook'} columnLabels: Partial<ColumnLabels> {time, kind, message} headings familyChips mirrors the attribute. The placeholder defaults to "filter activity…".
+
+Feed attributes: variant="feed", family-chips (boolean). empty-text, storage-key and placeholder work as above.
+
+The feed's storage-key holds the StoredFilter shape {query, hiddenSeverities, hiddenFamilies}. `filter` and `table-filter-change` use the table shape, with the groups "severity" and "family". Severity colors: --table-bad/-warn/-good/-skip/-info, falling back to --failure/--running/--success/--skipped/--accent.
+
+Exports. Class DataTableElement, familyHue(family) -> number (stable per name), types CellRenderer, TableColumn, FacetGroup, MessageRenderer, TimeFormatter, ColumnLabels. Plus everything from ui/data-table-math.js and ui/data-table-feed-math.js.
 
 ### ui/data-table-math.js
 The table's pure half. No DOM (unit-tested under node).
@@ -687,7 +680,7 @@ Coordinates are CSS px in whatever space the caller works in. Nothing here trans
 Types: HitRect.
 
 ### ui/upgrade-properties.js
-The custom-element property upgrade that <data-table>, <activity-feed> and <bar-chart> run in connectedCallback. A consumer can set a property before the module loads. That value sits on the instance and hides the setter. Pure. No DOM.
+The custom-element property upgrade that <data-table> and <bar-chart> run in connectedCallback. A consumer can set a property before the module loads. That value sits on the instance and hides the setter. Pure. No DOM.
 
   upgradeProperties(el, proto) → void Re-assigns every own property of el that shadows a setter on proto, through that setter, in declaration order. The list comes from the prototype. A new setter needs no edit here.
 

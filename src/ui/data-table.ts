@@ -16,7 +16,22 @@ import {
   type StoredTableFilter,
 } from './data-table-math.ts';
 
+import {
+  DEFAULT_COLUMN_LABELS,
+  FEED_PLACEHOLDER,
+  FeedState,
+  feedFilterFromStored,
+  feedFilterToStored,
+  type ColumnLabels,
+  type FeedHost,
+  type MessageRenderer,
+  type TimeFormatter,
+} from './data-table-feed.ts';
+import type { ActivityEntry } from './data-table-feed-math.ts';
+
 export * from './data-table-math.ts';
+export * from './data-table-feed-math.ts';
+export { familyHue, type ColumnLabels, type MessageRenderer, type TimeFormatter } from './data-table-feed.ts';
 
 /** Renders one cell. A string is appended as text; a Node as-is. */
 export type CellRenderer<Row extends DataRow = DataRow> = (row: Row) => Node | string | null;
@@ -59,7 +74,7 @@ export interface FacetGroup<Row extends DataRow = DataRow> {
 const DEFAULT_EMPTY = 'Nothing yet.';
 
 export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement {
-  static observedAttributes = ['empty-text', 'storage-key', 'placeholder', 'searchable'];
+  static observedAttributes = ['empty-text', 'storage-key', 'placeholder', 'searchable', 'variant', 'family-chips'];
 
   protected root: ShadowRoot;
   private barEl: HTMLDivElement;
@@ -89,6 +104,8 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
   /** Row ids whose detail is open. */
   private _expanded = new Set<string>();
   private restored = false;
+  /** The feed settings. They take effect only while `variant` is "feed". */
+  private feed = new FeedState();
 
   constructor() {
     super();
@@ -109,7 +126,7 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     this.queryEl = document.createElement('input');
     this.queryEl.className = 'q';
     this.queryEl.type = 'search';
-    this.queryEl.placeholder = this.getAttribute('placeholder') ?? 'filter…';
+    this.syncPlaceholder();
     this.queryEl.setAttribute('aria-label', 'Filter rows');
     this.queryEl.addEventListener('input', () => {
       this._query = this.queryEl.value;
@@ -258,6 +275,88 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     else this.removeAttribute('searchable');
   }
 
+  // -- Feed variant ---------------------------------------------------------
+
+  /** "feed" makes the table an event log: it then owns columns, facets,
+   * searchText, rowClass and rows, and always shows the query box. */
+  get variant(): string | null {
+    return this.getAttribute('variant');
+  }
+  set variant(v: string | null) {
+    if (v == null) this.removeAttribute('variant');
+    else this.setAttribute('variant', v);
+  }
+
+  private get isFeed(): boolean {
+    return this.getAttribute('variant') === 'feed';
+  }
+
+  /** Feed mode: the entries, newest-first as given (order is preserved). */
+  get entries(): ActivityEntry[] {
+    return this.feed.entries;
+  }
+  set entries(v: ActivityEntry[] | null | undefined) {
+    this.feed.entries = Array.isArray(v) ? v : [];
+    if (this.isFeed) this.feedHost().rows = this.feed.entries;
+  }
+
+  /** Feed mode: per-entry message renderer (the linkify hook). */
+  get messageRenderer(): MessageRenderer | null {
+    return this.feed.messageRenderer;
+  }
+  set messageRenderer(fn: MessageRenderer | null) {
+    this.feed.messageRenderer = typeof fn === 'function' ? fn : null;
+    this.applyFeed();
+  }
+
+  /** Feed mode: per-entry time formatter. The default is the host locale's date-time. */
+  get timeFormatter(): TimeFormatter | null {
+    return this.feed.timeFormatter;
+  }
+  set timeFormatter(fn: TimeFormatter | null) {
+    this.feed.timeFormatter = typeof fn === 'function' ? fn : null;
+    this.applyFeed();
+  }
+
+  /** Feed mode: family spellings to fold together, e.g. {hooks: 'hook'}. */
+  get familyAliases(): Record<string, string> {
+    return this.feed.familyAliases;
+  }
+  set familyAliases(v: Record<string, string> | null | undefined) {
+    this.feed.familyAliases = v && typeof v === 'object' ? { ...v } : {};
+    this.applyFeed();
+  }
+
+  /** Feed mode: the column headings. */
+  get columnLabels(): ColumnLabels {
+    return this.feed.columnLabels;
+  }
+  set columnLabels(v: Partial<ColumnLabels> | null | undefined) {
+    this.feed.columnLabels = { ...DEFAULT_COLUMN_LABELS, ...(v ?? {}) };
+    this.applyFeed();
+  }
+
+  /** Feed mode: show a chip per family next to the severity chips. */
+  get familyChips(): boolean {
+    return this.hasAttribute('family-chips');
+  }
+  set familyChips(v: boolean) {
+    if (v) this.setAttribute('family-chips', '');
+    else this.removeAttribute('family-chips');
+  }
+
+  private feedHost(): FeedHost {
+    return this as unknown as FeedHost;
+  }
+
+  private applyFeed(): void {
+    if (this.isFeed) this.feed.apply(this.feedHost(), this.familyChips);
+  }
+
+  private syncPlaceholder(): void {
+    this.queryEl.placeholder = this.getAttribute('placeholder') ?? (this.isFeed ? FEED_PLACEHOLDER : 'filter…');
+  }
+
   get filter(): StoredTableFilter {
     return toStoredTableFilter({ query: this._query, hidden: this._hidden, sort: this._sort });
   }
@@ -387,8 +486,10 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
   }
 
   attributeChangedCallback(name: string): void {
-    if (name === 'placeholder') this.queryEl.placeholder = this.getAttribute('placeholder') ?? 'filter…';
-    if (name === 'storage-key') this.restoreFilter();
+    if (name === 'placeholder' || name === 'variant') this.syncPlaceholder();
+    // The variant decides the stored shape, so a restore must run again after it changes.
+    if (name === 'storage-key' || name === 'variant') this.restoreFilter();
+    if (name === 'variant' || name === 'family-chips') this.applyFeed();
     this.render();
   }
 
@@ -405,7 +506,9 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     const key = this.storageKey;
     if (!key) return;
     try {
-      this.applyStored(parseStoredTableFilter(globalThis.localStorage?.getItem(key)));
+      const raw = globalThis.localStorage?.getItem(key);
+      // Feed mode keeps the stored shape that feeds already hold in localStorage.
+      this.applyStored(this.isFeed ? feedFilterFromStored(raw) : parseStoredTableFilter(raw));
     } catch {
     }
   }
@@ -414,13 +517,14 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     const key = this.storageKey;
     if (!key) return;
     try {
-      globalThis.localStorage?.setItem(key, JSON.stringify(this.filter));
+      const value = this.isFeed ? feedFilterToStored(this.filter) : this.filter;
+      globalThis.localStorage?.setItem(key, JSON.stringify(value));
     } catch {
     }
   }
 
   /** Called after any filter/sort mutation. Subclasses may override to
-   * persist or emit in their own shape (see <activity-feed>). */
+   * persist or emit in their own shape. */
   protected filterChanged(): void {
     this.persistFilter();
     this.render();
@@ -534,7 +638,9 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
   protected render(): void {
     if (!this.isConnected && this._rows.length === 0 && this._columns.length === 0) return;
 
-    this.queryEl.hidden = !this.searchable;
+    // A feed always has its query box.
+    const searchable = this.searchable || this.isFeed;
+    this.queryEl.hidden = !searchable;
 
     // Only LOCAL groups take part in selection; a host-filtered group's
     // exclusions were already applied upstream (see FacetGroup.local).
@@ -555,7 +661,7 @@ export class DataTableElement<Row extends DataRow = DataRow> extends HTMLElement
     // The clear affordance, though, covers every hidden bucket including a host-filtered group's — otherwise a chip could be toggled.
     const anyHidden = isFiltering({ query: this._query, hidden: this._hidden });
     this.clearEl.hidden = !anyHidden;
-    this.barEl.hidden = !this.searchable && this.chipsWrapEl.childElementCount === 0 && !anyHidden;
+    this.barEl.hidden = !searchable &&this.chipsWrapEl.childElementCount === 0 && !anyHidden;
 
     const ordered = sortRows(shown, this._columns, this._sort);
 
