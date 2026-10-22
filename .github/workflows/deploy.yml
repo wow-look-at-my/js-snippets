@@ -1,3 +1,4 @@
+# Tests, builds and publishes the library and the showcase, and releases timelinewire.
 name: CI / Deploy
 
 # Every branch, no tags: the go job pushes a timelinewire/vX.Y.Z tag, which would otherwise start this workflow again.

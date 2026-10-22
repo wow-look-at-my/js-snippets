@@ -1,3 +1,5 @@
+// Rows: a page encoded from and decoded into a slice of tagged structs.
+
 package timelinewire
 
 import (
