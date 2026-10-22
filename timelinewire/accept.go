@@ -1,3 +1,5 @@
+// Accept-header matching, so a server sends the wire format only to a client that asks for it.
+
 package timelinewire
 
 import "strings"

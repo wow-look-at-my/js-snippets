@@ -46,6 +46,14 @@ These modules are left to manual and integration testing.
 - **`scripts/check-dag-view.ts`** drives `<dag-view>` in a real Chromium. Node strips its types and runs it. `ts0 build` type-checks `scripts/` too. The file imports `DagViewElement` as a type. A call it gets incorrect fails the build. It checks that the element upgrades and that the canvas paints anything at all. It checks that the cycle and rejected-edge reporting reaches the notice strip. It checks the hover tooltip, the click selection, the arrow-key graph walk and the toolbar. It checks that search highlights rather than filters. It also writes the reference screenshots.
 - **`scripts/check-timeline-bounds.mjs`** does the same for `<timeline-view>`'s `minTime` and `maxTime`. Those are element-level properties that no node test can reach. It also drives the sub-span instance. It sweeps the pointer down the real element and asserts that a sub-span's row lies under its parent's. It reads the painted box back from the canvas. It checks the tooltip and the box hit.
 - **`scripts/check-perf-graph.mjs`** does the same for `<perf-graph>`'s stacked mode. It reads a pixel column back from the plot and counts the distinct colors. It does this on the per-sample path and on the binned one. It reads the plot only, between the readout row and the legend row. A legend swatch carries a band's color whether or not that band has data. It also writes the reference screenshot.
-- **`scripts/screenshot-showcase.mjs`** captures the README's `<timeline-view>` picture from the real component. The image cannot drift.
+- **`scripts/screenshot-showcase.mjs`** captures the README's `<timeline-view>` picture from the real component. The image cannot drift. Run it again after a visual change.
+
+Each script runs against the built gallery. playwright is installed globally, not a dependency of this repo, so the run names `NODE_PATH`:
+
+```sh
+just build-showcase && NODE_PATH=/opt/node22/lib/node_modules node scripts/check-dag-view.ts
+```
+
+The same line runs `check-perf-graph.mjs`, `check-timeline-bounds.mjs` and `screenshot-showcase.mjs`.
 
 Add a line here when you add a module that mixes pure and bound code. Split it the same way. Note the gap rather than forcing a fake.
