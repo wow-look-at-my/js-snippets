@@ -524,7 +524,14 @@ Selecting a node opens a panel. At the bottom left with the full label, the stat
 
 A polling dashboard does not close the panel.
 
-Events (all CustomEvent): `nodeclick` {node, placed}, `edgeclick` {edge, placed}, `nodehover` {hit|null}, `selectionchange` {node|null}, `layoutchange` (detail is DagInfo), `fullscreenchange` {fullscreen}. This is `snapshotcopy` {text} after a right-click copies the state.
+Events (all CustomEvent): `nodeclick` {node, placed}, `edgeclick` {edge, placed}, `nodehover` {hit|null}, `selectionchange` {node|null}, `layoutchange` (detail is DagInfo), `fullscreenchange` {fullscreen}. This is `snapshotcopy` {text} after a right-click copies the state. `graphdownload` {name, format, bytes} follows a download.
+
+The right-click menu has a "Download graph" flyout with multiple formats. JSON is the snapshot. SVG is the whole graph as a standalone document with real text. PNG is the whole graph drawn by the canvas code at full size, its longer side capped at PNG_MAX_SIDE device pixels. Mermaid is a `flowchart` with generated node ids and each real id in a `%%` comment. The `download-name` attribute sets the file name stem (default `graph`).
+
+The snapshot rounds coordinates to whole pixels, and the copied and downloaded JSON is compact.
+
+### ui/dag-export.js
+The pure half of the dag-view download menu. No DOM. dagToSvg(nodes, edges, bounds, theme) returns the SVG text. dagToMermaid(nodes, edges, orientation) returns the flowchart text. exportFileName(stem, capturedAt, ext) and pngScale(w, h, wanted) name and size a download. xmlEscape and mermaidText escape text for each format.
 
 Node states: a `state` string picks a treatment from the style map. Built-ins are done (solid), blocked (hatched), pending (dashed outline), missing (dim dashed outline) and failed (stippled). A hatch or a stipple fills a band at the leading edge only, over a faint tint of the category colour. Text never sits on the pattern. A state with no entry draws as a plain solid node in its category colour -- a readable node, not a blank one. As a result, a producer can add a state tomorrow.
 

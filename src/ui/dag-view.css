@@ -441,9 +441,21 @@ button[hidden] {
 }
 
 .menu-item:hover,
-.menu-item:focus-visible {
+.menu-item:focus-visible,
+.menu-item[aria-expanded="true"] {
   background: var(--dag-line, #2a3040);
   outline: none;
+}
+
+.menu-item.has-sub::after {
+  content: "▸";
+  float: right;
+  margin-left: 16px;
+  opacity: 0.6;
+}
+
+.menu.sub {
+  min-width: 100px;
 }
 
 /* -- Empty state ---------------------------------------------------------------- */

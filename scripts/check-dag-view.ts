@@ -227,7 +227,7 @@ const menu = await page.evaluate(() => {
 	const m = el.shadowRoot!.querySelector<HTMLElement>('.menu')!;
 	return {
 		hidden: m.hidden,
-		items: [...m.querySelectorAll('.menu-item')].map((b) => b.textContent ?? ''),
+		items: [...m.querySelectorAll(':scope > .menu-item')].map((b) => b.textContent ?? ''),
 	};
 });
 check('the right-click opens a menu', !menu.hidden, JSON.stringify(menu));
@@ -242,7 +242,7 @@ check(
 // text back cannot see that -- only the boxes can.
 const rows = await page.evaluate(() => {
 	const el = document.getElementById('demo-dag') as DagViewElement;
-	return [...el.shadowRoot!.querySelectorAll('.menu-item')].map((b) => {
+	return [...el.shadowRoot!.querySelectorAll('.menu:not(.sub) > .menu-item')].map((b) => {
 		const r = b.getBoundingClientRect();
 		return { top: Math.round(r.top), h: Math.round(r.height) };
 	});
@@ -292,10 +292,11 @@ try {
 	snap = null;
 }
 check('the clipboard holds parseable JSON', snap !== null, `${dump.text.length} bytes`);
+check('the dump is compact: one line, no indent', !dump.text.includes('\n'), `${dump.text.length} bytes`);
 check(
-	'the dump is indented with tabs',
-	/\n\t"/.test(dump.text) && !/\n {2}"/.test(dump.text),
-	dump.text.split('\n')[1] ?? '',
+	'the dump rounds coordinates to whole pixels',
+	snap !== null && snap.nodes.every((n) => Number.isInteger(n.screen.x) && Number.isInteger(n.screen.y)),
+	dump.text.slice(0, 200),
 );
 
 if (snap !== null) {
@@ -312,6 +313,97 @@ if (snap !== null) {
 	check('a visible node carries its canvas pixels', onCanvas, JSON.stringify(bundle));
 	check('edge points carry canvas pixels too', snap.edges.every((e) => e.screen.length >= 2));
 }
+
+// -- Interaction: the Download graph flyout --------------------------------------------
+
+// The blob and the file name are caught where the element hands them to the browser.
+// A headless page has no download folder, and the bytes are what has to be right.
+await page.evaluate(() => {
+	const w = window as unknown as { __dl: { name: string; type: string; blob: Blob }[] };
+	w.__dl = [];
+	const blobs = new Map<string, Blob>();
+	const make = URL.createObjectURL.bind(URL);
+	URL.createObjectURL = (b: Blob | MediaSource): string => {
+		const url = make(b);
+		if (b instanceof Blob) blobs.set(url, b);
+		return url;
+	};
+	HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement): void {
+		const blob = blobs.get(this.href);
+		if (blob !== undefined) w.__dl.push({ name: this.download, type: blob.type, blob });
+	};
+});
+
+const flyout: Record<string, { name: string; type: string; text: string; png?: { w: number; h: number } }> = {};
+for (const format of ['JSON', 'SVG', 'PNG', 'Mermaid']) {
+	await page.mouse.click(nodeScreenPoint.x, nodeScreenPoint.y, { button: 'right' });
+	await page.waitForTimeout(120);
+	const sub = await page.evaluate(() => {
+		const el = document.getElementById('demo-dag') as DagViewElement;
+		const parent = [...el.shadowRoot!.querySelectorAll<HTMLButtonElement>('.menu-item')].find((b) => /Download graph/.test(b.textContent ?? ''));
+		if (parent === undefined) return null;
+		const r = parent.getBoundingClientRect();
+		return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+	});
+	if (sub === null) {
+		check('the menu offers Download graph', false);
+		break;
+	}
+	// Hover opens the flyout, the way a reader reaches it.
+	await page.mouse.move(sub.x, sub.y);
+	await page.waitForTimeout(80);
+	const opened = await page.evaluate((f: string) => {
+		const el = document.getElementById('demo-dag') as DagViewElement;
+		const s = el.shadowRoot!.querySelector<HTMLElement>('.menu.sub')!;
+		const items = [...s.querySelectorAll<HTMLButtonElement>('.menu-item')];
+		const target = items.find((b) => b.textContent === f);
+		const r = target?.getBoundingClientRect();
+		return { hidden: s.hidden, labels: items.map((b) => b.textContent ?? ''), at: r === undefined ? null : { x: r.x + r.width / 2, y: r.y + r.height / 2 } };
+	}, format);
+	check(`hovering Download graph opens the flyout (${format})`, !opened.hidden && opened.at !== null, JSON.stringify(opened));
+	if (opened.at === null) continue;
+	check('the flyout lists JSON, SVG, PNG and Mermaid', opened.labels.join(',') === 'JSON,SVG,PNG,Mermaid', opened.labels.join(','));
+	await page.mouse.move(opened.at.x, opened.at.y);
+	await page.mouse.click(opened.at.x, opened.at.y);
+	await page.waitForTimeout(format === 'PNG' ? 1500 : 200);
+	flyout[format] = await page.evaluate(async () => {
+		const w = window as unknown as { __dl: { name: string; type: string; blob: Blob }[] };
+		const d = w.__dl.at(-1);
+		if (d === undefined) return { name: '', type: '', text: '' };
+		if (d.type !== 'image/png') return { name: d.name, type: d.type, text: await d.blob.text() };
+		const bmp = await createImageBitmap(d.blob);
+		return { name: d.name, type: d.type, text: '', png: { w: bmp.width, h: bmp.height } };
+	});
+}
+
+const nodeCount = info.info.nodeCount;
+const json = flyout.JSON;
+check('JSON downloads a .json file of compact JSON', json !== undefined && /\.json$/.test(json.name) && !json.text.includes('\n'), json?.name ?? 'none');
+check(
+	'the JSON download holds every node',
+	json !== undefined && (JSON.parse(json.text || '{"nodes":[]}') as { nodes: unknown[] }).nodes.length === nodeCount,
+	`${json?.text.length ?? 0} bytes`,
+);
+const svg = flyout.SVG;
+check('SVG downloads an .svg document', svg !== undefined && /\.svg$/.test(svg.name) && svg.text.startsWith('<svg '), svg?.name ?? 'none');
+check('the SVG draws every node as a box', svg !== undefined && (svg.text.match(/<rect x=/g) ?? []).length === nodeCount, String((svg?.text.match(/<rect x=/g) ?? []).length));
+check(
+	'the SVG parses as XML',
+	svg !== undefined &&
+		(await page.evaluate((t: string) => new DOMParser().parseFromString(t, 'image/svg+xml').querySelector('parsererror') === null, svg.text)),
+);
+const png = flyout.PNG;
+check('PNG downloads a .png image of the whole graph', png !== undefined && /\.png$/.test(png.name) && (png.png?.w ?? 0) > 100 && (png.png?.h ?? 0) > 100, JSON.stringify(png?.png));
+const mmd = flyout.Mermaid;
+check('Mermaid downloads a flowchart', mmd !== undefined && /\.mmd$/.test(mmd.name) && /^flowchart (TB|LR)\n/.test(mmd.text), mmd?.text.slice(0, 40) ?? 'none');
+check('the flowchart declares every node', mmd !== undefined && (mmd.text.match(/^ {2}n\d+\["/gm) ?? []).length === nodeCount);
+check(
+	'the canvas still draws the view after the PNG',
+	await page.evaluate(() => {
+		const el = document.getElementById('demo-dag') as DagViewElement;
+		return el.snapshot.canvas.width < 2000;
+	}),
+);
 
 // -- Interaction: the arrow keys walk the graph ---------------------------------------
 
