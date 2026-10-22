@@ -91,7 +91,6 @@ import type { LaneScrollable } from './timeline-view-math.ts';
 import { FADE_TAIL_CHARS, FadeTextPainter, deriveLabelTiers, fitTieredText } from './canvas-text.ts';
 
 import TIMELINE_CSS from './timeline-view.css';
-import { adoptShadowStyles } from './shadow-styles.ts';
 
 export * from './timeline-view-math.ts';
 
@@ -532,7 +531,15 @@ export class TimelineViewElement extends HTMLElement {
   constructor() {
     super();
     const shadow = this.attachShadow({ mode: 'open' });
-    adoptShadowStyles(shadow, TIMELINE_CSS);
+    try {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(TIMELINE_CSS);
+      shadow.adoptedStyleSheets = [sheet];
+    } catch {
+      const style = document.createElement('style');
+      style.textContent = TIMELINE_CSS;
+      shadow.append(style);
+    }
     this.canvas = document.createElement('canvas');
     this.mmCanvas = document.createElement('canvas');
     this.mmCanvas.className = 'minimap';

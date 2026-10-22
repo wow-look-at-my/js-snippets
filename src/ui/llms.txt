@@ -692,11 +692,11 @@ The custom-element property upgrade that <data-table>, <activity-feed> and <bar-
   upgradeProperties(el, proto) → void Re-assigns every own property of el that shadows a setter on proto, through that setter, in declaration order. The list comes from the prototype. A new setter needs no edit here.
 
 ### ui/shadow-styles.js
-How every component in this folder attaches its stylesheet.
+Attaches a component stylesheet to a shadow root. <bar-chart> uses it.
 
   adoptShadowStyles(root: ShadowRoot, css: string) → void Adopts css as a constructed stylesheet. An engine without constructed stylesheets gets a <style> element appended to the root.
 
 ### ui/listener-watch.js
-Lets a component turn a behavior on when a page first listens for one of its events. <data-table> and <bar-chart> use it. So that rows reach the keyboard only when a row-click listener exists.
+Lets a component turn a behavior on when a page first listens for one of its events. <bar-chart> uses it. Its rows reach the keyboard only when a row-click listener exists.
 
   onFirstListener(target: EventTarget, type: string, onFirst: () => void) → void Calls onFirst one time, when the first non-null listener for type is added to target. Call it in the constructor: a listener added before the call is not seen.
