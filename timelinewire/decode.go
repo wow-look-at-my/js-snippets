@@ -1,3 +1,5 @@
+// Decode, the inverse of Encode.
+
 package timelinewire
 
 import (

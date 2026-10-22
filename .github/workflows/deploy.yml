@@ -1,3 +1,4 @@
+# Tests, builds and publishes the library and the showcase, and releases timelinewire.
 name: CI / Deploy
 
 # Every branch, no tags: the go job pushes a timelinewire/vX.Y.Z tag, which would otherwise start this workflow again.
@@ -84,6 +85,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: wow-look-at-my/actions@ste-lint#latest
+
+  # Every non-test source file carries a header comment, because `overview` reads the file map from those headers.
+  headers:
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || vars.CI_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: curl -fsSL --compressed "https://dl.pazer.build/overview?os=linux&arch=amd64" -o "${{ runner.temp }}/overview" && chmod +x "${{ runner.temp }}/overview"
+      - run: '"$RUNNER_TEMP/overview" check --exclude "*.test.ts" --exclude "*_test.go" --exclude testdata/'
 
   # timelinewire/ is a nested Go LIBRARY module (no main package), so autorelease is off: there is no binary to publish.
   go:
