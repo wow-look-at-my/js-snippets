@@ -103,6 +103,10 @@ No network anywhere: every fixture is generated locally.
 - **Access — private by operator decision (2026-07-15)**: the preview is token-gated (`Authorization: Bearer …` or `?token=…`) because the repo is private. So buildhost's OIDC-auto-provisioned `js-snippets` project, and its sites, are private too. The operator has explicitly ruled it stays that way ("do not make it public, i like it the way it is"). Do NOT add `public: 'true'` to the showcase job's buildhost-publish-site step in deploy.yml — that is not a missing fix. It is a rejected option.
 - **Post-#39 note**: the page feature-detects newer component API (`legendEntries`, the built-in `cancelled` style) so it builds against any branch's `src/ui`. Rendering-side features (minimap, fullscreen, skip clustering, kill-tail scrims, edge fades) light up automatically once the bundled component has them.
 
+## Benches (`bench/`)
+
+Self-contained pages, run with `node scripts/run-bench.mjs bench/<page>.html?<options>`. `bench/dag-svg.html` (built by `just build-bench`, a nested ts0 project like the showcase) draws `<dag-view>` on its canvas and as SVG through `bench/svg-context.ts`, a 2D context that writes SVG. It checks pixel parity, then times both. `.github/workflows/bench-gpu.yml` runs it in Google Chrome on the org runner's GPU and fails when Chrome falls back to a software renderer.
+
 ## llms.txt — CRITICAL
 
 Each module category has its own `llms.txt` alongside its source files:
