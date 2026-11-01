@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { rasterScale, visibleCrop, MAX_DPR, MAX_BACKING_PX } from './dag-view-math.ts';
+import { rasterScale, visibleCrop, cropCovers, MAX_DPR, MAX_BACKING_PX } from './dag-view-math.ts';
 
 test('crop: a pinch into the middle of the element keeps only the part on screen', () => {
   assert.deepEqual(visibleCrop(100, 50, 800, 600, { left: 300, top: 200, width: 400, height: 300 }), { x: 200, y: 150, w: 400, h: 300 });
@@ -14,6 +14,17 @@ test('crop: the viewport over an edge of the element clips to the element', () =
 
 test('crop: fractional edges snap outward, so no visible pixel is left out', () => {
   assert.deepEqual(visibleCrop(0, 0, 800, 600, { left: 10.4, top: 20.6, width: 100.2, height: 50.1 }), { x: 10, y: 20, w: 101, h: 51 });
+});
+
+test('crop: a margin widens the crop by that share of the viewport, still clipped to the element', () => {
+  assert.deepEqual(visibleCrop(0, 0, 2000, 2000, { left: 400, top: 400, width: 400, height: 200 }, 0.25), { x: 300, y: 350, w: 600, h: 300 });
+  assert.deepEqual(visibleCrop(0, 0, 2000, 2000, { left: 0, top: 0, width: 400, height: 200 }, 0.25), { x: 0, y: 0, w: 500, h: 250 });
+});
+
+test('cropCovers: a scroll inside the margin keeps the crop, one past it does not', () => {
+  const crop = visibleCrop(0, 0, 2000, 2000, { left: 400, top: 400, width: 400, height: 200 }, 0.25);
+  assert.equal(cropCovers(crop, visibleCrop(0, 0, 2000, 2000, { left: 450, top: 420, width: 400, height: 200 })), true);
+  assert.equal(cropCovers(crop, visibleCrop(0, 0, 2000, 2000, { left: 520, top: 420, width: 400, height: 200 })), false);
 });
 
 test('crop: an element out of the viewport gets a 1 x 1 canvas', () => {

@@ -2271,14 +2271,26 @@ export function visibleCrop(
   w: number,
   h: number,
   vv: { left: number; top: number; width: number; height: number },
+  margin = 0,
 ): CropRect {
-  const x0 = Math.max(0, Math.floor(vv.left - left));
-  const y0 = Math.max(0, Math.floor(vv.top - top));
-  const x1 = Math.min(w, Math.ceil(vv.left + vv.width - left));
-  const y1 = Math.min(h, Math.ceil(vv.top + vv.height - top));
+  // The margin is a fraction of the viewport on each side: a scroll inside it needs no new crop.
+  const mx = vv.width * margin;
+  const my = vv.height * margin;
+  const x0 = Math.max(0, Math.floor(vv.left - mx - left));
+  const y0 = Math.max(0, Math.floor(vv.top - my - top));
+  const x1 = Math.min(w, Math.ceil(vv.left + vv.width + mx - left));
+  const y1 = Math.min(h, Math.ceil(vv.top + vv.height + my - top));
   if (x1 <= x0 || y1 <= y0) return { x: 0, y: 0, w: 1, h: 1 };
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
+
+/** True when `outer` covers all of `inner`. */
+export function cropCovers(outer: CropRect, inner: CropRect): boolean {
+  return inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.w <= outer.x + outer.w && inner.y + inner.h <= outer.y + outer.h;
+}
+
+/** The share of the viewport added on each side of a crop. The worst case backs 2.25x the screen's pixels. */
+export const CROP_MARGIN = 0.25;
 
 /** The device-pixel ratio cap when no pinch-zoom applies. */
 export const MAX_DPR = 3;

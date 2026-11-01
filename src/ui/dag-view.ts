@@ -46,6 +46,8 @@ import {
   MAX_SCALE,
   rasterScale,
   visibleCrop,
+  cropCovers,
+  CROP_MARGIN,
 } from './dag-view-math.ts';
 import type {
   DagNode,
@@ -1875,17 +1877,19 @@ export class DagViewElement extends HTMLElement {
     this.watchDpr(raw);
     const W = this.clientWidth;
     const H = this.clientHeight;
-    // Under a pinch only part of the element is on screen.
-    let crop: CropRect | null = null;
-    if (vv !== null && pinch > 1) {
-      const r = this.getBoundingClientRect();
-      crop = visibleCrop(r.left + this.clientLeft, r.top + this.clientTop, W, H, {
-        left: vv.offsetLeft,
-        top: vv.offsetTop,
-        width: vv.width,
-        height: vv.height,
-      });
-    }
+    // The canvas backs only the part of the element near the screen. A pinch,
+    // a browser zoom or a tall element never allocates pixels nobody sees.
+    const view =
+      vv !== null
+        ? { left: vv.offsetLeft, top: vv.offsetTop, width: vv.width, height: vv.height }
+        : { left: 0, top: 0, width: innerWidth, height: innerHeight };
+    const r = this.getBoundingClientRect();
+    const ox = r.left + this.clientLeft;
+    const oy = r.top + this.clientTop;
+    const visible = visibleCrop(ox, oy, W, H, view);
+    const keep = this.crop !== null && this.crop.x + this.crop.w <= W && this.crop.y + this.crop.h <= H && cropCovers(this.crop, visible);
+    let crop: CropRect | null = keep ? this.crop : visibleCrop(ox, oy, W, H, view, CROP_MARGIN);
+    if (crop !== null && crop.x === 0 && crop.y === 0 && crop.w >= W && crop.h >= H) crop = null;
     const cw = crop?.w ?? W;
     const ch = crop?.h ?? H;
     const dpr = rasterScale(raw, pinch, cw, ch);
@@ -1940,12 +1944,8 @@ export class DagViewElement extends HTMLElement {
 
   private readonly onDprChange = (): void => this.resizeBackingStore();
 
-  /** A scroll changes nothing unless a pinch has cropped the canvas, so it costs nothing at one scale. */
-  private readonly onViewportScroll = (): void => {
-    if (this.crop !== null || (typeof visualViewport !== 'undefined' && visualViewport !== null && visualViewport.scale > 1)) {
-      this.resizeBackingStore();
-    }
-  };
+  /** A scroll moves the visible part of the element. It redraws only when that part leaves the crop. */
+  private readonly onViewportScroll = (): void => this.resizeBackingStore();
 
   /** The 2d context is OPAQUE (alpha: false) on purpose: the graph paints its
    * own background every frame. */
