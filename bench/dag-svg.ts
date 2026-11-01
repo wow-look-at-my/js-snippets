@@ -1,7 +1,7 @@
 // Measures the cost of a <dag-view> frame drawn on its canvas against the
 // same scene as SVG DOM.
 
-import '../src/ui/dag-view.ts';
+import { neighbourhood } from '../src/ui/dag-view.ts';
 import PAGE_CSS from './dag-svg.css';
 import type { DagViewElement, DagNode, DagEdge, DagStyleMap, DagGroup } from '../src/ui/dag-view.ts';
 import { SvgContext, vectorPattern } from './svg-context.ts';
@@ -104,7 +104,7 @@ function panAt(i: number, scale: number, bw: number, bh: number): { x: number; y
 
 // The bench reaches the element's private fields. A cast is the honest way to say that.
 type Inner = HTMLElement &
-	Pick<DagViewElement, 'nodes' | 'edges' | 'styles' | 'groups' | 'selected'> & {
+	Pick<DagViewElement, 'nodes' | 'edges' | 'styles' | 'groups' | 'selected' | 'viewport'> & {
 		view: { x: number; y: number; scale: number };
 		draw(): void;
 		bounds: { x: number; y: number; w: number; h: number };
@@ -259,6 +259,7 @@ interface Parity {
 	differPct: number;
 	meanDelta: number;
 	elements: number;
+	scenes: { name: string; differPct: number; meanDelta: number; elements: number }[];
 }
 
 /** Draws one view both ways and compares the pixels. */
@@ -268,7 +269,8 @@ async function parity(): Promise<Parity> {
 	const host = stage('parity', PW, PH);
 	const el = await mount(host, { nodes: PARITY_NODES, edges: PARITY_EDGES, groups: PARITY_GROUPS });
 	el.selected = 'deploy';
-	el.view = { x: 20, y: 20, scale: 1 };
+	// The setter marks the view as the reader's own, so draw() does not fit it back.
+	el.viewport = { x: 20, y: 20, scale: 1 };
 	el.draw();
 	const cw = el.canvas.width;
 	const ch = el.canvas.height;
@@ -358,8 +360,85 @@ async function parity(): Promise<Parity> {
 		fig.append(zoom, big);
 		panel.append(fig);
 	}
+	const scenes = await sceneParity(el, cw, ch);
 	el.remove();
+	return { differPct: (differ / (cw * ch)) * 100, meanDelta: sum / (cw * ch), elements: shim.elementCount, scenes };
+}
+
+/** Diffs one more state of the same element, so every branch of draw() is compared, not only the default view. */
+async function diffOnce(el: Inner, cw: number, ch: number): Promise<{ differPct: number; meanDelta: number; elements: number }> {
+	el.draw();
+	const a = (el.ctx as CanvasRenderingContext2D).getImageData(0, 0, cw, ch);
+	const { shim, restore } = toSvg(el);
+	const markup = drawSvg(el, shim);
+	restore();
+	const b = await rasterize(markup, el.cssW, el.cssH, cw, ch);
+	let differ = 0;
+	let sum = 0;
+	for (let i = 0; i < a.data.length; i += 4) {
+		const d = Math.max(Math.abs(a.data[i] - b.data[i]), Math.abs(a.data[i + 1] - b.data[i + 1]), Math.abs(a.data[i + 2] - b.data[i + 2]));
+		sum += d;
+		if (d > 48) differ++;
+	}
 	return { differPct: (differ / (cw * ch)) * 100, meanDelta: sum / (cw * ch), elements: shim.elementCount };
+}
+
+type SceneEl = Inner & {
+	layout: { nodes: { node: DagNode }[] };
+	hoverIndex: number;
+	highlight: unknown;
+	focusAlpha: number;
+	searchQuery: string;
+	applySearch(): void;
+	reducedMotion: boolean;
+};
+
+async function sceneParity(base: Inner, cw: number, ch: number): Promise<{ name: string; differPct: number; meanDelta: number; elements: number }[]> {
+	const el = base as SceneEl;
+	const at = (id: string): number => el.layout.nodes.findIndex((p) => p.node.id === id);
+	const reset = (): void => {
+		el.hoverIndex = -1;
+		el.highlight = null;
+		el.focusAlpha = 1;
+		el.searchQuery = '';
+		el.applySearch();
+		el.reducedMotion = false;
+		el.viewport = { x: 20, y: 20, scale: 1 };
+	};
+	const scenes: [string, () => void][] = [
+		['hover ring + focus fade', () => {
+			el.hoverIndex = at('bundle');
+			el.highlight = neighbourhood(el.layout as never, at('bundle'));
+			el.focusAlpha = 0.3;
+		}],
+		['search match', () => {
+			el.searchQuery = 'image';
+			el.applySearch();
+		}],
+		['sheen mid-sweep', () => {
+			el.frameTs = 2600;
+		}],
+		['reduced-motion pulse', () => {
+			el.reducedMotion = true;
+		}],
+		['zoomed out: no labels', () => {
+			el.viewport = { x: 60, y: 40, scale: 0.3 };
+		}],
+		['zoomed out: marks only', () => {
+			el.viewport = { x: 120, y: 60, scale: 0.18 };
+		}],
+		['zoomed in 2.5x', () => {
+			el.viewport = { x: -900, y: -150, scale: 2.5 };
+		}],
+	];
+	const out: { name: string; differPct: number; meanDelta: number; elements: number }[] = [];
+	for (const [name, setup] of scenes) {
+		reset();
+		setup();
+		out.push({ name, ...(await diffOnce(el, cw, ch)) });
+	}
+	reset();
+	return out;
 }
 
 interface Row {
@@ -464,7 +543,9 @@ async function main(): Promise<void> {
 	const renderer = gl && dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : 'unknown';
 	out.textContent = `GPU: ${renderer}\nUA: ${navigator.userAgent}\ndevicePixelRatio: ${devicePixelRatio}, frames per case: ${FRAMES}\n\n`;
 	const p = await parity();
-	out.textContent += `parity: ${p.differPct.toFixed(3)}% of pixels differ by over 48/255, mean channel delta ${p.meanDelta.toFixed(2)}, ${p.elements} SVG elements\n\n`;
+	out.textContent += `parity: ${p.differPct.toFixed(3)}% of pixels differ by over 48/255, mean channel delta ${p.meanDelta.toFixed(2)}, ${p.elements} SVG elements\n`;
+	for (const s of p.scenes) out.textContent += `  ${s.name.padEnd(26)} ${s.differPct.toFixed(3)}% differ, mean delta ${s.meanDelta.toFixed(2)}, ${s.elements} SVG elements\n`;
+	out.textContent += '\n';
 	out.textContent += `    n edges  mode         zoom   build   js-p50 frm-p50 frm-p95 frm-max    fps  elems\n`;
 	for (const n of SIZES) await benchSize(n);
 	document.getElementById('stages')!.replaceChildren();
