@@ -24,10 +24,16 @@ export interface ExportEdge {
   from: string;
   to: string;
   label: string | null;
+  /** The drawn line. It ends at the back of the arrowhead. */
   points: readonly { x: number; y: number }[];
+  /** Where the arrowhead's point touches the target box. */
+  tip: { x: number; y: number };
   color: string;
   dashed: boolean;
 }
+
+/** The length of an arrowhead in the picture. */
+export const EXPORT_ARROW = 8;
 
 /** The colours and the font of the picture. */
 export interface ExportTheme {
@@ -71,9 +77,6 @@ export function dagToSvg(
   const fs = theme.fontSize;
   const out: string[] = [];
   out.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`);
-  out.push(
-    `<defs><marker id="dag-arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L10 5L0 10z" fill="${xmlEscape(theme.muted)}"/></marker></defs>`,
-  );
   out.push(`<rect width="${W}" height="${H}" fill="${xmlEscape(theme.bg)}"/>`);
   out.push(`<g fill="none" stroke-width="1.25" stroke-linejoin="round" stroke-linecap="round">`);
   for (const e of edges) {
@@ -81,7 +84,23 @@ export function dagToSvg(
     const pts = e.points.map((p) => `${num(p.x + ox)},${num(p.y + oy)}`).join(' ');
     const dash = e.dashed ? ' stroke-dasharray="6 4"' : '';
     const title = `${e.from} → ${e.to}${e.label !== null ? ` (${e.label})` : ''}`;
-    out.push(`<polyline points="${pts}" stroke="${xmlEscape(e.color)}"${dash} marker-end="url(#dag-arrow)"><title>${xmlEscape(title)}</title></polyline>`);
+    out.push(`<g><title>${xmlEscape(title)}</title><polyline points="${pts}" stroke="${xmlEscape(e.color)}"${dash}/>`);
+    const back = e.points[e.points.length - 1];
+    const dx = e.tip.x - back.x;
+    const dy = e.tip.y - back.y;
+    const len = Math.hypot(dx, dy);
+    if (len > 1e-6) {
+      const ux = dx / len;
+      const uy = dy / len;
+      const bx = e.tip.x - ux * EXPORT_ARROW + ox;
+      const by = e.tip.y - uy * EXPORT_ARROW + oy;
+      const nx = -uy * EXPORT_ARROW * 0.42;
+      const ny = ux * EXPORT_ARROW * 0.42;
+      out.push(
+        `<path d="M${num(e.tip.x + ox)} ${num(e.tip.y + oy)}L${num(bx + nx)} ${num(by + ny)}L${num(bx - nx)} ${num(by - ny)}z" fill="${xmlEscape(e.color)}" stroke="none"/>`,
+      );
+    }
+    out.push(`</g>`);
   }
   out.push(`</g>`);
   out.push(`<g font-family="${xmlEscape(theme.font)}" font-size="${num(fs)}">`);
