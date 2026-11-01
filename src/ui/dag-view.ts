@@ -47,8 +47,6 @@ import {
   MAX_SCALE,
   rasterScale,
   visibleCrop,
-  cropCovers,
-  CROP_MARGIN,
 } from './dag-view-math.ts';
 import type {
   DagNode,
@@ -1860,8 +1858,7 @@ export class DagViewElement extends HTMLElement {
     this.watchDpr(raw);
     const W = this.clientWidth;
     const H = this.clientHeight;
-    // The canvas backs only the part of the element near the screen. A pinch,
-    // a browser zoom or a tall element never allocates pixels nobody sees.
+    // The canvas covers only the part of the element on screen, at screen resolution. No pixel goes off screen.
     const view =
       vv !== null
         ? { left: vv.offsetLeft, top: vv.offsetTop, width: vv.width, height: vv.height }
@@ -1869,13 +1866,11 @@ export class DagViewElement extends HTMLElement {
     const r = this.getBoundingClientRect();
     const ox = r.left + this.clientLeft;
     const oy = r.top + this.clientTop;
-    const visible = visibleCrop(ox, oy, W, H, view);
-    const keep = this.crop !== null && this.crop.x + this.crop.w <= W && this.crop.y + this.crop.h <= H && cropCovers(this.crop, visible);
-    let crop: CropRect | null = keep ? this.crop : visibleCrop(ox, oy, W, H, view, CROP_MARGIN);
-    if (crop !== null && crop.x === 0 && crop.y === 0 && crop.w >= W && crop.h >= H) crop = null;
+    let crop: CropRect | null = visibleCrop(ox, oy, W, H, view);
+    if (crop.x === 0 && crop.y === 0 && crop.w >= W && crop.h >= H) crop = null;
     const cw = crop?.w ?? W;
     const ch = crop?.h ?? H;
-    const dpr = rasterScale(raw, pinch, cw, ch);
+    const dpr = rasterScale(raw, pinch);
     const bw = Math.max(1, Math.round(cw * dpr));
     const bh = Math.max(1, Math.round(ch * dpr));
     const cx = crop?.x ?? 0;
@@ -1927,7 +1922,7 @@ export class DagViewElement extends HTMLElement {
 
   private readonly onDprChange = (): void => this.resizeBackingStore();
 
-  /** A scroll moves the visible part of the element. It redraws only when that part leaves the crop. */
+  /** A scroll moves the visible part of the element. The canvas follows it; a fully visible element does nothing. */
   private readonly onViewportScroll = (): void => this.resizeBackingStore();
 
   /** The 2d context is OPAQUE (alpha: false) on purpose: the graph paints its
