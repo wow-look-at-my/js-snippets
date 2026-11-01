@@ -2254,6 +2254,32 @@ export function stepFocusFade(state: FocusFade, now: number): { state: FocusFade
   return { state: { ...state, shown, fade }, moving: releasing || rising || shown !== state.target };
 }
 
+/** A box in element-local CSS pixels. */
+export interface CropRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** The part of an element that a pinched visual viewport shows, in element-local CSS pixels,
+ * snapped out to whole pixels. `left` and `top` place the element's content box in the layout
+ * viewport. `vv` is the visual viewport in the same coordinates. */
+export function visibleCrop(
+  left: number,
+  top: number,
+  w: number,
+  h: number,
+  vv: { left: number; top: number; width: number; height: number },
+): CropRect {
+  const x0 = Math.max(0, Math.floor(vv.left - left));
+  const y0 = Math.max(0, Math.floor(vv.top - top));
+  const x1 = Math.min(w, Math.ceil(vv.left + vv.width - left));
+  const y1 = Math.min(h, Math.ceil(vv.top + vv.height - top));
+  if (x1 <= x0 || y1 <= y0) return { x: 0, y: 0, w: 1, h: 1 };
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
 /** The device-pixel ratio cap when no pinch-zoom applies. */
 export const MAX_DPR = 3;
 
@@ -2267,7 +2293,8 @@ export const MAX_BACKING_PX = 4096 * 4096;
 export function rasterScale(dpr: number, pinch: number, cssW: number, cssH: number): number {
   const d = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
   const base = Math.min(MAX_DPR, d);
-  const p = Number.isFinite(pinch) && pinch > 1 ? pinch : 1;
+  // Half steps, rounded up: a pinch gesture reallocates the canvas a few times, not on every event.
+  const p = Number.isFinite(pinch) && pinch > 1 ? Math.ceil(pinch * 2) / 2 : 1;
   const area = Math.max(1, cssW) * Math.max(1, cssH);
   return Math.max(base, Math.min(base * p, Math.sqrt(MAX_BACKING_PX / area)));
 }

@@ -45,6 +45,7 @@ import {
   MIN_SCALE,
   MAX_SCALE,
   rasterScale,
+  visibleCrop,
 } from './dag-view-math.ts';
 import type {
   DagNode,
@@ -62,6 +63,7 @@ import type {
   WheelSource,
   DagGroup,
   PlacedGroup,
+  CropRect,
 } from './dag-view-math.ts';
 import { categoryColor, categoryJitter, dimColor, labelHaloColor } from './color.ts';
 import { dagToSvg, dagToMermaid, exportFileName, pngScale } from './dag-export.ts';
@@ -342,6 +344,8 @@ export class DagViewElement extends HTMLElement {
   private motionQuery: MediaQueryList | null = null;
   private dprQuery: MediaQueryList | null = null;
   private dprWatched = 0;
+  /** The part of the element the canvas covers under a pinch-zoom; null when it covers all of it. */
+  private crop: CropRect | null = null;
 
   private dpr = 1;
   private cssW = 0;
@@ -495,10 +499,13 @@ export class DagViewElement extends HTMLElement {
       this.ro = new ResizeObserver(() => this.resizeBackingStore());
       this.ro.observe(this);
     }
-    // A pinch-zoom magnifies the canvas bitmap. The backing store follows the pinch scale.
+    // A pinch-zoom magnifies the canvas bitmap. The backing store follows the pinch scale,
+    // and a scroll under a pinch moves the part of the element the canvas must cover.
     if (typeof visualViewport !== 'undefined' && visualViewport !== null) {
       visualViewport.addEventListener('resize', this.onDprChange);
+      visualViewport.addEventListener('scroll', this.onViewportScroll);
     }
+    addEventListener('scroll', this.onViewportScroll, { passive: true, capture: true });
 
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.canvas.addEventListener('pointermove', this.onPointerMove);
@@ -538,7 +545,9 @@ export class DagViewElement extends HTMLElement {
     this.dprWatched = 0;
     if (typeof visualViewport !== 'undefined' && visualViewport !== null) {
       visualViewport.removeEventListener('resize', this.onDprChange);
+      visualViewport.removeEventListener('scroll', this.onViewportScroll);
     }
+    removeEventListener('scroll', this.onViewportScroll, { capture: true });
     if (this.raf !== 0) cancelAnimationFrame(this.raf);
     this.raf = 0;
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
@@ -928,22 +937,15 @@ export class DagViewElement extends HTMLElement {
 
   // -- The state dump --------------------------------------------------------------
 
-  /**
-   * Right-click copies the whole drawn state as JSON.
+  /** Right-click copies the whole drawn state as JSON.
    *
    * A reader who can see something wrong with the picture usually cannot say
    * it in numbers. The numbers are what anybody else needs to act. This
-   * turns "there is a huge gap in the middle" into coordinates.
-   *
-   * It replaces the browser's own menu, which offers nothing for a canvas.
-   * Shift-right-click gets that menu back.
-   */
+   * turns "there is a huge gap in the middle" into coordinates. */
   private onContextMenu = (e: MouseEvent): void => {
     if (e.shiftKey) return;
     e.preventDefault();
-    const rect = this.canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const { x, y } = this.localPoint(e);
     const w = screenToWorld({ x, y }, this.view);
     const ni = hitTestNodes(this.layout, w.x, w.y);
     this.openMenu(x, y, ni >= 0 ? this.layout.nodes[ni].node.id : null);
@@ -1169,9 +1171,10 @@ export class DagViewElement extends HTMLElement {
       console.error('dag-view: no 2d context for the PNG export');
       return;
     }
-    const saved = { ctx: this.ctx, cssW: this.cssW, cssH: this.cssH, dpr: this.dpr, view: this.view, touched: this.viewTouched };
+    const saved = { ctx: this.ctx, cssW: this.cssW, cssH: this.cssH, dpr: this.dpr, view: this.view, touched: this.viewTouched, crop: this.crop };
     try {
       this.ctx = ctx;
+      this.crop = null;
       this.cssW = w;
       this.cssH = h;
       this.dpr = dpr;
@@ -1180,6 +1183,7 @@ export class DagViewElement extends HTMLElement {
       this.draw();
     } finally {
       this.ctx = saved.ctx;
+      this.crop = saved.crop;
       this.cssW = saved.cssW;
       this.cssH = saved.cssH;
       this.dpr = saved.dpr;
@@ -1399,7 +1403,7 @@ export class DagViewElement extends HTMLElement {
 
   private localPoint(e: { clientX: number; clientY: number }): { x: number; y: number } {
     const r = this.canvas.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
+    return { x: e.clientX - r.left + (this.crop?.x ?? 0), y: e.clientY - r.top + (this.crop?.y ?? 0) };
   }
 
   private onPointerDown = (e: PointerEvent): void => {
@@ -1866,19 +1870,60 @@ export class DagViewElement extends HTMLElement {
 
   private resizeBackingStore(): void {
     const raw = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
-    const pinch = typeof visualViewport !== 'undefined' && visualViewport !== null ? visualViewport.scale : 1;
-    const dpr = rasterScale(raw, pinch, this.clientWidth, this.clientHeight);
+    const vv = typeof visualViewport !== 'undefined' ? visualViewport : null;
+    const pinch = vv !== null ? vv.scale : 1;
     this.watchDpr(raw);
-    const bw = Math.max(1, Math.round(this.clientWidth * dpr));
-    const bh = Math.max(1, Math.round(this.clientHeight * dpr));
-    if (bw === this.canvas.width && bh === this.canvas.height && dpr === this.dpr) return;
-    this.canvas.width = bw;
-    this.canvas.height = bh;
+    const W = this.clientWidth;
+    const H = this.clientHeight;
+    // Under a pinch only part of the element is on screen.
+    let crop: CropRect | null = null;
+    if (vv !== null && pinch > 1) {
+      const r = this.getBoundingClientRect();
+      crop = visibleCrop(r.left + this.clientLeft, r.top + this.clientTop, W, H, {
+        left: vv.offsetLeft,
+        top: vv.offsetTop,
+        width: vv.width,
+        height: vv.height,
+      });
+    }
+    const cw = crop?.w ?? W;
+    const ch = crop?.h ?? H;
+    const dpr = rasterScale(raw, pinch, cw, ch);
+    const bw = Math.max(1, Math.round(cw * dpr));
+    const bh = Math.max(1, Math.round(ch * dpr));
+    const cx = crop?.x ?? 0;
+    const cy = crop?.y ?? 0;
+    const sameCrop = (crop === null) === (this.crop === null) && cx === (this.crop?.x ?? 0) && cy === (this.crop?.y ?? 0);
+    if (bw === this.canvas.width && bh === this.canvas.height && dpr === this.dpr && sameCrop) return;
+    const cssW = crop === null ? bw / dpr : W;
+    const cssH = crop === null ? bh / dpr : H;
+    const sizeChanged = Math.abs(cssW - this.cssW) > 0.5 || Math.abs(cssH - this.cssH) > 0.5;
+    if (bw !== this.canvas.width || bh !== this.canvas.height) {
+      this.canvas.width = bw;
+      this.canvas.height = bh;
+    }
+    const st = this.canvas.style;
+    if (crop === null) {
+      st.left = st.top = st.width = st.height = '';
+    } else {
+      st.left = `${crop.x}px`;
+      st.top = `${crop.y}px`;
+      st.width = `${crop.w}px`;
+      st.height = `${crop.h}px`;
+    }
+    this.crop = crop;
     this.dpr = dpr;
-    this.cssW = bw / dpr;
-    this.cssH = bh / dpr;
-    this.readTheme();
-    this.invalidate();
+    this.cssW = cssW;
+    this.cssH = cssH;
+    // A scale change alone keeps the theme and the layout. Only a new CSS size reads them again.
+    if (sizeChanged || this.lastRenderTs === 0) this.readTheme();
+    if (this.lastRenderTs === 0) {
+      this.invalidate();
+      return;
+    }
+    // A new width or height clears the canvas now. Paint it in this task, or the empty canvas shows for a frame.
+    this.dirty = false;
+    this.draw();
   }
 
   /**
@@ -1894,6 +1939,13 @@ export class DagViewElement extends HTMLElement {
   }
 
   private readonly onDprChange = (): void => this.resizeBackingStore();
+
+  /** A scroll changes nothing unless a pinch has cropped the canvas, so it costs nothing at one scale. */
+  private readonly onViewportScroll = (): void => {
+    if (this.crop !== null || (typeof visualViewport !== 'undefined' && visualViewport !== null && visualViewport.scale > 1)) {
+      this.resizeBackingStore();
+    }
+  };
 
   /** The 2d context is OPAQUE (alpha: false) on purpose: the graph paints its
    * own background every frame. */
@@ -2043,7 +2095,9 @@ export class DagViewElement extends HTMLElement {
     this.fitIfUntouched();
 
     const t = this.theme;
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    const ox = this.crop?.x ?? 0;
+    const oy = this.crop?.y ?? 0;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, -ox * this.dpr, -oy * this.dpr);
     ctx.fillStyle = t.bg;
     ctx.fillRect(0, 0, this.cssW, this.cssH);
     if (this.layout.nodes.length === 0) return;
