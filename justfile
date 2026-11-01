@@ -9,6 +9,10 @@ build:
 build-showcase:
 	cd showcase && ts0 build
 
+# The canvas vs SVG render bench, as one self-contained page.
+build-bench:
+	cd bench && ts0 build
+
 # The npm script test.
 test:
 	ts0 test
