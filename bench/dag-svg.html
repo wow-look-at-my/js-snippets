@@ -3,12 +3,12 @@
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>dag-view: canvas vs SVG</title>
-	<link rel="stylesheet" href="dag-svg.css">
+	<title>dag-view Render Bench</title>
 </head>
 <body>
 	<h1>dag-view: canvas vs SVG frame cost</h1>
-	<p>Each case pans the same layout for a fixed number of frames. <b>frm</b> is the gap between frame starts in ms, so it includes paint and raster. At vsync a frame never reads under 1000/refresh-rate. Keep this tab in front while it runs.</p>
+	<p>Each case pans the same layout for a fixed number of frames. <b>frm</b> is the gap between frame starts in ms, so it includes paint and raster. At vsync a frame never reads under 1000/refresh-rate. <b>build</b> is the time to the first frame. Keep this tab in front while it runs. It takes about a minute.</p>
+	<p><b>canvas</b> is the shipped element. <b>svg-attr</b> is the SVG export scene moved by a transform attribute, so every frame repaints vectors. <b>svg-layer</b> is the same scene on one composited layer moved by a CSS transform.</p>
 	<p><button id="run">Run</button> <button id="copy" hidden>Copy results</button></p>
 	<pre id="out"></pre>
 	<div id="stages"></div>

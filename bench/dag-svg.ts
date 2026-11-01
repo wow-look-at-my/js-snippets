@@ -2,7 +2,11 @@
 // same scene as SVG DOM.
 
 import '../src/ui/dag-view.ts';
+import PAGE_CSS from './dag-svg.css';
 import type { DagViewElement, DagNode, DagEdge, DagStyleMap } from '../src/ui/dag-view.ts';
+
+// The HTML target turns a <link> stylesheet into JS text, so the page adopts its CSS from here.
+document.head.append(Object.assign(document.createElement('style'), { textContent: PAGE_CSS }));
 
 const W = 1200;
 const H = 700;
@@ -238,7 +242,12 @@ async function main(): Promise<void> {
 	document.getElementById('copy')!.hidden = false;
 }
 
-document.getElementById('copy')!.addEventListener('click', () => void navigator.clipboard.writeText(out.textContent ?? ''));
+document.getElementById('copy')!.addEventListener('click', () => {
+	navigator.clipboard.writeText(out.textContent ?? '').catch(() => {
+		// The clipboard can refuse the write. Select the text so a manual copy works.
+		getSelection()?.selectAllChildren(out);
+	});
+});
 document.getElementById('run')!.addEventListener('click', () => {
 	(document.getElementById('run') as HTMLButtonElement).disabled = true;
 	void main();
