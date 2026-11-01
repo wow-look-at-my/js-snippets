@@ -16,6 +16,7 @@ import {
   layoutDag,
   wrapWideLayers,
   anchorPoint,
+  edgePath,
   measureNode,
   worldToScreen,
   screenToWorld,
@@ -46,7 +47,7 @@ import {
   safeNodeHref,
   DEFAULT_NODE_MIN_W,
 } from './dag-view-math.ts';
-import type { DagNode, DagEdge, DagLayout, DagViewport } from './dag-view-math.ts';
+import type { DagNode, DagEdge, DagLayout, DagViewport, PlacedEdge } from './dag-view-math.ts';
 
 // -- Fixtures ---------------------------------------------------------------------------
 
@@ -836,6 +837,70 @@ test('anchorPoint: the mid-point of the facing edge, per orientation', () => {
   assert.deepEqual(anchorPoint(n, 'TB', 'in'), { x: 60, y: 20 });
   assert.deepEqual(anchorPoint(n, 'LR', 'out'), { x: 110, y: 40 });
   assert.deepEqual(anchorPoint(n, 'LR', 'in'), { x: 10, y: 40 });
+});
+
+// -- edgePath ---------------------------------------------------------------------------
+
+function placedEdge(points: { x: number; y: number }[]): PlacedEdge {
+  return { edge: { from: 'a', to: 'b' }, index: 0, from: 0, to: 1, points, reversed: false };
+}
+
+/** The largest turn between neighbouring pieces, in degrees. */
+function maxJointTurn(path: readonly { x: number; y: number }[]): number {
+  let worst = 0;
+  for (let k = 2; k < path.length; k++) {
+    const ux = path[k - 1].x - path[k - 2].x;
+    const uy = path[k - 1].y - path[k - 2].y;
+    const vx = path[k].x - path[k - 1].x;
+    const vy = path[k].y - path[k - 1].y;
+    worst = Math.max(worst, (Math.abs(Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy)) * 180) / Math.PI);
+  }
+  return worst;
+}
+
+const BENT = [
+  { x: 0, y: 0 },
+  { x: 120, y: 90 },
+  { x: 240, y: 95 },
+  { x: 260, y: -40 },
+  { x: 400, y: 10 },
+];
+
+test('edgePath: passes through the start, every bend and the end, in order', () => {
+  const path = edgePath(placedEdge(BENT), 'LR');
+  let at = 0;
+  for (const p of BENT) {
+    const found = path.findIndex((q, k) => k >= at && q.x === p.x && q.y === p.y);
+    assert.ok(found >= at, `point ${JSON.stringify(p)} is on the path after index ${at}`);
+    at = found;
+  }
+  assert.deepEqual(path[0], BENT[0]);
+  assert.deepEqual(path[path.length - 1], BENT[BENT.length - 1]);
+});
+
+test('edgePath: no joint turns 5 degrees or more', () => {
+  for (const pts of [BENT, [{ x: 0, y: 0 }, { x: 48, y: 300 }], [{ x: 0, y: 0 }, { x: 10, y: 200 }, { x: 20, y: 0 }]]) {
+    const turn = maxJointTurn(edgePath(placedEdge(pts), 'LR'));
+    assert.ok(turn < 5, `worst joint ${turn.toFixed(2)} degrees`);
+  }
+});
+
+test('edgePath: leaves and enters along the layer axis, per orientation', () => {
+  const lr = edgePath(placedEdge([{ x: 0, y: 0 }, { x: 100, y: 80 }]), 'LR');
+  assert.ok(lr.length > 2, 'a two-point edge between different rows is a curve, not one straight piece');
+  assert.ok(Math.abs(lr[1].y - lr[0].y) < Math.abs(lr[1].x - lr[0].x) * 0.1);
+  const tb = edgePath(placedEdge([{ x: 0, y: 0 }, { x: 80, y: 100 }]), 'TB');
+  const n = tb.length;
+  assert.ok(Math.abs(tb[n - 1].x - tb[n - 2].x) < Math.abs(tb[n - 1].y - tb[n - 2].y) * 0.1);
+});
+
+test('edgePath: never doubles back along the layer axis', () => {
+  const path = edgePath(placedEdge(BENT), 'LR');
+  for (let k = 1; k < path.length; k++) assert.ok(path[k].x >= path[k - 1].x - 1e-9, `x falls at piece ${k}`);
+});
+
+test('edgePath: an edge level with its target is one straight piece', () => {
+  assert.equal(edgePath(placedEdge([{ x: 0, y: 5 }, { x: 50, y: 5 }]), 'LR').length, 2);
 });
 
 // -- measureNode ------------------------------------------------------------------------

@@ -575,7 +575,9 @@ The arrow keys walk the graph along its edges once something is selected, and pa
 
 Properties: nodes: DagNode[] / edges: DagEdge[] / setData({nodes?, edges?}) orientation. 'TB' | 'LR' mirrors the attribute styles: DagStyleMap state -> treatment, merged over DEFAULT_STYLES tooltipFor: (hit) => {title?, rows?} | null null = no tooltip colorFor. (node) => string | null null = derived category hue selected: string | null the selected node's id, settable viewport: {x, y. Scale} get/set the pan and zoom info. DagInfo counts, critical path, crossings, cycles, rejected snapshot: DagSnapshot the whole drawn state as a plain object: capturedAt, orientation, canvas {width,height,dpr}, viewport, bounds. This is info, every node.
 
-Edge in world units only. `viewport` is the world rectangle the canvas shows, and its scale is `canvas.width / viewport.w`. A node box outside it is off screen. An edge carries only its bend points. Its ends are the middles of the faces of its `from` and `to` boxes. A field a node or edge does not set is left out. Right- clicking the canvas copies this as JSON. As a result, a reader can hand over the numbers behind a picture that looks incorrect -- an empty band between columns. This is a node parked off screen -- instead of describing it.
+Edge in world units only. `viewport` is the world rectangle the canvas shows, and its scale is `canvas.width / viewport.w`. A node box outside it is off screen. An edge carries only its bend points. Its ends are the middles of the faces of its `from` and `to` boxes. The drawn line is a smooth curve through the ends and every bend (see edgePath).
+
+A field a node or edge does not set is left out. Right- clicking the canvas copies this as JSON. As a result, a reader can hand over the numbers behind a picture that looks incorrect -- an empty band between columns. This is a node parked off screen -- instead of describing it.
 
 Shift-right-click keeps the browser's own menu. fullscreen: boolean reflected viewport-fill mode fit(pad?) fit the whole graph on screen, not magnified past 1:1. A graph that already fits is not improved by being blown up focusNode(id, zoom?) centre + select a node (zoom defaults to current)
 
@@ -637,7 +639,9 @@ Keeps the best arrangement seen. As a result, it can never return a worse one th
 
 layoutDag(nodes, edges, opts?) → DagLayout {nodes, edges, byId, width, height, orientation, crossings. This is cycleEdges, rejected, ignoredPins}.
 
-A reversed edge's `points` still run from its TRUE source to its TRUE target. As a result, an arrowhead always means what it says. Opts: orientation, gap, layerGap, dummyWidth, passes, sweeps, align, sizeOf. anchorPoint(placed, orientation, 'in'|'out') → {x, y} Mid-point of the facing edge -- an arrowhead. This is at a box centre is one nobody can see. measureNode(node, opts?) → {w, h} Default box size from the label text, clamped between.
+A reversed edge's `points` still run from its TRUE source to its TRUE target. As a result, an arrowhead always means what it says. Opts: orientation, gap, layerGap, dummyWidth, passes, sweeps, align, sizeOf. edgePath(placedEdge, orientation) → {x, y}[] The line an edge is drawn as: a smooth curve through its start. This also covers every bend and its end, cut into straight pieces. No joint turns a few degrees or more.
+
+It leaves and enters each box along the layer axis. Drawing, hit tests, culling and the SVG export all use it. anchorPoint(placed, orientation, 'in'|'out') → {x, y} Mid-point of the facing edge -- an arrowhead. This is at a box centre is one nobody can see. measureNode(node, opts?) → {w, h} Default box size from the label text, clamped between.
 
 This is DEFAULT_NODE_MIN_W (72). And DEFAULT_NODE_MAX_W (300) so one long title cannot set the whole layout. ) → {w, h, label, sub, badge, labelChars. subChars} is the same measure plus the wrapped lines. The label wraps to DEFAULT_LABEL_LINES (2) and the sublabel to DEFAULT_SUB_LINES (2). The state badge takes room on the first label line. wrapText(text, maxChars, maxLines) → {lines, truncated} breaks after a space or an identifier separator (/ - _.: ,), and ends a cut last line in an ellipsis.
 

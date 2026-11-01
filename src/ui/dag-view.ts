@@ -4,6 +4,7 @@ import dagCss from './dag-view.css';
 import {
   layoutDag,
   layoutBounds,
+  edgePath,
   fitViewport,
   legibleViewport,
   clampViewport,
@@ -220,7 +221,7 @@ export interface DagSnapshotEdge {
   label?: string;
   /** Present and true when the edge was reversed to break a cycle. */
   reversed?: true;
-  /** The bend points between both ends, in world units, from `from` to `to`. Absent for a straight edge. */
+  /** The bend points between both ends, in world units, from `from` to `to`. The drawn curve passes through each. */
   bends?: { x: number; y: number }[];
 }
 
@@ -1098,7 +1099,7 @@ export class DagViewElement extends HTMLElement {
         from: e.edge.from,
         to: e.edge.to,
         label: e.edge.label ?? null,
-        points: e.points,
+        points: edgePath(e, this.layout.orientation),
         color: e.reversed ? t.emphasis : style?.color ?? t.edge,
         dashed: e.reversed || style?.dashed === true,
       };
@@ -2077,14 +2078,16 @@ export class DagViewElement extends HTMLElement {
     // A cycle edge is dashed as well as colored: color alone is not a signal a colorblind reader can act on.
     if (e.reversed || style?.dashed === true) ctx.setLineDash([6 / this.view.scale, 4 / this.view.scale]);
 
+    const path = edgePath(e, this.layout.orientation);
     ctx.beginPath();
-    roundedPolyline(ctx, e.points, 10);
+    ctx.moveTo(path[0].x, path[0].y);
+    for (let k = 1; k < path.length; k++) ctx.lineTo(path[k].x, path[k].y);
     ctx.stroke();
     ctx.setLineDash([]);
 
     // The arrowhead carries the direction, so it is drawn at a fixed SCREEN size: it must stay readable at every zoom.
-    const last = e.points[e.points.length - 1];
-    const prev = e.points[e.points.length - 2] ?? last;
+    const last = path[path.length - 1];
+    const prev = path[path.length - 2] ?? last;
     drawArrowhead(ctx, prev, last, 8 / this.view.scale, ctx.strokeStyle as string);
     ctx.restore();
   }
@@ -2331,26 +2334,6 @@ function round(v: number): number {
   return Math.round(v);
 }
 
-function roundedPolyline(ctx: CanvasRenderingContext2D, pts: readonly { x: number; y: number }[], r: number): void {
-  if (pts.length === 0) return;
-  ctx.moveTo(pts[0].x, pts[0].y);
-  for (let i = 1; i < pts.length - 1; i++) {
-    const prev = pts[i - 1];
-    const cur = pts[i];
-    const next = pts[i + 1];
-    // The radius shrinks to fit the shorter of both legs.
-    const r1 = Math.min(r, Math.hypot(cur.x - prev.x, cur.y - prev.y) / 2);
-    const r2 = Math.min(r, Math.hypot(next.x - cur.x, next.y - cur.y) / 2);
-    const rr = Math.min(r1, r2);
-    if (rr <= 0.5) {
-      ctx.lineTo(cur.x, cur.y);
-      continue;
-    }
-    ctx.arcTo(cur.x, cur.y, next.x, next.y, rr);
-  }
-  const last = pts[pts.length - 1];
-  ctx.lineTo(last.x, last.y);
-}
 
 /** A filled triangle at `to`, pointing along the `from -> to` direction. */
 function drawArrowhead(

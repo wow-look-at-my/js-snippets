@@ -1267,6 +1267,84 @@ export function anchorPoint(n: PlacedNode, orientation: DagOrientation, side: 'i
   return { x: side === 'out' ? n.x + n.w : n.x, y: n.y + n.h / 2 };
 }
 
+/** The most a piece's control polygon may turn, in radians. */
+export const EDGE_PIECE_TURN = (2.5 * Math.PI) / 180;
+
+type Pt = { x: number; y: number };
+
+function turnBetween(ux: number, uy: number, vx: number, vy: number): number {
+  if (Math.hypot(ux, uy) < 1e-9 || Math.hypot(vx, vy) < 1e-9) return 0;
+  return Math.abs(Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy));
+}
+
+/** Appends the end points of the pieces of the cubic p0..p3, split in half until each one turns less than EDGE_PIECE_TURN. */
+function flattenCubic(p0: Pt, p1: Pt, p2: Pt, p3: Pt, out: Pt[], depth: number): void {
+  const turn =
+    turnBetween(p1.x - p0.x, p1.y - p0.y, p2.x - p1.x, p2.y - p1.y) +
+    turnBetween(p2.x - p1.x, p2.y - p1.y, p3.x - p2.x, p3.y - p2.y);
+  if (turn < EDGE_PIECE_TURN || depth >= 12) {
+    out.push(p3);
+    return;
+  }
+  const mid = (a: Pt, b: Pt): Pt => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  const a = mid(p0, p1);
+  const b = mid(p1, p2);
+  const c = mid(p2, p3);
+  const ab = mid(a, b);
+  const bc = mid(b, c);
+  const m = mid(ab, bc);
+  flattenCubic(p0, a, ab, m, out, depth + 1);
+  flattenCubic(m, bc, c, p3, out, depth + 1);
+}
+
+const edgePaths = new WeakMap<PlacedEdge, readonly { x: number; y: number }[]>();
+
+/** The line an edge is drawn as: a smooth curve through its start, every
+ * bend and its end, cut into straight pieces. Draw, hit-test and export
+ * this, not `points`, so all of them agree. The curve leaves and enters each
+ * box along the layer axis. It never doubles back along that axis between
+ * points. */
+export function edgePath(e: PlacedEdge, orientation: DagOrientation): readonly { x: number; y: number }[] {
+  const cached = edgePaths.get(e);
+  if (cached !== undefined) return cached;
+  const p = e.points;
+  if (p.length < 2) return p;
+  // `a` is the layer axis, `c` the cross axis.
+  const a = (q: { x: number; y: number }): number => (orientation === 'TB' ? q.y : q.x);
+  const c = (q: { x: number; y: number }): number => (orientation === 'TB' ? q.x : q.y);
+  const pt = (av: number, cv: number): { x: number; y: number } => (orientation === 'TB' ? { x: cv, y: av } : { x: av, y: cv });
+  const last = p.length - 1;
+  // Hermite tangents. An end gets the layer-axis span of its segment and no cross part.
+  const tan = p.map((q, i) => {
+    if (i === 0) return { a: a(p[1]) - a(q), c: 0 };
+    if (i === last) return { a: a(q) - a(p[i - 1]), c: 0 };
+    let ta = (a(p[i + 1]) - a(p[i - 1])) / 2;
+    let tc = (c(p[i + 1]) - c(p[i - 1])) / 2;
+    // Clamp so a control point never passes a neighbour on the layer axis.
+    const room = 3 * Math.min(Math.abs(a(p[i + 1]) - a(q)), Math.abs(a(q) - a(p[i - 1])));
+    if (Math.abs(ta) > room) {
+      const k = room / Math.abs(ta);
+      ta *= k;
+      tc *= k;
+    }
+    return { a: ta, c: tc };
+  });
+  const out: { x: number; y: number }[] = [p[0]];
+  for (let i = 0; i < last; i++) {
+    const a0 = a(p[i]);
+    const c0 = c(p[i]);
+    const a3 = a(p[i + 1]);
+    const c3 = c(p[i + 1]);
+    const a1 = a0 + tan[i].a / 3;
+    const c1 = c0 + tan[i].c / 3;
+    const a2 = a3 - tan[i + 1].a / 3;
+    const c2 = c3 - tan[i + 1].c / 3;
+    flattenCubic(p[i], pt(a1, c1), pt(a2, c2), p[i + 1], out, 0);
+  }
+  edgePaths.set(e, out);
+  return out;
+}
+
 // -- Node measurement ------------------------------------------------------------------
 
 /** Options for measureNode. */
@@ -1557,7 +1635,7 @@ export function layoutBounds(layout: DagLayout): WorldRect {
     y1 = Math.max(y1, n.y + n.h);
   }
   for (const e of layout.edges) {
-    for (const p of e.points) {
+    for (const p of edgePath(e, layout.orientation)) {
       x0 = Math.min(x0, p.x);
       y0 = Math.min(y0, p.y);
       x1 = Math.max(x1, p.x);
@@ -1618,7 +1696,7 @@ export function visibleNodes(layout: DagLayout, view: WorldRect): number[] {
   return out;
 }
 
-/** Indices of the edges whose polyline bounding box intersects `view`. */
+/** Indices of the edges whose drawn path's bounding box intersects `view`. */
 export function visibleEdges(layout: DagLayout, view: WorldRect): number[] {
   const out: number[] = [];
   layout.edges.forEach((e, i) => {
@@ -1626,7 +1704,7 @@ export function visibleEdges(layout: DagLayout, view: WorldRect): number[] {
     let y0 = Infinity;
     let x1 = -Infinity;
     let y1 = -Infinity;
-    for (const p of e.points) {
+    for (const p of edgePath(e, layout.orientation)) {
       x0 = Math.min(x0, p.x);
       y0 = Math.min(y0, p.y);
       x1 = Math.max(x1, p.x);
@@ -1652,8 +1730,9 @@ export function hitTestEdges(layout: DagLayout, wx: number, wy: number, tol: num
   let best = -1;
   let bestD = tol * tol;
   layout.edges.forEach((e, i) => {
-    for (let k = 1; k < e.points.length; k++) {
-      const d = distSqToSegment(wx, wy, e.points[k - 1].x, e.points[k - 1].y, e.points[k].x, e.points[k].y);
+    const path = edgePath(e, layout.orientation);
+    for (let k = 1; k < path.length; k++) {
+      const d = distSqToSegment(wx, wy, path[k - 1].x, path[k - 1].y, path[k].x, path[k].y);
       if (d <= bestD) {
         bestD = d;
         best = i;
