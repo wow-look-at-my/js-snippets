@@ -553,6 +553,37 @@ async function main(): Promise<void> {
 	document.getElementById('copy')!.hidden = false;
 }
 
+/** A live dag-view and a readout of its canvas against CSS size x device ratio x pinch scale. The
+ * shipped element cuts its ratio at 3x. Its pinch part at a set value x many pixels, so past
+ * those the readout says capped rather than sharp. */
+function zoomCheck(): void {
+	const host = document.getElementById('zoomcheck')!;
+	const el = document.createElement('dag-view') as unknown as Inner;
+	el.style.width = 'min(600px, 100%)';
+	el.style.height = '260px';
+	el.styles = STYLES;
+	el.nodes = PARITY_NODES;
+	el.edges = PARITY_EDGES;
+	el.groups = PARITY_GROUPS;
+	host.append(el);
+	const line = document.getElementById('zoomstate')!;
+	const report = (): void => {
+		const c = el.canvas;
+		const pinch = visualViewport?.scale ?? 1;
+		// The canvas covers a crop of the element when part of it is off screen; its CSS width is then inline.
+		const shownW = parseFloat(c.style.width) || el.clientWidth;
+		const have = c.width / Math.max(1, shownW);
+		const want = devicePixelRatio * pinch;
+		const capped = devicePixelRatio > 3;
+		const verdict = have >= want - 0.05 ? 'SHARP' : capped && have >= 3 * pinch - 0.05 ? 'capped at 3x by design' : 'BLURRY';
+		line.textContent =
+			`devicePixelRatio ${devicePixelRatio.toFixed(2)}, pinch ${pinch.toFixed(2)}: canvas ${c.width}x${c.height} for ${Math.round(shownW)} CSS px wide` +
+			` = ${have.toFixed(2)} canvas px per CSS px; the screen shows ${want.toFixed(2)} -> ${verdict}`;
+	};
+	setInterval(report, 250);
+}
+zoomCheck();
+
 document.getElementById('copy')!.addEventListener('click', () => {
 	navigator.clipboard.writeText(out.textContent ?? '').catch(() => {
 		// The clipboard can refuse the write. Select the text so a manual copy works.
