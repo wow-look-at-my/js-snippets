@@ -2271,42 +2271,20 @@ export function visibleCrop(
   w: number,
   h: number,
   vv: { left: number; top: number; width: number; height: number },
-  margin = 0,
 ): CropRect {
-  // The margin is a fraction of the viewport on each side: a scroll inside it needs no new crop.
-  const mx = vv.width * margin;
-  const my = vv.height * margin;
-  const x0 = Math.max(0, Math.floor(vv.left - mx - left));
-  const y0 = Math.max(0, Math.floor(vv.top - my - top));
-  const x1 = Math.min(w, Math.ceil(vv.left + vv.width + mx - left));
-  const y1 = Math.min(h, Math.ceil(vv.top + vv.height + my - top));
+  const x0 = Math.max(0, Math.floor(vv.left - left));
+  const y0 = Math.max(0, Math.floor(vv.top - top));
+  const x1 = Math.min(w, Math.ceil(vv.left + vv.width - left));
+  const y1 = Math.min(h, Math.ceil(vv.top + vv.height - top));
   if (x1 <= x0 || y1 <= y0) return { x: 0, y: 0, w: 1, h: 1 };
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 
-/** True when `outer` covers all of `inner`. */
-export function cropCovers(outer: CropRect, inner: CropRect): boolean {
-  return inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.w <= outer.x + outer.w && inner.y + inner.h <= outer.y + outer.h;
-}
-
-/** The share of the viewport added on each side of a crop. The worst case backs 2.25x the screen's pixels. */
-export const CROP_MARGIN = 0.25;
-
-/** The device-pixel ratio cap when no pinch-zoom applies. */
-export const MAX_DPR = 3;
-
-export const MAX_BACKING_PX = 4096 * 4096;
-
-/**
- * The scale from CSS pixels to canvas pixels. A pinch-zoom (`pinch`, the visual viewport scale)
- * magnifies the canvas bitmap, so the canvas must hold that many more pixels to stay sharp.
- * MAX_BACKING_PX stops the pinch part. The result is never below the scale without a pinch.
- */
-export function rasterScale(dpr: number, pinch: number, cssW: number, cssH: number): number {
+/** The scale from CSS pixels to canvas pixels: one canvas pixel per screen
+ * pixel. A pinch-zoom (`pinch`, the visual viewport scale) magnifies the
+ * canvas, so it multiplies the ratio. */
+export function rasterScale(dpr: number, pinch: number): number {
   const d = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
-  const base = Math.min(MAX_DPR, d);
-  // Half steps, rounded up: a pinch gesture reallocates the canvas a few times, not on every event.
-  const p = Number.isFinite(pinch) && pinch > 1 ? Math.ceil(pinch * 2) / 2 : 1;
-  const area = Math.max(1, cssW) * Math.max(1, cssH);
-  return Math.max(base, Math.min(base * p, Math.sqrt(MAX_BACKING_PX / area)));
+  const p = Number.isFinite(pinch) && pinch > 1 ? pinch : 1;
+  return d * p;
 }

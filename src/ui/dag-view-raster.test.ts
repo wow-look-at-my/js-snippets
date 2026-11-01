@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { rasterScale, visibleCrop, cropCovers, MAX_DPR, MAX_BACKING_PX } from './dag-view-math.ts';
+import { rasterScale, visibleCrop } from './dag-view-math.ts';
 
 test('crop: a pinch into the middle of the element keeps only the part on screen', () => {
   assert.deepEqual(visibleCrop(100, 50, 800, 600, { left: 300, top: 200, width: 400, height: 300 }), { x: 200, y: 150, w: 400, h: 300 });
@@ -16,50 +16,34 @@ test('crop: fractional edges snap outward, so no visible pixel is left out', () 
   assert.deepEqual(visibleCrop(0, 0, 800, 600, { left: 10.4, top: 20.6, width: 100.2, height: 50.1 }), { x: 10, y: 20, w: 101, h: 51 });
 });
 
-test('crop: a margin widens the crop by that share of the viewport, still clipped to the element', () => {
-  assert.deepEqual(visibleCrop(0, 0, 2000, 2000, { left: 400, top: 400, width: 400, height: 200 }, 0.25), { x: 300, y: 350, w: 600, h: 300 });
-  assert.deepEqual(visibleCrop(0, 0, 2000, 2000, { left: 0, top: 0, width: 400, height: 200 }, 0.25), { x: 0, y: 0, w: 500, h: 250 });
-});
-
-test('cropCovers: a scroll inside the margin keeps the crop, one past it does not', () => {
-  const crop = visibleCrop(0, 0, 2000, 2000, { left: 400, top: 400, width: 400, height: 200 }, 0.25);
-  assert.equal(cropCovers(crop, visibleCrop(0, 0, 2000, 2000, { left: 450, top: 420, width: 400, height: 200 })), true);
-  assert.equal(cropCovers(crop, visibleCrop(0, 0, 2000, 2000, { left: 520, top: 420, width: 400, height: 200 })), false);
-});
-
 test('crop: an element out of the viewport gets a 1 x 1 canvas', () => {
   assert.deepEqual(visibleCrop(2000, 0, 800, 600, { left: 0, top: 0, width: 400, height: 300 }), { x: 0, y: 0, w: 1, h: 1 });
 });
 
-test('no pinch: the device ratio, capped at MAX_DPR', () => {
-  assert.equal(rasterScale(1, 1, 800, 600), 1);
-  assert.equal(rasterScale(2, 1, 800, 600), 2);
-  assert.equal(rasterScale(4, 1, 800, 600), MAX_DPR);
+test('crop: a tall element in a short window keeps only the window', () => {
+  assert.deepEqual(visibleCrop(0, -1200, 300, 2400, { left: 0, top: 0, width: 1300, height: 500 }), { x: 0, y: 1200, w: 300, h: 500 });
 });
 
-test('a pinch multiplies the ratio, so the magnified bitmap keeps one canvas pixel per device pixel', () => {
-  assert.equal(rasterScale(1, 3, 800, 600), 3);
-  assert.equal(rasterScale(2, 2, 800, 600), 4);
+test('scale: one canvas pixel per screen pixel, the device ratio times the pinch, with no cap', () => {
+  assert.equal(rasterScale(1, 1), 1);
+  assert.equal(rasterScale(2, 1), 2);
+  assert.equal(rasterScale(4, 1), 4);
+  assert.equal(rasterScale(2, 3), 6);
+  assert.equal(rasterScale(2, 10), 20);
 });
 
-test('a pinch rounds up to a half step, so a gesture does not reallocate the canvas on every event', () => {
-  assert.equal(rasterScale(1, 1.1, 800, 600), 1.5);
-  assert.equal(rasterScale(1, 1.4, 800, 600), 1.5);
-  assert.equal(rasterScale(1, 1.6, 800, 600), 2);
-  assert.equal(rasterScale(2, 1.5, 800, 600), 3);
-});
-
-test('the pinch part stops at the pixel budget', () => {
-  const s = rasterScale(2, 10, 1200, 700);
-  assert.ok(Math.abs(1200 * 700 * s * s - MAX_BACKING_PX) < 1, `scale ${s} misses the budget`);
-});
-
-test('the budget never drops the scale under the no-pinch ratio', () => {
-  // A full-screen canvas at 3x is over the budget already. A pinch must not make it worse than no pinch.
-  assert.equal(rasterScale(3, 2, 3840, 2160), 3);
+test('scale x crop never backs more pixels than the screen shows', () => {
+  const dpr = 2;
+  const pinch = 5;
+  const crop = visibleCrop(0, 0, 3000, 2000, { left: 400.3, top: 300.7, width: 1440 / pinch, height: 900 / pinch });
+  const s = rasterScale(dpr, pinch);
+  const w = Math.round(crop.w * s);
+  const h = Math.round(crop.h * s);
+  // Snapping the crop out to whole CSS pixels adds at most one CSS pixel on each side.
+  assert.ok(w <= 1440 * dpr + 2 * s && h <= 900 * dpr + 2 * s, `backed ${w} x ${h} for a ${1440 * dpr} x ${900 * dpr} screen`);
 });
 
 test('junk input reads as 1', () => {
-  assert.equal(rasterScale(NaN, NaN, 0, 0), 1);
-  assert.equal(rasterScale(0, 0.5, 100, 100), 1);
+  assert.equal(rasterScale(NaN, NaN), 1);
+  assert.equal(rasterScale(0, 0.5), 1);
 });
