@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dagToSvg, dagToMermaid, mermaidText, xmlEscape, exportFileName, pngScale, EXPORT_PAD, PNG_MAX_SIDE } from './dag-export.ts';
+import { dagToSvg, dagToMermaid, mermaidText, xmlEscape, exportFileName, pngScale, EXPORT_PAD, EXPORT_ARROW, PNG_MAX_SIDE } from './dag-export.ts';
 import type { ExportNode, ExportEdge, ExportTheme } from './dag-export.ts';
 
 const theme: ExportTheme = { bg: '#000', fg: '#fff', muted: '#888', font: 'sans-serif', fontSize: 11, radius: 6 };
@@ -23,7 +23,9 @@ const node = (id: string, x: number, y: number, extra: Partial<ExportNode> = {})
 
 test('svg: the canvas is the bounds plus the pad on each side, and every node and edge is drawn', () => {
   const nodes = [node('a', 0, 0), node('b <&>', 200, 100, { outline: true, sub: ['sub "q"'] })];
-  const edges: ExportEdge[] = [{ from: 'a', to: 'b <&>', label: 'waits', points: [{ x: 100, y: 20 }, { x: 200, y: 120 }], color: '#555', dashed: true }];
+  const edges: ExportEdge[] = [
+    { from: 'a', to: 'b <&>', label: 'waits', points: [{ x: 100, y: 20 }, { x: 200, y: 120 }], tip: { x: 208, y: 120 }, color: '#555', dashed: true },
+  ];
   const svg = dagToSvg(nodes, edges, { x: 0, y: 0, w: 300, h: 140 }, theme);
   assert.match(svg, new RegExp(`width="${300 + 2 * EXPORT_PAD}" height="${140 + 2 * EXPORT_PAD}"`));
   assert.equal((svg.match(/<rect x=/g) ?? []).length, 2);
@@ -35,8 +37,20 @@ test('svg: the canvas is the bounds plus the pad on each side, and every node an
   assert.ok(!svg.includes('<&>'), 'no raw markup leaks');
 });
 
+test('svg: the line ends at the back of the arrowhead, and the head points at the tip', () => {
+  const edges: ExportEdge[] = [
+    { from: 'a', to: 'b', label: null, points: [{ x: 0, y: 0 }, { x: 100 - EXPORT_ARROW, y: 0 }], tip: { x: 100, y: 0 }, color: '#e33', dashed: false },
+  ];
+  const svg = dagToSvg([], edges, { x: 0, y: 0, w: 100, h: 0 }, theme);
+  const p = EXPORT_PAD;
+  const half = EXPORT_ARROW * 0.42;
+  assert.match(svg, new RegExp(`points="${p},${p} ${100 - EXPORT_ARROW + p},${p}"`), 'the line stops one arrow length short');
+  const head = `M${100 + p} ${p}L${100 - EXPORT_ARROW + p} ${Math.round((p + half) * 10) / 10}L${100 - EXPORT_ARROW + p} ${Math.round((p - half) * 10) / 10}z`;
+  assert.ok(svg.includes(`d="${head}" fill="#e33"`), `head ${head} in the edge colour`);
+});
+
 test('svg: an edge with fewer than two points draws nothing', () => {
-  const svg = dagToSvg([], [{ from: 'a', to: 'b', label: null, points: [{ x: 0, y: 0 }], color: '#555', dashed: false }], { x: 0, y: 0, w: 0, h: 0 }, theme);
+  const svg = dagToSvg([], [{ from: 'a', to: 'b', label: null, points: [{ x: 0, y: 0 }], tip: { x: 0, y: 0 }, color: '#555', dashed: false }], { x: 0, y: 0, w: 0, h: 0 }, theme);
   assert.ok(!svg.includes('<polyline '));
 });
 

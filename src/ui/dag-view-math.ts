@@ -1302,18 +1302,26 @@ const edgePaths = new WeakMap<PlacedEdge, readonly { x: number; y: number }[]>()
 /** The line an edge is drawn as: a smooth curve through its start, every
  * bend and its end, cut into straight pieces. Draw, hit-test and export
  * this, not `points`, so all of them agree. The curve leaves and enters each
- * box along the layer axis. It never doubles back along that axis between
- * points. */
-export function edgePath(e: PlacedEdge, orientation: DagOrientation): readonly { x: number; y: number }[] {
-  const cached = edgePaths.get(e);
-  if (cached !== undefined) return cached;
-  const p = e.points;
-  if (p.length < 2) return p;
+ * box along the layer axis. It never doubles back along that axis.
+ * With `endInset`, the curve ends that far before the target box. An
+ * arrowhead of that length then fills the gap. */
+export function edgePath(e: PlacedEdge, orientation: DagOrientation, endInset = 0): readonly { x: number; y: number }[] {
+  if (endInset <= 0) {
+    const cached = edgePaths.get(e);
+    if (cached !== undefined) return cached;
+  }
+  if (e.points.length < 2) return e.points;
   // `a` is the layer axis, `c` the cross axis.
   const a = (q: { x: number; y: number }): number => (orientation === 'TB' ? q.y : q.x);
   const c = (q: { x: number; y: number }): number => (orientation === 'TB' ? q.x : q.y);
   const pt = (av: number, cv: number): { x: number; y: number } => (orientation === 'TB' ? { x: cv, y: av } : { x: av, y: cv });
+  const p = e.points.slice();
   const last = p.length - 1;
+  if (endInset > 0) {
+    const span = a(p[last]) - a(p[last - 1]);
+    const inset = Math.min(endInset, Math.abs(span) / 2);
+    p[last] = pt(a(p[last]) - Math.sign(span) * inset, c(p[last]));
+  }
   // Hermite tangents. An end gets the layer-axis span of its segment and no cross part.
   const tan = p.map((q, i) => {
     if (i === 0) return { a: a(p[1]) - a(q), c: 0 };
@@ -1341,7 +1349,7 @@ export function edgePath(e: PlacedEdge, orientation: DagOrientation): readonly {
     const c2 = c3 - tan[i + 1].c / 3;
     flattenCubic(p[i], pt(a1, c1), pt(a2, c2), p[i + 1], out, 0);
   }
-  edgePaths.set(e, out);
+  if (endInset <= 0) edgePaths.set(e, out);
   return out;
 }
 

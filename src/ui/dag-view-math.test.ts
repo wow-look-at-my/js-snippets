@@ -899,6 +899,18 @@ test('edgePath: never doubles back along the layer axis', () => {
   for (let k = 1; k < path.length; k++) assert.ok(path[k].x >= path[k - 1].x - 1e-9, `x falls at piece ${k}`);
 });
 
+test('edgePath: an end inset stops the curve short of the box, level with the end, arriving along the layer axis', () => {
+  const lr = edgePath(placedEdge([{ x: 0, y: 0 }, { x: 100, y: 80 }]), 'LR', 8);
+  const end = lr[lr.length - 1];
+  assert.deepEqual(end, { x: 92, y: 80 });
+  const prev = lr[lr.length - 2];
+  assert.ok(Math.abs(end.y - prev.y) < Math.abs(end.x - prev.x) * 0.1, 'the last piece runs along the axis into the arrowhead');
+  const back = edgePath({ ...placedEdge([{ x: 100, y: 0 }, { x: 0, y: 50 }]), reversed: true }, 'LR', 8);
+  assert.deepEqual(back[back.length - 1], { x: 8, y: 50 }, 'a reversed edge insets the other way');
+  const tb = edgePath(placedEdge([{ x: 0, y: 0 }, { x: 40, y: 10 }]), 'TB', 8);
+  assert.deepEqual(tb[tb.length - 1], { x: 40, y: 5 }, 'a gap shorter than two insets keeps half of it');
+});
+
 test('edgePath: an edge level with its target is one straight piece', () => {
   assert.equal(edgePath(placedEdge([{ x: 0, y: 5 }, { x: 50, y: 5 }]), 'LR').length, 2);
 });

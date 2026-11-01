@@ -64,7 +64,7 @@ import type {
   PlacedGroup,
 } from './dag-view-math.ts';
 import { categoryColor, categoryJitter, dimColor, labelHaloColor } from './color.ts';
-import { dagToSvg, dagToMermaid, exportFileName, pngScale } from './dag-export.ts';
+import { dagToSvg, dagToMermaid, exportFileName, pngScale, EXPORT_ARROW } from './dag-export.ts';
 import type { ExportNode, ExportEdge } from './dag-export.ts';
 
 export * from './dag-view-math.ts';
@@ -1099,7 +1099,8 @@ export class DagViewElement extends HTMLElement {
         from: e.edge.from,
         to: e.edge.to,
         label: e.edge.label ?? null,
-        points: edgePath(e, this.layout.orientation),
+        points: edgePath(e, this.layout.orientation, EXPORT_ARROW),
+        tip: e.points[e.points.length - 1],
         color: e.reversed ? t.emphasis : style?.color ?? t.edge,
         dashed: e.reversed || style?.dashed === true,
       };
@@ -2078,17 +2079,17 @@ export class DagViewElement extends HTMLElement {
     // A cycle edge is dashed as well as colored: color alone is not a signal a colorblind reader can act on.
     if (e.reversed || style?.dashed === true) ctx.setLineDash([6 / this.view.scale, 4 / this.view.scale]);
 
-    const path = edgePath(e, this.layout.orientation);
+    // The arrowhead carries the direction, so it is drawn at a fixed SCREEN size: it must stay readable at every zoom.
+    const head = 8 / this.view.scale;
+    const path = edgePath(e, this.layout.orientation, head);
     ctx.beginPath();
     ctx.moveTo(path[0].x, path[0].y);
     for (let k = 1; k < path.length; k++) ctx.lineTo(path[k].x, path[k].y);
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // The arrowhead carries the direction, so it is drawn at a fixed SCREEN size: it must stay readable at every zoom.
-    const last = path[path.length - 1];
-    const prev = path[path.length - 2] ?? last;
-    drawArrowhead(ctx, prev, last, 8 / this.view.scale, ctx.strokeStyle as string);
+    // The line stops at the arrowhead's back, and the head spans the rest of the way to the box.
+    drawArrowhead(ctx, path[path.length - 1], e.points[e.points.length - 1], head, ctx.strokeStyle as string);
     ctx.restore();
   }
 
