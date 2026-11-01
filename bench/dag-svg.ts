@@ -334,7 +334,7 @@ async function parity(): Promise<Parity> {
 		const zoom = document.createElement('canvas');
 		const Z = 8;
 		zoom.width = sw * Z;
-		zoom.height = sh * Z * 2 + 8;
+		zoom.height = sh * Z;
 		const zg = zoom.getContext('2d')!;
 		zg.imageSmoothingEnabled = false;
 		const src = document.createElement('canvas');
@@ -342,11 +342,20 @@ async function parity(): Promise<Parity> {
 		src.height = ch;
 		src.getContext('2d')!.putImageData(a, 0, 0);
 		zg.drawImage(src, sx, sy, sw, sh, 0, 0, sw * Z, sh * Z);
-		src.getContext('2d')!.putImageData(b, 0, 0);
-		zg.drawImage(src, sx, sy, sw, sh, 0, sh * Z + 8, sw * Z, sh * Z);
 		zoom.style.width = `${(sw * Z) / r}px`;
-		const fig = Object.assign(document.createElement('figure'), { innerHTML: '<figcaption>one node at 8x: canvas above, SVG below</figcaption>' });
-		fig.append(zoom);
+		zoom.style.display = 'block';
+		// The live SVG, cropped by its viewBox to the same node and drawn 8x larger: the browser renders the vectors at that size.
+		const big = document.createElementNS(SVG_NS, 'svg');
+		big.setAttribute('viewBox', `${sx / r} ${sy / r} ${sw / r} ${sh / r}`);
+		big.setAttribute('width', String((sw * Z) / r));
+		big.setAttribute('height', String((sh * Z) / r));
+		big.style.display = 'block';
+		big.style.marginTop = '8px';
+		big.innerHTML = markup;
+		const fig = Object.assign(document.createElement('figure'), {
+			innerHTML: '<figcaption>one node magnified 8x, as a browser zoom does: the canvas bitmap above, the live SVG below</figcaption>',
+		});
+		fig.append(zoom, big);
 		panel.append(fig);
 	}
 	el.remove();
