@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>dag-view: canvas vs SVG</title>
+	<link rel="stylesheet" href="dag-svg.css">
+</head>
+<body>
+	<h1>dag-view: canvas vs SVG frame cost</h1>
+	<p>Each case pans the same layout for a fixed number of frames. <b>frm</b> is the gap between frame starts in ms, so it includes paint and raster. At vsync a frame never reads under 1000/refresh-rate. Keep this tab in front while it runs.</p>
+	<p><button id="run">Run</button> <button id="copy" hidden>Copy results</button></p>
+	<pre id="out"></pre>
+	<div id="stages"></div>
+	<script type="module" src="dag-svg.ts"></script>
+</body>
+</html>

@@ -2253,3 +2253,21 @@ export function stepFocusFade(state: FocusFade, now: number): { state: FocusFade
   const rising = state.target >= 0 && held < FOCUS_DIM_FULL_S;
   return { state: { ...state, shown, fade }, moving: releasing || rising || shown !== state.target };
 }
+
+/** The device-pixel ratio cap when no pinch-zoom applies. */
+export const MAX_DPR = 3;
+
+export const MAX_BACKING_PX = 4096 * 4096;
+
+/**
+ * The scale from CSS pixels to canvas pixels. A pinch-zoom (`pinch`, the visual viewport scale)
+ * magnifies the canvas bitmap, so the canvas must hold that many more pixels to stay sharp.
+ * MAX_BACKING_PX stops the pinch part. The result is never below the scale without a pinch.
+ */
+export function rasterScale(dpr: number, pinch: number, cssW: number, cssH: number): number {
+  const d = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+  const base = Math.min(MAX_DPR, d);
+  const p = Number.isFinite(pinch) && pinch > 1 ? pinch : 1;
+  const area = Math.max(1, cssW) * Math.max(1, cssH);
+  return Math.max(base, Math.min(base * p, Math.sqrt(MAX_BACKING_PX / area)));
+}

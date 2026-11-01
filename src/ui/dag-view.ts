@@ -44,6 +44,7 @@ import {
   newWheelState,
   MIN_SCALE,
   MAX_SCALE,
+  rasterScale,
 } from './dag-view-math.ts';
 import type {
   DagNode,
@@ -253,7 +254,6 @@ interface MenuItem {
   sub?: MenuItem[];
 }
 
-const MAX_DPR = 3;
 /* */
 const EDGE_HIT_TOL = 6;
 
@@ -340,6 +340,8 @@ export class DagViewElement extends HTMLElement {
   private animatingValue = false;
   private reducedMotion = false;
   private motionQuery: MediaQueryList | null = null;
+  private dprQuery: MediaQueryList | null = null;
+  private dprWatched = 0;
 
   private dpr = 1;
   private cssW = 0;
@@ -493,6 +495,10 @@ export class DagViewElement extends HTMLElement {
       this.ro = new ResizeObserver(() => this.resizeBackingStore());
       this.ro.observe(this);
     }
+    // A pinch-zoom magnifies the canvas bitmap. The backing store follows the pinch scale.
+    if (typeof visualViewport !== 'undefined' && visualViewport !== null) {
+      visualViewport.addEventListener('resize', this.onDprChange);
+    }
 
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.canvas.addEventListener('pointermove', this.onPointerMove);
@@ -527,6 +533,12 @@ export class DagViewElement extends HTMLElement {
     this.animatingValue = false;
     this.ro?.disconnect();
     this.ro = null;
+    this.dprQuery?.removeEventListener('change', this.onDprChange);
+    this.dprQuery = null;
+    this.dprWatched = 0;
+    if (typeof visualViewport !== 'undefined' && visualViewport !== null) {
+      visualViewport.removeEventListener('resize', this.onDprChange);
+    }
     if (this.raf !== 0) cancelAnimationFrame(this.raf);
     this.raf = 0;
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
@@ -1853,8 +1865,10 @@ export class DagViewElement extends HTMLElement {
   // -- Sizing / theme --------------------------------------------------------------
 
   private resizeBackingStore(): void {
-    const raw = typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1;
-    const dpr = Math.min(MAX_DPR, raw);
+    const raw = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
+    const pinch = typeof visualViewport !== 'undefined' && visualViewport !== null ? visualViewport.scale : 1;
+    const dpr = rasterScale(raw, pinch, this.clientWidth, this.clientHeight);
+    this.watchDpr(raw);
     const bw = Math.max(1, Math.round(this.clientWidth * dpr));
     const bh = Math.max(1, Math.round(this.clientHeight * dpr));
     if (bw === this.canvas.width && bh === this.canvas.height && dpr === this.dpr) return;
@@ -1866,6 +1880,20 @@ export class DagViewElement extends HTMLElement {
     this.readTheme();
     this.invalidate();
   }
+
+  /**
+   * A browser zoom changes devicePixelRatio but often not the element's CSS size, so the
+   * ResizeObserver does not fire. A media query on the current ratio fires on that change.
+   */
+  private watchDpr(dpr: number): void {
+    if (typeof matchMedia !== 'function' || this.dprWatched === dpr) return;
+    this.dprQuery?.removeEventListener('change', this.onDprChange);
+    this.dprWatched = dpr;
+    this.dprQuery = matchMedia(`(resolution: ${dpr}dppx)`);
+    this.dprQuery.addEventListener('change', this.onDprChange);
+  }
+
+  private readonly onDprChange = (): void => this.resizeBackingStore();
 
   /** The 2d context is OPAQUE (alpha: false) on purpose: the graph paints its
    * own background every frame. */
