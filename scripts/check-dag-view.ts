@@ -280,11 +280,17 @@ const dump = await page.evaluate(() => {
 });
 check('the right-click says what it did', !dump.hidden && /Copied graph state/.test(dump.toast), dump.toast);
 
+interface Box {
+	x: number;
+	y: number;
+	w: number;
+	h: number;
+}
 let snap: {
 	canvas: { width: number; height: number };
-	viewport: { scale: number };
-	nodes: { id: string; screen: { x: number; y: number; w: number; h: number }; visible: boolean }[];
-	edges: { screen: { x: number; y: number }[] }[];
+	viewport: Box;
+	nodes: { id: string; world: Box }[];
+	edges: { from: string; to: string; bends?: { x: number; y: number }[] }[];
 } | null = null;
 try {
 	snap = JSON.parse(dump.text);
@@ -294,24 +300,30 @@ try {
 check('the clipboard holds parseable JSON', snap !== null, `${dump.text.length} bytes`);
 check('the dump is compact: one line, no indent', !dump.text.includes('\n'), `${dump.text.length} bytes`);
 check(
-	'the dump rounds coordinates to whole pixels',
-	snap !== null && snap.nodes.every((n) => Number.isInteger(n.screen.x) && Number.isInteger(n.screen.y)),
+	'the dump holds world units only, with no empty fields',
+	snap !== null &&
+		[...snap.nodes, ...snap.edges].every((o) =>
+			Object.entries(o).every(
+				([k, v]) => k !== 'screen' && k !== 'visible' && v !== null && v !== '' && v !== false && !(Array.isArray(v) && v.length === 0),
+			),
+		),
+	dump.text.slice(0, 200),
+);
+check(
+	'the dump rounds coordinates to whole units',
+	snap !== null && snap.nodes.every((n) => Number.isInteger(n.world.x) && Number.isInteger(n.world.y)),
 	dump.text.slice(0, 200),
 );
 
 if (snap !== null) {
 	check('every drawn node is in the dump', snap.nodes.length === info.info.nodeCount, `${snap.nodes.length}`);
 	check('every drawn edge is in the dump', snap.edges.length > 0, `${snap.edges.length}`);
-	// The whole point of the screen half: these are canvas pixels.
+	const vp = snap.viewport;
 	const bundle = snap.nodes.find((n) => n.id === 'bundle');
-	const onCanvas =
-		bundle !== undefined &&
-		bundle.visible &&
-		bundle.screen.w > 0 &&
-		bundle.screen.x >= 0 &&
-		bundle.screen.x < snap.canvas.width;
-	check('a visible node carries its canvas pixels', onCanvas, JSON.stringify(bundle));
-	check('edge points carry canvas pixels too', snap.edges.every((e) => e.screen.length >= 2));
+	const inView = bundle !== undefined && bundle.world.w > 0 && bundle.world.x < vp.x + vp.w && bundle.world.x + bundle.world.w > vp.x;
+	check('the viewport is the world rectangle the canvas shows', inView, JSON.stringify({ vp, bundle }));
+	const ids = new Set(snap.nodes.map((n) => n.id));
+	check('every edge end names a drawn box', snap.edges.every((e) => ids.has(e.from) && ids.has(e.to)));
 }
 
 // -- Interaction: the Download graph flyout --------------------------------------------
@@ -592,11 +604,14 @@ const scaled = await page.evaluate(async () => {
 	await new Promise((r) => setTimeout(r, 300));
 	const snap = el.snapshot;
 	host.remove();
+	const vp = snap.viewport;
 	return {
 		layerCount: snap.info.layerCount,
-		scale: snap.viewport.scale,
+		scale: snap.canvas.width / vp.w,
 		bounds: snap.bounds,
-		offScreen: snap.nodes.filter((n) => !n.visible).length,
+		offScreen: snap.nodes.filter(
+			({ world: b }) => b.x + b.w <= vp.x || b.y + b.h <= vp.y || b.x >= vp.x + vp.w || b.y >= vp.y + vp.h,
+		).length,
 	};
 });
 check(
@@ -634,13 +649,14 @@ async function sampleBoxes(ids: string[], samples: number, gap: number): Promise
 			for (let step = 0; step < arg.samples; step++) {
 				const snap = el.snapshot;
 				const dpr = snap.canvas.dpr;
+				const v = el.viewport;
 				for (const region of out) {
-					const node = snap.nodes.find((n) => n.id === region.id)!;
+					const b = snap.nodes.find((n) => n.id === region.id)!.world;
 					const inset = 3;
-					const x = Math.round((node.screen.x + inset) * dpr);
-					const y = Math.round((node.screen.y + inset) * dpr);
-					const w = Math.max(1, Math.round((node.screen.w - 2 * inset) * dpr));
-					const h = Math.max(1, Math.round((node.screen.h - 2 * inset) * dpr));
+					const x = Math.round((b.x * v.scale + v.x + inset) * dpr);
+					const y = Math.round((b.y * v.scale + v.y + inset) * dpr);
+					const w = Math.max(1, Math.round((b.w * v.scale - 2 * inset) * dpr));
+					const h = Math.max(1, Math.round((b.h * v.scale - 2 * inset) * dpr));
 					const data = ctx.getImageData(x, y, w, h).data;
 					let sum = 0;
 					for (let idx = 0; idx < data.length; idx += 4) sum += data[idx] + data[idx + 1] * 3 + data[idx + 2] * 7;
@@ -661,19 +677,18 @@ const activeState = await page.evaluate(() => {
 	const el = document.getElementById('demo-dag-active') as DagViewElement;
 	el.scrollIntoView({ block: 'center' });
 	const snap = el.snapshot;
+	const v = el.viewport;
 	return {
 		animating: el.animating,
 		active: snap.nodes.filter((n) => n.active).map((n) => n.id).sort(),
 		canvas: snap.canvas,
 		// Wholly inside the canvas, not merely overlapping it: a box half off the edge samples pixels that are not there.
-		inside: snap.nodes.every(
-			(n) =>
-				n.screen.x >= 0 &&
-				n.screen.y >= 0 &&
-				n.screen.x + n.screen.w <= snap.canvas.width &&
-				n.screen.y + n.screen.h <= snap.canvas.height &&
-				n.screen.w >= 40,
-		),
+		inside: snap.nodes.every(({ world: b }) => {
+			const x = b.x * v.scale + v.x;
+			const y = b.y * v.scale + v.y;
+			const w = b.w * v.scale;
+			return x >= 0 && y >= 0 && x + w <= snap.canvas.width && y + b.h * v.scale <= snap.canvas.height && w >= 40;
+		}),
 	};
 });
 await page.waitForTimeout(300);
@@ -725,7 +740,7 @@ const card = await page.evaluate(async () => {
 		target: a.target,
 		rel: a.rel,
 	}));
-	const snapLinks = el.snapshot.nodes.find((n) => n.id === 'pr-12')!.links;
+	const snapLinks = el.snapshot.nodes.find((n) => n.id === 'pr-12')!.links ?? [];
 	const shown = !panel.hidden;
 	const open = panel.querySelector('.dt-link') !== null;
 	el.selected = null;
@@ -776,22 +791,29 @@ async function groupState(id: string): Promise<GroupState> {
 		const el = document.getElementById(target) as DagViewElement;
 		el.scrollIntoView({ block: 'center' });
 		const snap = el.snapshot;
+		const v = el.viewport;
 		const rect = el.getBoundingClientRect();
 		const g = snap.groups[0];
 		const stand = snap.nodes.find((n) => n.id === 'group:pending');
 		const header =
 			g !== undefined && !g.collapsed
 				? {
-						x: rect.left + snap.viewport.x + (g.world.x + 20) * snap.viewport.scale,
-						y: rect.top + snap.viewport.y + (g.world.y + 8) * snap.viewport.scale,
+						x: rect.left + v.x + (g.world.x + 20) * v.scale,
+						y: rect.top + v.y + (g.world.y + 8) * v.scale,
 					}
 				: null;
 		return {
 			nodes: snap.nodes.map((n) => n.id),
 			edges: snap.edges.map((e) => `${e.from}>${e.to}`),
 			collapsed: g === undefined ? null : g.collapsed,
-			scale: snap.viewport.scale,
-			stand: stand === undefined ? null : { x: rect.left + stand.screen.x + stand.screen.w / 2, y: rect.top + stand.screen.y + stand.screen.h / 2 },
+			scale: v.scale,
+			stand:
+				stand === undefined
+					? null
+					: {
+							x: rect.left + v.x + (stand.world.x + stand.world.w / 2) * v.scale,
+							y: rect.top + v.y + (stand.world.y + stand.world.h / 2) * v.scale,
+						},
 			header,
 		};
 	}, id);
@@ -922,10 +944,11 @@ const focusSetup = await page.evaluate(async () => {
 	el.fit();
 	await new Promise((r) => setTimeout(r, 400));
 	const snap = el.snapshot;
+	const v = el.viewport;
 	const rect = el.getBoundingClientRect();
 	const at = (id: string): { x: number; y: number } => {
-		const n = snap.nodes.find((x) => x.id === id)!;
-		return { x: rect.left + n.screen.x + n.screen.w / 2, y: rect.top + n.screen.y + n.screen.h / 2 };
+		const b = snap.nodes.find((x) => x.id === id)!.world;
+		return { x: rect.left + v.x + (b.x + b.w / 2) * v.scale, y: rect.top + v.y + (b.y + b.h / 2) * v.scale };
 	};
 	return { bundle: at('bundle'), off: { x: rect.left + 4, y: rect.bottom - 4 } };
 });
@@ -933,15 +956,16 @@ const auditPixels = (): Promise<number> =>
 	page.evaluate(() => {
 		const el = document.getElementById('demo-dag') as DagViewElement;
 		const canvas = el.shadowRoot!.querySelector('canvas')!;
-		const node = el.snapshot.nodes.find((n) => n.id === 'audit')!;
+		const b = el.snapshot.nodes.find((n) => n.id === 'audit')!.world;
 		const dpr = el.snapshot.canvas.dpr;
+		const v = el.viewport;
 		const data = canvas
 			.getContext('2d')!
 			.getImageData(
-				Math.round((node.screen.x + 3) * dpr),
-				Math.round((node.screen.y + 3) * dpr),
-				Math.max(1, Math.round((node.screen.w - 6) * dpr)),
-				Math.max(1, Math.round((node.screen.h - 6) * dpr)),
+				Math.round((b.x * v.scale + v.x + 3) * dpr),
+				Math.round((b.y * v.scale + v.y + 3) * dpr),
+				Math.max(1, Math.round((b.w * v.scale - 6) * dpr)),
+				Math.max(1, Math.round((b.h * v.scale - 6) * dpr)),
 			).data;
 		let sum = 0;
 		for (let idx = 0; idx < data.length; idx += 4) sum += data[idx] + data[idx + 1] + data[idx + 2];

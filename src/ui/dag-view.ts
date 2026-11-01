@@ -4,6 +4,7 @@ import dagCss from './dag-view.css';
 import {
   layoutDag,
   layoutBounds,
+  edgePath,
   fitViewport,
   legibleViewport,
   clampViewport,
@@ -66,7 +67,7 @@ import type {
   CropRect,
 } from './dag-view-math.ts';
 import { categoryColor, categoryJitter, dimColor, labelHaloColor } from './color.ts';
-import { dagToSvg, dagToMermaid, exportFileName, pngScale } from './dag-export.ts';
+import { dagToSvg, dagToMermaid, exportFileName, pngScale, EXPORT_ARROW } from './dag-export.ts';
 import type { ExportNode, ExportEdge } from './dag-export.ts';
 
 export * from './dag-view-math.ts';
@@ -199,35 +200,32 @@ export interface DagSnapshotRect {
   h: number;
 }
 
-/** One node, where the layout put it and where that landed on the canvas. */
+/** One node and its layout box, in world units. A field the node does not set is absent. */
 export interface DagSnapshotNode {
   id: string;
-  label: string | null;
-  sublabel: string | null;
-  category: string | null;
-  state: string | null;
-  detail: string | null;
-  href: string | null;
+  label?: string;
+  sublabel?: string;
+  category?: string;
+  state?: string;
+  detail?: string;
+  href?: string;
   /** The node's links the card lists: safe hrefs only, repeats dropped. */
-  links: { label: string; href: string }[];
-  /** Whether the node carries the active sheen, from its own field or its state's style entry. */
-  active: boolean;
+  links?: { label: string; href: string }[];
+  /** Present and true when the node carries the active sheen, from its own field or its state's style entry. */
+  active?: true;
   layer: number;
   world: DagSnapshotRect;
-  /** CSS pixels, origin at the canvas top-left. */
-  screen: DagSnapshotRect;
-  /** Whether the box overlaps the canvas at all. */
-  visible: boolean;
 }
 
-/** One routed edge, in both coordinate systems. */
+/** One routed edge. */
 export interface DagSnapshotEdge {
   from: string;
   to: string;
-  label: string | null;
-  reversed: boolean;
-  world: { x: number; y: number }[];
-  screen: { x: number; y: number }[];
+  label?: string;
+  /** Present and true when the edge was reversed to break a cycle. */
+  reversed?: true;
+  /** The bend points between both ends, in world units, from `from` to `to`. The drawn curve passes through each. */
+  bends?: { x: number; y: number }[];
 }
 
 /**
@@ -238,7 +236,8 @@ export interface DagSnapshot {
   capturedAt: string;
   orientation: DagOrientation;
   canvas: { width: number; height: number; dpr: number };
-  viewport: DagViewport;
+  /** The world rectangle the canvas shows. The scale is `canvas.width / viewport.w`. */
+  viewport: DagSnapshotRect;
   bounds: DagSnapshotRect;
   info: DagInfo;
   nodes: DagSnapshotNode[];
@@ -750,25 +749,18 @@ export class DagViewElement extends HTMLElement {
     return this.animatingValue;
   }
 
-  /** The whole drawn state, in both coordinate systems, as a plain object.
-   * `world` is what the layout decided. `screen` is where that landed on the
-   * canvas in CSS pixels, with the origin at the canvas top-left. A reader can
-   * measure what they are looking at: an empty band between a couple of
-   * columns, a node parked off screen, a row. That row did not line up with the
-   * one above. A description of a gap is a guess. These numbers are the gap.
-   * `visible` says whether a node's box overlaps the canvas at all, so
-   * everything scrolled out of view is countable rather than merely missing. */
+  /** The whole drawn state as a plain object. Every coordinate is in world
+   * units, so a reader can measure a gap instead of guessing it. `viewport` is
+   * the world rectangle on the canvas: a box outside it is off screen. A field
+   * that holds no value is left out. */
   get snapshot(): DagSnapshot {
     this.ensureLayout();
-    const toScreen = (p: { x: number; y: number }): { x: number; y: number } => {
-      const s = worldToScreen(p, this.view);
-      return { x: round(s.x), y: round(s.y) };
-    };
+    const tl = screenToWorld({ x: 0, y: 0 }, this.view);
     return {
       capturedAt: new Date().toISOString(),
       orientation: this.orientation,
       canvas: { width: round(this.cssW), height: round(this.cssH), dpr: this.dpr },
-      viewport: { x: round(this.view.x), y: round(this.view.y), scale: Math.round(this.view.scale * 1000) / 1000 },
+      viewport: { x: round(tl.x), y: round(tl.y), w: round(this.cssW / this.view.scale), h: round(this.cssH / this.view.scale) },
       bounds: {
         x: round(this.bounds.x),
         y: round(this.bounds.y),
@@ -777,24 +769,15 @@ export class DagViewElement extends HTMLElement {
       },
       info: this.info,
       nodes: this.layout.nodes.map((n) => {
-        const s = toScreen({ x: n.x, y: n.y });
-        const w = round(n.w * this.view.scale);
-        const h = round(n.h * this.view.scale);
-        return {
-          id: n.node.id,
-          label: n.node.label ?? null,
-          sublabel: n.node.sublabel ?? null,
-          category: n.node.category ?? null,
-          state: n.node.state ?? null,
-          detail: n.node.detail ?? null,
-          href: n.node.href ?? null,
-          links: cardLinks(n.node).map((l) => ({ label: l.label, href: l.href })),
-          active: isActiveNode(n.node, this.styleMap),
-          layer: n.layer,
-          world: { x: round(n.x), y: round(n.y), w: round(n.w), h: round(n.h) },
-          screen: { x: s.x, y: s.y, w, h },
-          visible: s.x + w > 0 && s.y + h > 0 && s.x < this.cssW && s.y < this.cssH,
-        };
+        const out: DagSnapshotNode = { id: n.node.id, layer: n.layer, world: { x: round(n.x), y: round(n.y), w: round(n.w), h: round(n.h) } };
+        for (const k of ['label', 'sublabel', 'category', 'state', 'detail', 'href'] as const) {
+          const v = n.node[k];
+          if (v) out[k] = v;
+        }
+        const links = cardLinks(n.node).map((l) => ({ label: l.label, href: l.href }));
+        if (links.length) out.links = links;
+        if (isActiveNode(n.node, this.styleMap)) out.active = true;
+        return out;
       }),
       groups: (this.layout.groups ?? []).map((g) => ({
         id: g.id,
@@ -804,14 +787,13 @@ export class DagViewElement extends HTMLElement {
         nodeId: g.nodeId,
         world: { x: round(g.x), y: round(g.y), w: round(g.w), h: round(g.h) },
       })),
-      edges: this.layout.edges.map((e) => ({
-        from: e.edge.from,
-        to: e.edge.to,
-        label: e.edge.label ?? null,
-        reversed: e.reversed,
-        world: e.points.map((p) => ({ x: round(p.x), y: round(p.y) })),
-        screen: e.points.map(toScreen),
-      })),
+      edges: this.layout.edges.map((e) => {
+        const out: DagSnapshotEdge = { from: e.edge.from, to: e.edge.to };
+        if (e.edge.label) out.label = e.edge.label;
+        if (e.reversed) out.reversed = true;
+        if (e.points.length > 2) out.bends = e.points.slice(1, -1).map((p) => ({ x: round(p.x), y: round(p.y) }));
+        return out;
+      }),
     };
   }
 
@@ -1131,7 +1113,8 @@ export class DagViewElement extends HTMLElement {
         from: e.edge.from,
         to: e.edge.to,
         label: e.edge.label ?? null,
-        points: e.points,
+        points: edgePath(e, this.layout.orientation, EXPORT_ARROW),
+        tip: e.points[e.points.length - 1],
         color: e.reversed ? t.emphasis : style?.color ?? t.edge,
         dashed: e.reversed || style?.dashed === true,
       };
@@ -2173,15 +2156,17 @@ export class DagViewElement extends HTMLElement {
     // A cycle edge is dashed as well as colored: color alone is not a signal a colorblind reader can act on.
     if (e.reversed || style?.dashed === true) ctx.setLineDash([6 / this.view.scale, 4 / this.view.scale]);
 
+    // The arrowhead carries the direction, so it is drawn at a fixed SCREEN size: it must stay readable at every zoom.
+    const head = 8 / this.view.scale;
+    const path = edgePath(e, this.layout.orientation, head);
     ctx.beginPath();
-    roundedPolyline(ctx, e.points, 10);
+    ctx.moveTo(path[0].x, path[0].y);
+    for (let k = 1; k < path.length; k++) ctx.lineTo(path[k].x, path[k].y);
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // The arrowhead carries the direction, so it is drawn at a fixed SCREEN size: it must stay readable at every zoom.
-    const last = e.points[e.points.length - 1];
-    const prev = e.points[e.points.length - 2] ?? last;
-    drawArrowhead(ctx, prev, last, 8 / this.view.scale, ctx.strokeStyle as string);
+    // The line stops at the arrowhead's back, and the head spans the rest of the way to the box.
+    drawArrowhead(ctx, path[path.length - 1], e.points[e.points.length - 1], head, ctx.strokeStyle as string);
     ctx.restore();
   }
 
@@ -2427,26 +2412,6 @@ function round(v: number): number {
   return Math.round(v);
 }
 
-function roundedPolyline(ctx: CanvasRenderingContext2D, pts: readonly { x: number; y: number }[], r: number): void {
-  if (pts.length === 0) return;
-  ctx.moveTo(pts[0].x, pts[0].y);
-  for (let i = 1; i < pts.length - 1; i++) {
-    const prev = pts[i - 1];
-    const cur = pts[i];
-    const next = pts[i + 1];
-    // The radius shrinks to fit the shorter of both legs.
-    const r1 = Math.min(r, Math.hypot(cur.x - prev.x, cur.y - prev.y) / 2);
-    const r2 = Math.min(r, Math.hypot(next.x - cur.x, next.y - cur.y) / 2);
-    const rr = Math.min(r1, r2);
-    if (rr <= 0.5) {
-      ctx.lineTo(cur.x, cur.y);
-      continue;
-    }
-    ctx.arcTo(cur.x, cur.y, next.x, next.y, rr);
-  }
-  const last = pts[pts.length - 1];
-  ctx.lineTo(last.x, last.y);
-}
 
 /** A filled triangle at `to`, pointing along the `from -> to` direction. */
 function drawArrowhead(
