@@ -8,9 +8,10 @@
 <body>
 	<h1>dag-view: canvas vs SVG frame cost</h1>
 	<p>Each case pans the same layout for a fixed number of frames. <b>frm</b> is the gap between frame starts in ms, so it includes paint and raster. At vsync a frame never reads under 1000/refresh-rate. <b>build</b> is the time to the first frame. Keep this tab in front while it runs. It takes about a minute.</p>
-	<p><b>canvas</b> is the shipped element. <b>svg-attr</b> is the SVG export scene moved by a transform attribute, so every frame repaints vectors. <b>svg-layer</b> is the same scene on one composited layer moved by a CSS transform.</p>
+	<p>Both SVG modes run the element's own <code>draw()</code> into a 2D context that writes SVG, so they draw every treatment the canvas draws. The parity row and the pictures below it compare the two pixel by pixel. <b>canvas</b> is the shipped element. <b>svg-rebuild</b> makes a new SVG DOM every frame, the way the canvas redraws every frame. <b>svg-pan</b> builds the whole graph once and pans it with a transform; any zoom pays its build again.</p>
 	<p><button id="run">Run</button> <button id="copy" hidden>Copy results</button></p>
 	<pre id="out"></pre>
+	<div id="parity"></div>
 	<div id="stages"></div>
 	<script type="module" src="dag-svg.ts"></script>
 </body>

@@ -69,6 +69,21 @@ pre {
 	border-radius: 6px;
 	min-height: 4em;
 }
+#parity {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+}
+figure {
+	margin: 0;
+	min-width: 0;
+	max-width: 100%;
+	overflow-x: auto;
+}
+figcaption {
+	color: var(--muted);
+	font-size: 12px;
+}
 #stages {
 	overflow-x: auto;
 }
