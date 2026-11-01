@@ -1,0 +1,94 @@
+/* A bench console: one column, a results table in monospace, the live stage under it. */
+:root {
+	--bg: #f6f7f9;
+	--fg: #14171c;
+	--muted: #5b6370;
+	--rule: #d5d9e0;
+	--accent: #2f6fd6;
+	--mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+	--sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme="light"]) {
+		--bg: #0f1216;
+		--fg: #e4e7ec;
+		--muted: #96a0ae;
+		--rule: #2a313b;
+		--accent: #6ea2f5;
+		color-scheme: dark;
+	}
+}
+:root[data-theme="dark"] {
+	--bg: #0f1216;
+	--fg: #e4e7ec;
+	--muted: #96a0ae;
+	--rule: #2a313b;
+	--accent: #6ea2f5;
+	color-scheme: dark;
+}
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--fg);
+	font: 14px/1.5 var(--sans);
+	padding-block: 16px;
+	padding-left: max(16px, env(safe-area-inset-left, 0px));
+	padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+h1 {
+	font-size: 20px;
+	text-wrap: balance;
+}
+p {
+	max-width: 70ch;
+	color: var(--muted);
+}
+button {
+	font: inherit;
+	padding: 6px 14px;
+	border: 1px solid var(--accent);
+	border-radius: 6px;
+	background: var(--accent);
+	color: var(--bg);
+	cursor: pointer;
+}
+button:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+button:focus-visible {
+	outline: 2px solid var(--fg);
+	outline-offset: 2px;
+}
+pre {
+	font: 12px/1.45 var(--mono);
+	font-variant-numeric: tabular-nums;
+	overflow-x: auto;
+	padding: 12px;
+	border: 1px solid var(--rule);
+	border-radius: 6px;
+	min-height: 4em;
+}
+#parity {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+}
+figure {
+	margin: 0;
+	min-width: 0;
+	max-width: 100%;
+	overflow-x: auto;
+}
+figcaption {
+	color: var(--muted);
+	font-size: 12px;
+}
+#stages {
+	overflow-x: auto;
+}
+.stage {
+	position: relative;
+	overflow: hidden;
+	border: 1px solid #8884;
+}

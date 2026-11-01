@@ -44,6 +44,10 @@ import {
   newWheelState,
   MIN_SCALE,
   MAX_SCALE,
+  rasterScale,
+  visibleCrop,
+  cropCovers,
+  CROP_MARGIN,
 } from './dag-view-math.ts';
 import type {
   DagNode,
@@ -61,6 +65,7 @@ import type {
   WheelSource,
   DagGroup,
   PlacedGroup,
+  CropRect,
 } from './dag-view-math.ts';
 import { categoryColor, categoryJitter, dimColor, labelHaloColor } from './color.ts';
 import { dagToSvg, dagToMermaid, exportFileName, pngScale } from './dag-export.ts';
@@ -253,7 +258,6 @@ interface MenuItem {
   sub?: MenuItem[];
 }
 
-const MAX_DPR = 3;
 /* */
 const EDGE_HIT_TOL = 6;
 
@@ -340,6 +344,10 @@ export class DagViewElement extends HTMLElement {
   private animatingValue = false;
   private reducedMotion = false;
   private motionQuery: MediaQueryList | null = null;
+  private dprQuery: MediaQueryList | null = null;
+  private dprWatched = 0;
+  /** The part of the element the canvas covers under a pinch-zoom; null when it covers all of it. */
+  private crop: CropRect | null = null;
 
   private dpr = 1;
   private cssW = 0;
@@ -493,6 +501,13 @@ export class DagViewElement extends HTMLElement {
       this.ro = new ResizeObserver(() => this.resizeBackingStore());
       this.ro.observe(this);
     }
+    // A pinch-zoom magnifies the canvas bitmap. The backing store follows the pinch scale,
+    // and a scroll under a pinch moves the part of the element the canvas must cover.
+    if (typeof visualViewport !== 'undefined' && visualViewport !== null) {
+      visualViewport.addEventListener('resize', this.onDprChange);
+      visualViewport.addEventListener('scroll', this.onViewportScroll);
+    }
+    addEventListener('scroll', this.onViewportScroll, { passive: true, capture: true });
 
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.canvas.addEventListener('pointermove', this.onPointerMove);
@@ -527,6 +542,14 @@ export class DagViewElement extends HTMLElement {
     this.animatingValue = false;
     this.ro?.disconnect();
     this.ro = null;
+    this.dprQuery?.removeEventListener('change', this.onDprChange);
+    this.dprQuery = null;
+    this.dprWatched = 0;
+    if (typeof visualViewport !== 'undefined' && visualViewport !== null) {
+      visualViewport.removeEventListener('resize', this.onDprChange);
+      visualViewport.removeEventListener('scroll', this.onViewportScroll);
+    }
+    removeEventListener('scroll', this.onViewportScroll, { capture: true });
     if (this.raf !== 0) cancelAnimationFrame(this.raf);
     this.raf = 0;
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
@@ -916,22 +939,15 @@ export class DagViewElement extends HTMLElement {
 
   // -- The state dump --------------------------------------------------------------
 
-  /**
-   * Right-click copies the whole drawn state as JSON.
+  /** Right-click copies the whole drawn state as JSON.
    *
    * A reader who can see something wrong with the picture usually cannot say
    * it in numbers. The numbers are what anybody else needs to act. This
-   * turns "there is a huge gap in the middle" into coordinates.
-   *
-   * It replaces the browser's own menu, which offers nothing for a canvas.
-   * Shift-right-click gets that menu back.
-   */
+   * turns "there is a huge gap in the middle" into coordinates. */
   private onContextMenu = (e: MouseEvent): void => {
     if (e.shiftKey) return;
     e.preventDefault();
-    const rect = this.canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const { x, y } = this.localPoint(e);
     const w = screenToWorld({ x, y }, this.view);
     const ni = hitTestNodes(this.layout, w.x, w.y);
     this.openMenu(x, y, ni >= 0 ? this.layout.nodes[ni].node.id : null);
@@ -1157,9 +1173,10 @@ export class DagViewElement extends HTMLElement {
       console.error('dag-view: no 2d context for the PNG export');
       return;
     }
-    const saved = { ctx: this.ctx, cssW: this.cssW, cssH: this.cssH, dpr: this.dpr, view: this.view, touched: this.viewTouched };
+    const saved = { ctx: this.ctx, cssW: this.cssW, cssH: this.cssH, dpr: this.dpr, view: this.view, touched: this.viewTouched, crop: this.crop };
     try {
       this.ctx = ctx;
+      this.crop = null;
       this.cssW = w;
       this.cssH = h;
       this.dpr = dpr;
@@ -1168,6 +1185,7 @@ export class DagViewElement extends HTMLElement {
       this.draw();
     } finally {
       this.ctx = saved.ctx;
+      this.crop = saved.crop;
       this.cssW = saved.cssW;
       this.cssH = saved.cssH;
       this.dpr = saved.dpr;
@@ -1387,7 +1405,7 @@ export class DagViewElement extends HTMLElement {
 
   private localPoint(e: { clientX: number; clientY: number }): { x: number; y: number } {
     const r = this.canvas.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
+    return { x: e.clientX - r.left + (this.crop?.x ?? 0), y: e.clientY - r.top + (this.crop?.y ?? 0) };
   }
 
   private onPointerDown = (e: PointerEvent): void => {
@@ -1853,19 +1871,81 @@ export class DagViewElement extends HTMLElement {
   // -- Sizing / theme --------------------------------------------------------------
 
   private resizeBackingStore(): void {
-    const raw = typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1;
-    const dpr = Math.min(MAX_DPR, raw);
-    const bw = Math.max(1, Math.round(this.clientWidth * dpr));
-    const bh = Math.max(1, Math.round(this.clientHeight * dpr));
-    if (bw === this.canvas.width && bh === this.canvas.height && dpr === this.dpr) return;
-    this.canvas.width = bw;
-    this.canvas.height = bh;
+    const raw = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
+    const vv = typeof visualViewport !== 'undefined' ? visualViewport : null;
+    const pinch = vv !== null ? vv.scale : 1;
+    this.watchDpr(raw);
+    const W = this.clientWidth;
+    const H = this.clientHeight;
+    // The canvas backs only the part of the element near the screen. A pinch,
+    // a browser zoom or a tall element never allocates pixels nobody sees.
+    const view =
+      vv !== null
+        ? { left: vv.offsetLeft, top: vv.offsetTop, width: vv.width, height: vv.height }
+        : { left: 0, top: 0, width: innerWidth, height: innerHeight };
+    const r = this.getBoundingClientRect();
+    const ox = r.left + this.clientLeft;
+    const oy = r.top + this.clientTop;
+    const visible = visibleCrop(ox, oy, W, H, view);
+    const keep = this.crop !== null && this.crop.x + this.crop.w <= W && this.crop.y + this.crop.h <= H && cropCovers(this.crop, visible);
+    let crop: CropRect | null = keep ? this.crop : visibleCrop(ox, oy, W, H, view, CROP_MARGIN);
+    if (crop !== null && crop.x === 0 && crop.y === 0 && crop.w >= W && crop.h >= H) crop = null;
+    const cw = crop?.w ?? W;
+    const ch = crop?.h ?? H;
+    const dpr = rasterScale(raw, pinch, cw, ch);
+    const bw = Math.max(1, Math.round(cw * dpr));
+    const bh = Math.max(1, Math.round(ch * dpr));
+    const cx = crop?.x ?? 0;
+    const cy = crop?.y ?? 0;
+    const sameCrop = (crop === null) === (this.crop === null) && cx === (this.crop?.x ?? 0) && cy === (this.crop?.y ?? 0);
+    if (bw === this.canvas.width && bh === this.canvas.height && dpr === this.dpr && sameCrop) return;
+    const cssW = crop === null ? bw / dpr : W;
+    const cssH = crop === null ? bh / dpr : H;
+    const sizeChanged = Math.abs(cssW - this.cssW) > 0.5 || Math.abs(cssH - this.cssH) > 0.5;
+    if (bw !== this.canvas.width || bh !== this.canvas.height) {
+      this.canvas.width = bw;
+      this.canvas.height = bh;
+    }
+    const st = this.canvas.style;
+    if (crop === null) {
+      st.left = st.top = st.width = st.height = '';
+    } else {
+      st.left = `${crop.x}px`;
+      st.top = `${crop.y}px`;
+      st.width = `${crop.w}px`;
+      st.height = `${crop.h}px`;
+    }
+    this.crop = crop;
     this.dpr = dpr;
-    this.cssW = bw / dpr;
-    this.cssH = bh / dpr;
-    this.readTheme();
-    this.invalidate();
+    this.cssW = cssW;
+    this.cssH = cssH;
+    // A scale change alone keeps the theme and the layout. Only a new CSS size reads them again.
+    if (sizeChanged || this.lastRenderTs === 0) this.readTheme();
+    if (this.lastRenderTs === 0) {
+      this.invalidate();
+      return;
+    }
+    // A new width or height clears the canvas now. Paint it in this task, or the empty canvas shows for a frame.
+    this.dirty = false;
+    this.draw();
   }
+
+  /**
+   * A browser zoom changes devicePixelRatio but often not the element's CSS size, so the
+   * ResizeObserver does not fire. A media query on the current ratio fires on that change.
+   */
+  private watchDpr(dpr: number): void {
+    if (typeof matchMedia !== 'function' || this.dprWatched === dpr) return;
+    this.dprQuery?.removeEventListener('change', this.onDprChange);
+    this.dprWatched = dpr;
+    this.dprQuery = matchMedia(`(resolution: ${dpr}dppx)`);
+    this.dprQuery.addEventListener('change', this.onDprChange);
+  }
+
+  private readonly onDprChange = (): void => this.resizeBackingStore();
+
+  /** A scroll moves the visible part of the element. It redraws only when that part leaves the crop. */
+  private readonly onViewportScroll = (): void => this.resizeBackingStore();
 
   /** The 2d context is OPAQUE (alpha: false) on purpose: the graph paints its
    * own background every frame. */
@@ -2015,7 +2095,9 @@ export class DagViewElement extends HTMLElement {
     this.fitIfUntouched();
 
     const t = this.theme;
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    const ox = this.crop?.x ?? 0;
+    const oy = this.crop?.y ?? 0;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, -ox * this.dpr, -oy * this.dpr);
     ctx.fillStyle = t.bg;
     ctx.fillRect(0, 0, this.cssW, this.cssH);
     if (this.layout.nodes.length === 0) return;
