@@ -15,8 +15,9 @@
   font-family: var(--dag-font, 'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Fira Code', monospace);
   /* The host is a scroll container, so it sits in every scroll chain from
    * its shadow children. A drag at the pan boundary must never become
-   * browser history-back navigation. */
-  overscroll-behavior: contain;
+   * browser history-back navigation. Contain the x axis only: a vertical
+   * scroll the graph does not claim must reach the page. */
+  overscroll-behavior-x: contain;
 }
 
 :host([hidden]) {
