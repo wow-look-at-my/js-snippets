@@ -89,7 +89,7 @@ Fits one line of DOM text by dropping pieces of the label until it fits. No fade
 
   fitLabelTiers(label) → string[] — the forms, longest first: each deriveLabelTiers form, followed by itself with its leading ' · ' pieces dropped in turn. 'wow-look-at-my/webhooks · wow-dind runner · job 42' → [full, 'webhooks · wow-dind runner · job 42', 'wow-dind runner · job 42', 'job 42'].
 
-  fitLabel(el, label, tiers?) — shows in `el` the longest form that fits its current width. `el` needs a width of its own (a block, or a flex/grid item with min-width: 0). `tiers` replaces the derived forms. The full label goes in el.title. fitLabelsIn(root) — fits every `[data-fit-label]` element under root from that attribute, and again when root changes size.
+  fitLabel(el, label, tiers?) — shows in `el` the longest form that fits its current width. `el` needs a width of its own (a block, or a flex/grid item with min-width: 0). `tiers` replaces the derived forms. The full label goes in el.title. fitLabelsIn(root) — fits every `[data-fit-label]` element under root from that attribute, and again when root changes size. A batch reads layout once (every style write, then every read, then every text write), so thousands of labels stay cheap.
 
   Call it after each redraw. It watches a root once.
 
