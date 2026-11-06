@@ -105,7 +105,7 @@ No network anywhere: every fixture is generated locally.
 
 ## Benches (`bench/`)
 
-Self-contained pages, run with `node scripts/run-bench.mjs bench/<page>.html?<options>`. `bench/dag-svg.html` (built by `just build-bench`, a nested ts0 project like the showcase) draws `<dag-view>` on its canvas and as SVG through `bench/svg-context.ts`, a 2D context that writes SVG. It checks pixel parity, then times both. Run it on a real GPU: `BENCH_CHROME`, `BENCH_CHROME_ARGS` and `BENCH_REQUIRE_GPU=1` point run-bench at a Chrome binary and fail a run a software renderer drew. The session sandbox has only SwiftShader.
+Self-contained pages, run with `node scripts/run-bench.mjs bench/<page>.html?<options>`. `bench/dag-svg.html` (built by `just build-bench`, a nested ts0 project like the showcase) draws `<dag-view>` on its canvas and as SVG through `bench/svg-context.ts`, a 2D context that writes SVG. It checks pixel parity, then times both. Run it on a real GPU: `BENCH_CHROME`, `BENCH_CHROME_ARGS` and `BENCH_REQUIRE_GPU=1` point run-bench at a Chrome binary. It fail a run a software renderer drew. The session sandbox has only SwiftShader.
 
 ## llms.txt — CRITICAL
 

@@ -2028,12 +2028,8 @@ export class TimelineViewElement extends HTMLElement {
     this.view = this.clampBounds({ start: end - span, end }, end);
   }
 
-  /** The disengaged counterpart of the per-tick pin: while residual follow lead
-   * is still gliding out after a backward-pan disengage. The view's end tracks
-   * the DECAYING ceiling now + span * lead — moving backward by at most the
-   * easing step per frame. This happens until the lead is gone or "now"
-   * overtakes the parked end first. Once settled this is a no-op and the view
-   * is an ordinary parked view. */
+  /** The disengaged counterpart of the per-tick pin: while residual follow lead is still gliding out after a backward-pan disengage. The view's end tracks the DECAYING ceiling now + span * lead — moving backward by at most the easing step per frame. This happens until the lead is gone or "now" overtakes the parked end
+   * first. Once settled this is a no-op and the view is an ordinary parked view. */
   private decayLead(): void {
     if (this.leadAnim === null && this.leadFrac === 0) return;
     const now = this.liveEdge();
