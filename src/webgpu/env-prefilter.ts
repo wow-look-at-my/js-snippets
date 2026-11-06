@@ -9,10 +9,8 @@ interface MipLayout {
   bufOffset: number;
 }
 
-/**Generate a prefiltered environment mip chain from an equirectangular HDRI. The source
- * texture's first mip must contain the HDRI data. The first mip must already be
- * populated. @param numSamples Samples per pixel for the convolution (a later default).
- * Higher = better quality, slower. */
+/** Generate a prefiltered environment mip chain from an equirectangular HDRI. Higher =
+ * better quality, slower. */
 export function prefilterEnvMap(
   device: GPUDevice,
   texture: GPUTexture,

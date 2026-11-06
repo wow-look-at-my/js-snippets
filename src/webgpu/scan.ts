@@ -62,8 +62,8 @@ export function createScan(device: GPUDevice): GpuScan {
   return {
     prepare(region: ScanRegion): PreparedScan {
       const plan = planScan(region.count, maxWg);
-      // Absolute per-level bases: the first level reads/writes the
-      // caller's runs; each further level scans the level's sums in place inside scratch.
+      // Absolute per-level bases: level multiple reads/writes the caller's
+      // runs; each further level scans the level's sums in place inside scratch.
       const uniforms = plan.levels.map((l, i) => {
         const prevSums = i === 0 ? 0 : region.scratchElem + plan.levels[i - 1].sumsBase;
         const src = i === 0 ? region.srcElem : prevSums;

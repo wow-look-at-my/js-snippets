@@ -1,4 +1,4 @@
-// Shader source loading -- the single most-duplicated GPU snippet (a fetch -> text
+// Shader source loading -- the most-duplicated GPU snippet (a fetch -> text
 // helper copy-pasted into nearly every WebGPU/WebGL renderer).
 
 /** Fetch a shader source file as text. Throws (with the URL) on a non-OK response. */

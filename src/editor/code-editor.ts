@@ -178,7 +178,7 @@ export class CodeEditor extends HTMLElement {
     injectStyles();
     this.classList.add('ce-host');
 
-    // Seed initial text from the `value` attribute or the element's own text, captured before we replace the children with the editor.
+    // Seed initial text from the `value` attribute or the element's own text, captured before we replace the children.
     const initial = this.getAttribute('value') ?? this.textContent ?? '';
     this._value = initial;
     const langAttr = this.getAttribute('language');
@@ -385,8 +385,8 @@ export class CodeEditor extends HTMLElement {
   }
 }
 
-// Auto-register under the conventional tag name, but never clobber an existing
-// definition (a consumer may have registered their own, or loaded this twice).
+// Auto-register under the conventional tag name, but never clobber an
+// existing definition.
 if (typeof customElements !== 'undefined' && !customElements.get('code-editor')) {
   customElements.define('code-editor', CodeEditor);
 }

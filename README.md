@@ -4,6 +4,22 @@ Reusable ES modules served via [buildhost](https://github.com/wow-look-at-my/bui
 
 **Base URL:** `https://sites.pazer.build/js-snippets/branch/library`
 
+## `<timeline-view>`
+
+![The timeline-view component: labeled swimlanes of interval bars on a shared time axis, with sub-track packing, hatched wait segments, dashed kill tails. This is diamond instant pips, a time marker, a minimap and a live edge](docs/timeline-view.png)
+
+A canvas-rendered realtime swimlane chart in one custom element — sub-track packing, phase segments inside bars, instant pips, async backward history, follow-now. This is trackpad pan/zoom and `--timeline-*` theming. That picture is the real component: it is captured from the [showcase gallery](#deploy) by `node scripts/screenshot-showcase.mjs`. As a result, it cannot drift into showing a chart the code no longer draws.
+
+Sub-spans: an interval whose `parentId` names another interval in its lane nests under it, in a boxed block with the parent on top. A sub-span's own sub-spans nest a level deeper. See `docs/timeline/sub-spans.md`.
+
+## `<dag-view>`
+
+![The dag-view component: a build pipeline drawn as layered boxes joined by arrows, with category colours, hatched and stippled node states. This is a long edge bending layers, and a notice strip naming two edges the graph can not draw](docs/dag-view.png)
+
+A canvas-rendered dependency graph in one custom element — layered (Sugiyama) layout, pan/zoom, hover-to-fade-everything-else, search. This is keyboard graph walking and `--dag-*` theming.
+
+What it will not do is quietly tidy your data. A circular dependency is drawn, dashed and in the emphasis colour, with its arrow still pointing the true way. An edge naming a node that does not exist is dropped and **counted**. The notice strip says so, and `info` returns the same facts as data. Captured from the [showcase gallery](#deploy) by `node scripts/check-dag-view.ts --readme`.
+
 ## Usage
 
 ```js
@@ -24,17 +40,26 @@ import * as mat4 from 'https://sites.pazer.build/js-snippets/branch/library/math
 
 | Module | Description |
 |--------|-------------|
-| `math/vec3.js` | Minimal vec3 utilities. All functions return new arrays, no mutation. |
+| `math/vec2.js`, `math/vec3.js`, `math/vec4.js` | Minimal fixed-size vector utilities, one shape each. All functions return new arrays, no mutation. |
+| `math/vecn.js` | The same operations at an arbitrary dimension, for data-driven sizes. A length mismatch throws rather than picking the shorter vector. |
 | `math/mat4.js` | Column-major `Float32Array(16)` mat4 utilities. Perspective uses WebGPU clip-Z `[0,1]`. |
+| `math/least-squares.js` | Linear solve, normal equations, polynomial and line fits, symmetric 3×3 eigen. Plus orthogonal-distance fits: 2D line, circle, 3D line, plane. |
+| `math/cylinder-fit.js` | Least-squares infinite cylinder through a 3D point cloud: axis, centre, radius, and the residual. Works on short wide cylinders, not just long thin ones. |
 
 ### UI
 
 | Module | Description |
 |--------|-------------|
+| `ui/dag-view.js` | `<dag-view>` — canvas-rendered pan/zoom dependency graph. Layered layout, hover-to-fade-everything-else, search, keyboard graph walking, `--dag-*` theming. Cycles and undrawable edges are reported, never swallowed. Re-exports `dag-view-math`. |
+| `ui/dag-view-math.js` | The graph's pure layout: cycle breaking, layering, crossing reduction, coordinates, edge routing, viewport, culling, hit tests, reachability. Deterministic. DOM-free, node-tested. |
+| `ui/color.js` | Shared canvas colour primitives: stable category→hue hashing, oklch/hsl category colours, the uniform dim transform, the label halo. DOM-free. |
+| `ui/hit-test.js` | Shared pointer hit shapes for canvas components: rect and polyline tests, `distSqToSegment`. DOM-free. |
+| `ui/combobox.js` | `<combo-box>` / `installSelectFallback()` — replaces broken native `<select>` dropdowns (e.g. Tesla's in-car browser) with an in-page popup listbox. The original `<select>` stays as the model and keeps firing `input`/`change`; keyboard nav + type-ahead; `--cb-*` theming. Re-exports `combobox-logic`. |
+| `ui/combobox-logic.js` | The combobox's pure logic: `shouldEnable` UA/force gating, enabled-option navigation, `typeAheadTarget` matching, `computePopupPlacement` flip/clamp math. DOM-free, node-tested. |
 | `ui/perf-graph.js` | `<perf-graph>` — compact, stackable, canvas-rendered performance graph custom element. Push-based sampling, label/current/avg/min/max readout drawn as canvas text, autoscale or fixed range with nice gridlines, dashed budget guide line, min-max downsampling when samples outnumber pixels, `--perf-graph-*` CSS-custom-property theming. Re-exports `perf-graph-math`. |
 | `ui/perf-graph-math.js` | The graph's pure math: `SampleRing` float32 ring buffer, `computeStats`, `autoRange` / `niceStep` / `niceTicks`, `binMinMax`, `formatValue`. DOM-free, allocation-free hot paths. |
-| `ui/timeline-view.js` | `<timeline-view>` — canvas-rendered realtime swimlane timeline custom element. Labeled lanes of interval bars on a shared time axis, with sub-track packing sized by the parallelism visible in the current window (height changes tween) and auto-fit that demotes the tallest lanes to compact 4px tracks when the stack would overflow the host (hysteretic, observable via `fitState`/`fitchange`, opt-out `no-auto-fit`); stable category → hue coloring plus a state/kind style map (emphasis, dim, hatch, stipple, outline); instant diamond pips for zero-duration intervals (translation-stable bar/pip decision, whole-device-pixel scrolling); phase segments within bars; connectors and time markers; follow-now with a jump-to-live pill (backward pans disengage; the viewport hard-stops at now and re-docks within 2 device px of the stop); trackpad-first pan/zoom (horizontal-dominant wheel pans time, vertical-dominant wheel is left to the page, anchored ctrl+wheel zoom, pinch, drag, keyboard); async BACKWARD history via a `loadRange` callback with visible uncovered regions and an end-of-history boundary; adaptive idle render pacing (~30fps, ~10fps on battery — a ceiling: clock-driven motion renders at min(tier fps, device px/sec) via even rAF frame-skipping, and a parked chart draws zero frames); built-in tooltip; `--timeline-*` theming. Re-exports `timeline-view-math`. |
-| `ui/timeline-view-math.js` | The timeline's pure math: time↔px scales and anchor-preserving zoom, wheel normalization + `routeWheel` gesture routing, the `followAfterGesture` follow rule + `clampViewToNow` end stop, `snapViewToDevicePixels` + the `nowLineX` raw-view now-line snap, the `clockDrawBudgetMs` per-device-pixel draw budget, the time tick ladder + formatters, `packTracks` / `packVisibleTracks` / `layoutLanes`, `computeAutoFit` compact-lane demotion, `fitText`, duration-based instant-width helpers, hit testing and connector routing, `categoryHue` / `categoryColor` hashing, `CoverageTracker` + `historyProbe` for async history, render-pacing tiers. DOM-free, node-tested. |
+| `ui/timeline-view.js` | `<timeline-view>` — canvas-rendered realtime swimlane timeline custom element. Labeled lanes of interval bars on a shared time axis, with sub-track packing sized by the parallelism visible in the current window (height changes tween) and auto-fit that demotes the tallest lanes to compact 4px tracks when the stack would overflow the host (hysteretic, observable via `fitState`/`fitchange`, opt-out `no-auto-fit`); stable category → hue coloring plus a state/kind style map (emphasis, dim, hatch, stipple, outline); instant diamond pips for zero-duration intervals (translation-stable bar/pip decision, whole-device-pixel scrolling); phase segments within bars; connectors and time markers; follow-now with a jump-to-live pill (backward pans disengage; the viewport hard-stops at now and re-docks within 2 device px of the stop); optional independent static bounds (`minTime` caps how far back it scrolls, `maxTime` freezes the live edge so a chart of finished content never scrolls forward); trackpad-first pan/zoom (horizontal-dominant wheel pans time, vertical-dominant wheel is left to the page, anchored ctrl+wheel zoom, pinch, drag, keyboard); async BACKWARD history via a `loadRange` callback with visible uncovered regions and an end-of-history boundary; adaptive idle render pacing (~30fps, ~10fps on battery — a ceiling: clock-driven motion renders at min(tier fps, device px/sec) via even rAF frame-skipping, and a parked chart draws zero frames); built-in tooltip; `--timeline-*` theming. Re-exports `timeline-view-math`. |
+| `ui/timeline-view-math.js` | The timeline's pure math: time↔px scales and anchor-preserving zoom, wheel normalization + `routeWheel` gesture routing, the `followAfterGesture` follow rule + `clampViewToNow` end stop + `clampViewToBounds`/`boundedMaxSpan` static bounds, `snapViewToDevicePixels` + the `nowLineX` raw-view now-line snap, the `clockDrawBudgetMs` per-device-pixel draw budget, the time tick ladder + formatters, `packTracks` / `packVisibleTracks` / `layoutLanes`, `computeAutoFit` compact-lane demotion, `fitText`, duration-based instant-width helpers, hit testing and connector routing, `categoryHue` / `categoryColor` hashing, `CoverageTracker` + `historyProbe` for async history, render-pacing tiers. DOM-free, node-tested. |
 
 ### WebGPU
 
@@ -43,7 +68,7 @@ import * as mat4 from 'https://sites.pazer.build/js-snippets/branch/library/math
 | `webgpu/hdr-loader.js` | Parses Radiance RGBE (`.hdr`) files with RLE support. Returns `rgba32float` pixel data. |
 | `webgpu/mip-generator.js` | AMD Single Pass Downsampler — generates a full mip chain in two compute dispatches. |
 | `webgpu/env-prefilter.js` | IBL environment map prefiltering with GGX importance sampling for PBR split-sum. |
-| `webgpu/geometry.js` | Procedural mesh generators: cube, sphere, cylinder, plane. |
+| `webgpu/geometry.js` | Procedural mesh generators: cube, box, sphere, cylinder, plane, torus. All wind CCW viewed from outside; `flipWinding` for interiors/mirrored draws. |
 | `webgpu/buffer.js` | GPU buffer creation helper with `mappedAtCreation`. |
 | `webgpu/context.js` | WebGPU device + canvas context initialization. |
 | `webgpu/sky.js` | Equirectangular HDRI sky renderer with Reinhard tonemapping. |
@@ -71,11 +96,13 @@ pnpm build      # ts0 build (type-check + compile src/ -> dist/) + assemble dist
 
 [ts0](https://github.com/wow-look-at-my/ts0)'s "js" library target compiles every `.ts` under `src/` to a parallel `.js` under `dist/`, preserving structure (`src/webgpu/sky.ts` → `dist/webgpu/sky.js`). Code shared between modules (e.g. `vec3`, used by `mat4`) is deduplicated into a chunk and imported — never copied into both — so you still import a single URL. The browser fetches any shared chunk transitively. WGSL shaders are imported as strings via the `loaders: { ".wgsl": "text" }` field in `ts0.json`. `ts0 build` type-checks first (`tsc --noEmit`), so there is no separate type-check step.
 
-The build also emits a TypeScript declaration sibling for every module — `dist/webgpu/sky.js` gets `dist/webgpu/sky.d.ts`. Deploys carry them to the site at the same URL with the extension swapped (`https://…/js-snippets/ui/timeline-view.d.ts` next to `…/ui/timeline-view.js`), so consumers can fetch types alongside the code. Shared chunks and tests get no declarations.
+The build also emits a TypeScript declaration sibling for every module — `dist/webgpu/sky.js` gets `dist/webgpu/sky.d.ts`. They deploys carry them to the site at the same URL with the extension swapped (`https://…/js-snippets/ui/timeline-view.d.ts` next to `…/ui/timeline-view.js`), so consumers can fetch types alongside the code. Shared chunks and tests get no declarations.
 
 ## Deploy
 
-CI runs on every push (`.github/workflows/deploy.yml`). Every push publishes `dist/` to buildhost sites: `master` → the stable `library` site (the base URL above), any other branch → `library-<branch>` for pre-merge verification. The site of the legacy GitHub Pages serves frozen 2026-07-15 content (the org Actions artifact quota killed its deploys).
+CI runs on every push (`.github/workflows/deploy.yml`). Every push publishes `dist/` to buildhost sites: `master` → the stable `library` site (the base URL above), any other branch → `library-<branch>` for pre-merge verification.
+
+The site of the legacy GitHub Pages was unpublished 2026-07-20 in the org-wide GitHub Pages shutdown. Buildhost is the only host. The `github.io` origin is dead — do not import from or reintroduce it.
 
 Branches that touch the timeline chart (`src/ui/`) or `showcase/` also publish a live single-file demo of `<timeline-view>` (fake local data, every visual looping) to buildhost: `https://sites.pazer.build/js-snippets/branch/<branch>/` (`/` in branch names flattened to `-`). The preview is private/token-gated by operator decision — do not add `public: 'true'` to the publish step. Build it locally with `pnpm build:showcase` → `showcase/dist/index.html`.
 

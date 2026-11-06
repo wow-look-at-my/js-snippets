@@ -25,7 +25,7 @@ export interface FloatFbo {
  * `EXT_color_buffer_float` is unavailable (float attachments would be
  * incomplete) or the framebuffer fails its completeness check. Bind with
  * `gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.framebuffer)` and remember to set
- * the viewport; `readPixels(..., gl.FLOAT, ...)` works while it is bound.
+ * the viewport; `ReadPixels(..., gl.FLOAT, ...)` works while it is bound.
  * No depth attachment — pair with a renderbuffer yourself if you need one.
  */
 export function createFloatFbo(
@@ -108,7 +108,7 @@ export interface PingPong<T extends PingPongTarget = FloatFbo> {
   dispose(): void;
 }
 
-/**`swap()` works even when the method is detached from the pair. */
+/*`swap()` works even when the method is detached from the pair. */
 export function makePingPong<T extends PingPongTarget>(a: T, b: T): PingPong<T> {
   const pair: PingPong<T> = {
     read: a,

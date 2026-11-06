@@ -1,0 +1,11 @@
+{
+	"entry": "dag-svg.html",
+	"outdir": "dist",
+	"target": "browser",
+	"format": "esm",
+	"strict": true,
+	"minify": true,
+	"sourcemap": false,
+	"embedAssets": false,
+	"esbuild": { "loader": { ".css": "text", ".wgsl": "text", ".glsl": "text" } }
+}

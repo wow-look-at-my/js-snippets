@@ -3,8 +3,8 @@
 
 // -- 2D ------------------------------------------------------------------------
 
-/**Lattice coords are wrapped by `period` so the noise tiles seamlessly
- * at that period. */
+/*Lattice coords are wrapped by `period` so the noise tiles seamlessly at
+ * that period. */
 export function hash2(ix: number, iy: number, period: number, seed: number): number {
   const x = ((ix % period) + period) % period;
   const y = ((iy % period) + period) % period;
@@ -14,11 +14,12 @@ export function hash2(ix: number, iy: number, period: number, seed: number): num
   return (h >>> 0) / 4294967295;
 }
 
+/* */
 export function smootherstep(t: number): number {
   return t * t * t * (t * (t * 6 - 15) + 10);
 }
 
-/**Quintic interpolation. */
+/*Quintic interpolation. */
 export function valueNoise2(u: number, v: number, cells: number, seed: number): number {
   const x = u * cells;
   const y = v * cells;
@@ -33,6 +34,7 @@ export function valueNoise2(u: number, v: number, cells: number, seed: number): 
   return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy;
 }
 
+/* */
 export function fbm2(u: number, v: number, baseCells: number, octaves: number, seed: number): number {
   let sum = 0, amp = 1, norm = 0, cells = baseCells;
   for (let o = 0; o < octaves; o++) {
@@ -44,6 +46,7 @@ export function fbm2(u: number, v: number, baseCells: number, octaves: number, s
   return sum / norm;
 }
 
+/* */
 export function ridged2(u: number, v: number, baseCells: number, octaves: number, seed: number): number {
   const n = fbm2(u, v, baseCells, octaves, seed);
   const r = 1 - Math.abs(2 * n - 1);
@@ -52,6 +55,7 @@ export function ridged2(u: number, v: number, baseCells: number, octaves: number
 
 // -- 3D ------------------------------------------------------------------------
 
+/* */
 export function hash3(x: number, y: number, z: number, seed: number): number {
   let h = (x | 0) * 374761393 + (y | 0) * 668265263 + (z | 0) * 1274126177 + (seed | 0) * 40503;
   h = Math.imul(h ^ (h >>> 13), 1274126177);
@@ -59,11 +63,12 @@ export function hash3(x: number, y: number, z: number, seed: number): number {
   return (h >>> 0) / 4294967296;
 }
 
+/* */
 function smooth3(t: number): number {
   return t * t * (3 - 2 * t);
 }
 
-/** Cubic interpolation. */
+/*Cubic interpolation. */
 export function valueNoise3(x: number, y: number, z: number, seed: number): number {
   const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
   const xf = x - xi, yf = y - yi, zf = z - zi;
@@ -80,6 +85,7 @@ export function valueNoise3(x: number, y: number, z: number, seed: number): numb
   );
 }
 
+/* */
 export function fbm3(x: number, y: number, z: number, seed: number, octaves = 4): number {
   let f = 0, amp = 0.5, sum = 0, freq = 1;
   for (let o = 0; o < octaves; o++) {

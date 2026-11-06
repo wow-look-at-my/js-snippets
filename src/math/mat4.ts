@@ -1,5 +1,4 @@
-// Minimal mat4 utilities — column-major Float32Array(16).
-// All functions return new arrays, no mutation.
+// Minimal mat4 utilities — column-major Float32Array(16). All functions return new arrays, no mutation.
 
 import { subtract, cross, normalize, dot } from './vec3.ts';
 import type { Vec3 } from './vec3.ts';
@@ -27,6 +26,7 @@ export function perspective(fovY: number, aspect: number, near: number, far: num
   return m;
 }
 
+/* */
 export function perspectiveGL(fovY: number, aspect: number, near: number, far: number): Mat4 {
   const f = 1 / Math.tan(fovY / 2);
   const nf = 1 / (near - far);
@@ -99,6 +99,7 @@ export function scale(m: Mat4, v: Vec3): Mat4 {
   return multiply(m, s);
 }
 
+/* */
 export function reflectY(m: Mat4): Mat4 {
   const r = new Float32Array(m);
   r[1] = -r[1]; r[4] = -r[4]; r[6] = -r[6];
@@ -106,6 +107,7 @@ export function reflectY(m: Mat4): Mat4 {
   return r;
 }
 
+/* */
 export function reflectZ(m: Mat4): Mat4 {
   const r = new Float32Array(m);
   r[2] = -r[2]; r[6] = -r[6]; r[8] = -r[8];

@@ -1,5 +1,4 @@
-// Tests for the PURE surface of webgpu/scan.ts: planScan's level hierarchy,
-// scratch sizing, and 2D dispatch clamping.
+// Tests for the PURE surface of webgpu/scan.ts: planScan's level hierarchy, scratch sizing, and 2D dispatch clamping.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

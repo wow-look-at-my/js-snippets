@@ -1,0 +1,1259 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  buildGraph,
+  breakCycles,
+  assignLayers,
+  topoOrder,
+  insertDummies,
+  orderLayers,
+  ORDER_SWEEPS,
+  countCrossings,
+  crossingsBetween,
+  assignCoordinates,
+  slotIdentity,
+  layoutDag,
+  wrapWideLayers,
+  anchorPoint,
+  edgePath,
+  measureNode,
+  worldToScreen,
+  screenToWorld,
+  panViewport,
+  zoomViewportAt,
+  zoomFactorForWheel,
+  fitViewport,
+  legibleViewport,
+  layoutBounds,
+  clampViewport,
+  visibleWorldRect,
+  rectsOverlap,
+  visibleNodes,
+  visibleEdges,
+  hitTestNodes,
+  hitTestEdges,
+  nodeRect,
+  neighbourhood,
+  criticalPathLength,
+  nodeHue,
+  MIN_SCALE,
+  MAX_SCALE,
+  DEFAULT_GAP,
+  fitToDesired,
+  DEFAULT_NODE_MAX_W,
+  wrapText,
+  layoutNodeText,
+  safeNodeHref,
+  DEFAULT_NODE_MIN_W,
+} from './dag-view-math.ts';
+import type { DagNode, DagEdge, DagLayout, DagViewport, PlacedEdge } from './dag-view-math.ts';
+
+// -- Fixtures ---------------------------------------------------------------------------
+
+/** n0 -> n1 -> n2 -> n3, plus a long edge n0 -> n3 that must bend. */
+const CHAIN_NODES: DagNode[] = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }];
+const CHAIN_EDGES: DagEdge[] = [
+  { from: 'a', to: 'b' },
+  { from: 'b', to: 'c' },
+  { from: 'c', to: 'd' },
+  { from: 'a', to: 'd' },
+];
+
+function ids(nodes: readonly { id: string }[]): string[] {
+  return nodes.map((n) => n.id);
+}
+
+function nodesFrom(names: string[]): DagNode[] {
+  return names.map((id) => ({ id }));
+}
+
+/** Layer of every node, keyed by id — the shape most assertions want. */
+function layerMap(layout: DagLayout): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const n of layout.nodes) out[n.node.id] = n.layer;
+  return out;
+}
+
+// -- buildGraph -------------------------------------------------------------------------
+
+test('buildGraph: indexes nodes and both adjacency directions', () => {
+  const g = buildGraph(CHAIN_NODES, CHAIN_EDGES);
+  assert.equal(g.nodes.length, 4);
+  assert.equal(g.edges.length, 4);
+  assert.equal(g.index.get('c'), 2);
+  assert.deepEqual(g.out[0], [1, 3], 'a points at b and d');
+  assert.deepEqual(g.in[3], [2, 0], 'd is pointed at by c and a');
+  assert.deepEqual(g.rejected, []);
+});
+
+test('buildGraph: a repeated node id keeps its first occurrence', () => {
+  const g = buildGraph([{ id: 'a', label: 'first' }, { id: 'a', label: 'second' }], []);
+  assert.equal(g.nodes.length, 1);
+  assert.equal(g.nodes[0].label, 'first');
+});
+
+test('buildGraph: every unusable edge is REPORTED, never silently dropped', () => {
+  const g = buildGraph(nodesFrom(['a', 'b']), [
+    { from: 'a', to: 'b' },
+    { from: 'ghost', to: 'b' },
+    { from: 'a', to: 'ghost' },
+    { from: 'a', to: 'a' },
+    { from: 'a', to: 'b' },
+  ]);
+  assert.equal(g.edges.length, 1, 'only the one real edge is drawn');
+  assert.deepEqual(
+    g.rejected.map((r) => r.reason),
+    ['unknown-from', 'unknown-to', 'self-loop', 'duplicate'],
+  );
+  // The edge object comes back, so a consumer can name what it lost.
+  assert.deepEqual(g.rejected[0].edge, { from: 'ghost', to: 'b' });
+});
+
+test('buildGraph: a duplicate is judged on endpoints, not on its label', () => {
+  const g = buildGraph(nodesFrom(['a', 'b']), [
+    { from: 'a', to: 'b', label: 'needs' },
+    { from: 'a', to: 'b', label: 'also needs' },
+  ]);
+  assert.equal(g.edges.length, 1);
+  assert.equal(g.rejected.length, 1);
+  assert.equal(g.rejected[0].reason, 'duplicate');
+});
+
+// -- breakCycles ------------------------------------------------------------------------
+
+/** Walks `out` looking for any cycle — the oracle for breakCycles. */
+function hasCycle(out: readonly (readonly number[])[]): boolean {
+  const n = out.length;
+  const mark = new Uint8Array(n);
+  const onStack = new Uint8Array(n);
+  const visit = (v: number): boolean => {
+    mark[v] = 1;
+    onStack[v] = 1;
+    for (const w of out[v]) {
+      if (onStack[w]) return true;
+      if (!mark[w] && visit(w)) return true;
+    }
+    onStack[v] = 0;
+    return false;
+  };
+  for (let v = 0; v < n; v++) if (!mark[v] && visit(v)) return true;
+  return false;
+}
+
+test('breakCycles: an acyclic graph is left completely alone', () => {
+  const g = buildGraph(CHAIN_NODES, CHAIN_EDGES);
+  const c = breakCycles(g);
+  assert.deepEqual(c.reversed, []);
+  assert.deepEqual(c.out, g.out);
+  assert.deepEqual(c.in, g.in);
+});
+
+test('breakCycles: a cycle is broken, and the cut edge is NAMED', () => {
+  const g = buildGraph(nodesFrom(['a', 'b', 'c']), [
+    { from: 'a', to: 'b' },
+    { from: 'b', to: 'c' },
+    { from: 'c', to: 'a' },
+  ]);
+  const c = breakCycles(g);
+  assert.equal(c.reversed.length, 1, 'one cut is enough for a 3-cycle');
+  assert.equal(hasCycle(c.out), false);
+  // The reported index points at a real input edge, so the element can draw exactly the line that closes the loop.
+  const cut = g.edges[c.reversed[0]];
+  assert.deepEqual({ from: cut.edge.from, to: cut.edge.to }, { from: 'c', to: 'a' });
+});
+
+test('breakCycles: two independent cycles each get cut', () => {
+  const g = buildGraph(nodesFrom(['a', 'b', 'x', 'y']), [
+    { from: 'a', to: 'b' },
+    { from: 'b', to: 'a' },
+    { from: 'x', to: 'y' },
+    { from: 'y', to: 'x' },
+  ]);
+  const c = breakCycles(g);
+  assert.equal(c.reversed.length, 2);
+  assert.equal(hasCycle(c.out), false);
+});
+
+test('breakCycles: a long chain does not overflow the stack', () => {
+  // Recursion here would die on a graph that is otherwise trivial.
+  const n = 20000;
+  const nodes = Array.from({ length: n }, (_, i) => ({ id: `n${i}` }));
+  const edges = Array.from({ length: n - 1 }, (_, i) => ({ from: `n${i}`, to: `n${i + 1}` }));
+  const c = breakCycles(buildGraph(nodes, edges));
+  assert.deepEqual(c.reversed, []);
+});
+
+// -- topoOrder --------------------------------------------------------------------------
+
+test('topoOrder: every edge points forward in the order', () => {
+  const g = buildGraph(CHAIN_NODES, CHAIN_EDGES);
+  const order = topoOrder(g.out, g.nodes.length);
+  const pos = new Map(order.map((v, i) => [v, i]));
+  for (const e of g.edges) {
+    assert.ok((pos.get(e.from) as number) < (pos.get(e.to) as number), `${e.edge.from} before ${e.edge.to}`);
+  }
+});
+
+test('topoOrder: ties break on index, so the order is identical every run', () => {
+  const g = buildGraph(nodesFrom(['c', 'a', 'b']), []);
+  assert.deepEqual(topoOrder(g.out, 3), [0, 1, 2]);
+});
+
+test('topoOrder: a node inside a cycle is appended, never lost', () => {
+  // Losing a node is not an acceptable way to report a cycle.
+  const out = [[1], [0], []];
+  const order = topoOrder(out, 3);
+  assert.equal(order.length, 3);
+  assert.deepEqual([...order].sort((a, b) => a - b), [0, 1, 2]);
+});
+
+// -- assignLayers -----------------------------------------------------------------------
+
+test('assignLayers: a node sits one past the deepest thing it needs', () => {
+  const g = buildGraph(CHAIN_NODES, CHAIN_EDGES);
+  const l = assignLayers(g, breakCycles(g));
+  assert.deepEqual([...l.layers], [0, 1, 2, 3]);
+  assert.equal(l.maxLayer, 3);
+});
+
+test('assignLayers: independent roots all start at layer 0', () => {
+  const g = buildGraph(nodesFrom(['a', 'b', 'c']), [{ from: 'a', to: 'c' }, { from: 'b', to: 'c' }]);
+  const l = assignLayers(g, breakCycles(g));
+  assert.deepEqual([...l.layers], [0, 0, 1]);
+});
+
+test('assignLayers: a layer pin can push a node down', () => {
+  const g = buildGraph([{ id: 'a' }, { id: 'b', layer: 4 }], [{ from: 'a', to: 'b' }]);
+  const l = assignLayers(g, breakCycles(g));
+  assert.deepEqual([...l.layers], [0, 4]);
+  assert.deepEqual(l.ignoredPins, []);
+});
+
+test('assignLayers: a pin that contradicts an edge is overruled AND reported', () => {
+  // The hint is a preference; the edge is a fact. A silently honoured pin would draw b above its own dependency.
+  const g = buildGraph([{ id: 'a' }, { id: 'b', layer: 0 }], [{ from: 'a', to: 'b' }]);
+  const l = assignLayers(g, breakCycles(g));
+  assert.deepEqual([...l.layers], [0, 1]);
+  assert.deepEqual(l.ignoredPins, ['b']);
+});
+
+test("assignLayers: align 'sinks' bottom-aligns the leaves", () => {
+  // a -> b -> d, a -> c -> ... nothing.
+  const g = buildGraph(nodesFrom(['a', 'b', 'c', 'd']), [
+    { from: 'a', to: 'b' },
+    { from: 'b', to: 'd' },
+    { from: 'a', to: 'c' },
+  ]);
+  const acyclic = breakCycles(g);
+  assert.deepEqual([...assignLayers(g, acyclic).layers], [0, 1, 1, 2]);
+  assert.deepEqual([...assignLayers(g, acyclic, { align: 'sinks' }).layers], [0, 1, 2, 2]);
+});
+
+test('assignLayers: every edge still points strictly downward after cycle breaking', () => {
+  const g = buildGraph(nodesFrom(['a', 'b', 'c']), [
+    { from: 'a', to: 'b' },
+    { from: 'b', to: 'c' },
+    { from: 'c', to: 'a' },
+  ]);
+  const acyclic = breakCycles(g);
+  const l = assignLayers(g, acyclic);
+  acyclic.out.forEach((succ, v) => {
+    for (const w of succ) assert.ok(l.layers[w] > l.layers[v], 'no edge is flat or backwards');
+  });
+});
+
+// -- wrapWideLayers ---------------------------------------------------------------------
+
+test('wrapWideLayers: a layer too wide to read is split into consecutive rows', () => {
+  const g = buildGraph(nodesFrom(Array.from({ length: 30 }, (_, i) => `n${i}`)), []);
+  const wrapped = wrapWideLayers(assignLayers(g, breakCycles(g)), 14);
+  const counts = new Map<number, number>();
+  for (const l of wrapped.layers) counts.set(l, (counts.get(l) ?? 0) + 1);
+  assert.equal(counts.size, 3, '30 nodes at a cap of 14 need three rows');
+  for (const [layer, n] of counts) assert.ok(n <= 14, `layer ${layer} holds ${n}`);
+  assert.deepEqual([...counts.values()], [10, 10, 10]);
+  assert.equal(wrapped.maxLayer, 2);
+});
+
+test('wrapWideLayers: splitting a layer keeps every edge pointing forward', () => {
+  // The property that makes this safe: longest-path layering never puts an edge's ends on one layer.
+  const names = Array.from({ length: 40 }, (_, i) => `n${i}`);
+  const edges: DagEdge[] = [];
+  for (let i = 0; i < 20; i++) edges.push({ from: `n${i}`, to: `n${i + 20}` });
+  const g = buildGraph(nodesFrom(names), edges);
+  const acyclic = breakCycles(g);
+  const wrapped = wrapWideLayers(assignLayers(g, acyclic), 6);
+  acyclic.out.forEach((succ, v) => {
+    for (const w of succ) {
+      assert.ok(wrapped.layers[w] > wrapped.layers[v], `n${v} -> n${w} still points down`);
+    }
+  });
+});
+
+test('wrapWideLayers: a cap of 0 leaves the layering exactly as it was', () => {
+  const g = buildGraph(nodesFrom(Array.from({ length: 30 }, (_, i) => `n${i}`)), []);
+  const before = assignLayers(g, breakCycles(g));
+  assert.deepEqual([...wrapWideLayers(before, 0).layers], [...before.layers]);
+});
+
+test('layoutDag: a fleet of mostly-unconnected nodes does not draw as one long line', () => {
+  const nodes = nodesFrom(Array.from({ length: 118 }, (_, i) => `r${i}`));
+  const edges: DagEdge[] = [];
+  for (let i = 0; i < 45 && edges.length < 53; i++) {
+    for (const t of [i + 3, i + 7]) {
+      if (t < 45 && edges.length < 53) edges.push({ from: `r${i}`, to: `r${t}` });
+    }
+  }
+  const layout = layoutDag(nodes, edges);
+  assert.ok(
+    layout.width / layout.height < 4,
+    `aspect ${(layout.width / layout.height).toFixed(1)} is still unreadable`,
+  );
+  assert.equal(layout.nodes.length, 118, 'no node is lost');
+
+  // The negative control is the SHAPE this fixture used to draw as.
+  assert.ok(layout.width > 0 && layout.height > 0);
+});
+
+test('wrapWideLayers: a layer too wide to read is broken into rows', () => {
+  // Kept at the layering level on purpose.
+  const fan = nodesFrom(['root', ...Array.from({ length: 90 }, (_, i) => `leaf${i}`)]);
+  const fanEdges: DagEdge[] = Array.from({ length: 90 }, (_, i) => ({ from: 'root', to: `leaf${i}` }));
+  const g = buildGraph(fan, fanEdges);
+  const before = assignLayers(g, breakCycles(g));
+  const after = wrapWideLayers(before, 14);
+
+  const count = (layers: readonly number[]): Map<number, number> => {
+    const m = new Map<number, number>();
+    for (const l of layers) m.set(l, (m.get(l) ?? 0) + 1);
+    return m;
+  };
+  assert.equal(Math.max(...count(before.layers).values()), 90, 'the control really is one wide layer');
+  assert.ok(Math.max(...count(after.layers).values()) <= 14, 'no row is left over the limit');
+  assert.equal(after.layers.length, 91, 'wrapping never loses a node');
+});
+
+test('fitToDesired: desires that already fit are left exactly alone', () => {
+  const got = fitToDesired([0, 50, 100], [0, 30, 30]);
+  assert.deepEqual(got, [0, 50, 100]);
+});
+
+test('fitToDesired: a collision settles on the median, never by pushing right', () => {
+  // The whole defect this replaced: pulling to a median and then shoving overlaps apart can only ADD space.
+  const got = fitToDesired([100, 100, 100], [0, 10, 10]);
+  assert.deepEqual(got, [90, 100, 110], 'the block centres on what its members wanted');
+  const span = got[got.length - 1] - got[0];
+  assert.equal(span, 20, 'the row is exactly as wide as the gaps demand');
+});
+
+test('fitToDesired: the order and the minimum gaps always hold', () => {
+  const desired = [500, 10, 480, 20, 300];
+  const gaps = [0, 40, 40, 40, 40];
+  const got = fitToDesired(desired, gaps);
+  for (let i = 1; i < got.length; i++) {
+    assert.ok(got[i] - got[i - 1] >= gaps[i] - 1e-9, `slot ${i} keeps its gap`);
+  }
+});
+
+test('fitToDesired: it beats pull-then-shove on the total distance from the desires', () => {
+  const desired = [100, 100, 100, 100];
+  const gaps = [0, 30, 30, 30];
+  const shove: number[] = [];
+  for (let i = 0; i < desired.length; i++) {
+    shove.push(i === 0 ? desired[i] : Math.max(desired[i], shove[i - 1] + gaps[i]));
+  }
+  const cost = (xs: readonly number[]): number => xs.reduce((s, x, i) => s + Math.abs(x - desired[i]), 0);
+  assert.ok(cost(fitToDesired(desired, gaps)) < cost(shove), 'the projection is closer to what was asked for');
+});
+
+test('layoutDag: an edgeless node is packed into the block, not left floating', () => {
+  // The defect: nothing enforced a MAXIMUM distance.
+  const names = ['dep', 'user', ...Array.from({ length: 8 }, (_, i) => `lone${i}`)];
+  const layout = layoutDag(nodesFrom(names), [{ from: 'dep', to: 'user' }]);
+  const block = layout.nodes.filter((n) => n.layer < 0);
+  assert.equal(block.length, 8, 'every edgeless node is in the block');
+
+  const rows = new Map<number, typeof block>();
+  for (const n of block) rows.set(n.y, [...(rows.get(n.y) ?? []), n]);
+  for (const row of rows.values()) {
+    const line = [...row].sort((a, b) => a.x - b.x);
+    for (let i = 1; i < line.length; i++) {
+      const gap = line[i].x - (line[i - 1].x + line[i - 1].w);
+      assert.ok(
+        gap <= DEFAULT_GAP + 1e-6,
+        `${line[i].node.id} sits ${gap.toFixed(0)} from ${line[i - 1].node.id}, over the ${DEFAULT_GAP} gap`,
+      );
+    }
+  }
+
+  // And the block is BESIDE the graph, never on top of it.
+  const wired = layout.nodes.filter((n) => n.layer >= 0);
+  const lowest = Math.max(...wired.map((n) => n.y + n.h));
+  assert.ok(Math.min(...block.map((n) => n.y)) >= lowest, 'the block clears the drawing');
+});
+
+// -- insertDummies ----------------------------------------------------------------------
+
+test('insertDummies: a long edge gets one bend point per layer it crosses', () => {
+  const g = buildGraph(CHAIN_NODES, CHAIN_EDGES);
+  const acyclic = breakCycles(g);
+  const layered = assignLayers(g, acyclic);
+  const proper = insertDummies(g, acyclic, layered);
+  const longEdge = g.edges.findIndex((e) => e.edge.from === 'a' && e.edge.to === 'd');
+  assert.equal((proper.chains.get(longEdge) ?? []).length, 2);
+  // Its short neighbours need no bend at all.
+  const shortEdge = g.edges.findIndex((e) => e.edge.from === 'a' && e.edge.to === 'b');
+  assert.deepEqual(proper.chains.get(shortEdge), []);
+});
+
+test('insertDummies: every layer link spans exactly one layer', () => {
+  const g = buildGraph(CHAIN_NODES, CHAIN_EDGES);
+  const acyclic = breakCycles(g);
+  const layered = assignLayers(g, acyclic);
+  const proper = insertDummies(g, acyclic, layered);
+  const layerOf = new Map<string, number>();
+  proper.layers.forEach((row, l) => row.forEach((s) => layerOf.set(slotIdentity(s), l)));
+  for (const [from, tos] of proper.succ) {
+    for (const to of tos) {
+      assert.equal(
+        (layerOf.get(to) as number) - (layerOf.get(from) as number),
+        1,
+        `${from} -> ${to} spans one layer`,
+      );
+    }
+  }
+});
+
+test('insertDummies: slot identity survives reordering its layer', () => {
+  // This is the whole reason identities exist instead of positions.
+  const g = buildGraph(CHAIN_NODES, CHAIN_EDGES);
+  const acyclic = breakCycles(g);
+  const proper = insertDummies(g, acyclic, assignLayers(g, acyclic));
+  const row = proper.layers[1];
+  const before = row.map(slotIdentity);
+  row.reverse();
+  assert.deepEqual(row.map(slotIdentity), [...before].reverse());
+  // ...and the adjacency still resolves, because it never mentioned a position.
+  assert.ok(proper.succ.has(before[0]) || proper.pred.has(before[0]));
+});
+
+// -- Crossings and ordering -------------------------------------------------------------
+
+test('crossingsBetween: the textbook single crossing', () => {
+  // a -> y and b -> x, drawn a,b over x,y: exactly one crossing.
+  const g = buildGraph(nodesFrom(['a', 'b', 'x', 'y']), [
+    { from: 'a', to: 'y' },
+    { from: 'b', to: 'x' },
+  ]);
+  const acyclic = breakCycles(g);
+  const proper = insertDummies(g, acyclic, assignLayers(g, acyclic));
+  // Force the bad order so the count is about geometry, not about layout luck.
+  proper.layers[0] = [
+    { node: 0, edge: -1, layer: 0 },
+    { node: 1, edge: -1, layer: 0 },
+  ];
+  proper.layers[1] = [
+    { node: 2, edge: -1, layer: 1 },
+    { node: 3, edge: -1, layer: 1 },
+  ];
+  assert.equal(crossingsBetween(proper, 0), 1);
+  // Swap the lower layer and the crossing is gone.
+  proper.layers[1].reverse();
+  assert.equal(crossingsBetween(proper, 0), 0);
+});
+
+test('countCrossings: parallel edges never cross', () => {
+  const g = buildGraph(nodesFrom(['a', 'b', 'x', 'y']), [
+    { from: 'a', to: 'x' },
+    { from: 'b', to: 'y' },
+  ]);
+  const acyclic = breakCycles(g);
+  const proper = insertDummies(g, acyclic, assignLayers(g, acyclic));
+  assert.equal(countCrossings(proper), 0);
+});
+
+test('orderLayers: never returns a worse arrangement than it started with', () => {
+  // The heuristic may fail to find the optimum; it must never make things
+  // worse, because it keeps the best arrangement it has seen.
+  const names = Array.from({ length: 8 }, (_, i) => `u${i}`).concat(
+    Array.from({ length: 8 }, (_, i) => `d${i}`),
+  );
+  const edges: DagEdge[] = [];
+  for (let i = 0; i < 8; i++) edges.push({ from: `u${i}`, to: `d${(i * 5) % 8}` });
+  const g = buildGraph(nodesFrom(names), edges);
+  const acyclic = breakCycles(g);
+  const proper = insertDummies(g, acyclic, assignLayers(g, acyclic));
+  const before = countCrossings(proper);
+  const after = orderLayers(proper);
+  assert.ok(after <= before, `${after} <= ${before}`);
+  assert.equal(after, countCrossings(proper), 'the reported count matches the arrangement it left behind');
+});
+
+test('orderLayers: identical input gives an identical arrangement', () => {
+  const build = (): number[][] => {
+    const names = ['a', 'b', 'c', 'd', 'e', 'f'];
+    const g = buildGraph(nodesFrom(names), [
+      { from: 'a', to: 'e' },
+      { from: 'b', to: 'd' },
+      { from: 'c', to: 'f' },
+      { from: 'a', to: 'f' },
+    ]);
+    const acyclic = breakCycles(g);
+    const proper = insertDummies(g, acyclic, assignLayers(g, acyclic));
+    orderLayers(proper);
+    return proper.layers.map((row) => row.map((s) => s.node));
+  };
+  assert.deepEqual(build(), build());
+});
+
+function bruteCrossings(proper: ReturnType<typeof insertDummies>, l: number): number {
+  const lowerPos = new Map(proper.layers[l + 1].map((s, i) => [slotIdentity(s), i]));
+  const pairs: [number, number][] = [];
+  proper.layers[l].forEach((s, i) => {
+    for (const k of proper.succ.get(slotIdentity(s)) ?? []) pairs.push([i, lowerPos.get(k)!]);
+  });
+  let c = 0;
+  for (let i = 0; i < pairs.length; i++) {
+    for (let j = i + 1; j < pairs.length; j++) {
+      if ((pairs[i][0] - pairs[j][0]) * (pairs[i][1] - pairs[j][1]) < 0) c++;
+    }
+  }
+  return c;
+}
+
+/** A random DAG over `n` nodes, with long edges and repeated edges, from a fixed seed. */
+function randomProper(seed: number, n: number, m: number): ReturnType<typeof insertDummies> {
+  let x = seed;
+  const rnd = (k: number): number => {
+    x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+    return (x >>> 8) % k;
+  };
+  const names = Array.from({ length: n }, (_, i) => `v${i}`);
+  const edges: DagEdge[] = [];
+  for (let e = 0; e < m; e++) {
+    const a = rnd(n);
+    const b = rnd(n);
+    if (a !== b) edges.push({ from: names[Math.min(a, b)], to: names[Math.max(a, b)] });
+  }
+  const g = buildGraph(nodesFrom(names), edges);
+  const acyclic = breakCycles(g);
+  return insertDummies(g, acyclic, assignLayers(g, acyclic));
+}
+
+test('crossingsBetween: agrees with the pair rule on random layerings', () => {
+  for (let seed = 1; seed <= 40; seed++) {
+    const proper = randomProper(seed, 18, 40);
+    for (let l = 0; l + 1 < proper.layers.length; l++) {
+      assert.equal(crossingsBetween(proper, l), bruteCrossings(proper, l), `seed ${seed} layer ${l}`);
+    }
+  }
+});
+
+test('orderLayers: no adjacent swap in the result removes a crossing', () => {
+  // This is the stop condition of the transpose pass, checked with the pair
+  // rule. A wrong swap decision leaves a swap that helps, or takes one that hurts.
+  for (let seed = 1; seed <= 40; seed++) {
+    const proper = randomProper(seed, 18, 40);
+    orderLayers(proper);
+    const local = (l: number): number =>
+      (l > 0 ? bruteCrossings(proper, l - 1) : 0) + (l + 1 < proper.layers.length ? bruteCrossings(proper, l) : 0);
+    proper.layers.forEach((row, l) => {
+      for (let i = 0; i + 1 < row.length; i++) {
+        const before = local(l);
+        [row[i], row[i + 1]] = [row[i + 1], row[i]];
+        const after = local(l);
+        [row[i], row[i + 1]] = [row[i + 1], row[i]];
+        assert.ok(after >= before, `seed ${seed} layer ${l} slot ${i}: swap gives ${after} < ${before}`);
+      }
+    });
+  }
+});
+
+test('wrapWideLayers: a dense layer stays one row, a fan still wraps', () => {
+  // Every edge of a wrapped node routes through the rows between it and the next layer.
+  const hubs = ['a', 'b', 'c', 'd', 'e', 'f'];
+  const names = [...hubs, ...Array.from({ length: 60 }, (_, i) => `w${i}`)];
+  const edges: DagEdge[] = [];
+  for (let i = 0; i < 60; i++) for (const h of hubs) edges.push({ from: `w${i}`, to: h });
+  const dense = buildGraph(nodesFrom(names), edges);
+  const denseLayers = wrapWideLayers(assignLayers(dense, breakCycles(dense)), 14, dense);
+  assert.equal(denseLayers.maxLayer, 1, 'the 60 tasks with an edge to each hub keep one row');
+
+  const fan = buildGraph(
+    nodesFrom(['root', ...Array.from({ length: 90 }, (_, i) => `leaf${i}`)]),
+    Array.from({ length: 90 }, (_, i) => ({ from: 'root', to: `leaf${i}` })),
+  );
+  const fanLayers = wrapWideLayers(assignLayers(fan, breakCycles(fan)), 14, fan);
+  assert.ok(fanLayers.maxLayer > 1, 'a fan of leaves with one edge each still wraps');
+});
+
+test('orderLayers: a spent work budget stops the sweeps and keeps a true count', () => {
+  const proper = randomProper(7, 40, 200);
+  const before = countCrossings(proper);
+  const after = orderLayers(proper, ORDER_SWEEPS, 1000);
+  assert.ok(after <= before, `${after} <= ${before}`);
+  assert.equal(after, countCrossings(proper), 'the count matches the order it left behind');
+});
+
+test('layoutDag: a dense scheduler graph lays out in a fraction of a second', () => {
+  // The shape of webhook-runner's scheduler page.
+  const holders = 40;
+  const waiters = 300;
+  const nodes: DagNode[] = [{ id: 'cap' }, { id: 'cpu' }, { id: 'group' }];
+  const edges: DagEdge[] = [];
+  for (let h = 0; h < holders; h++) {
+    nodes.push({ id: `h${h}` });
+    edges.push({ from: `h${h}`, to: 'cap' }, { from: `h${h}`, to: 'cpu' }, { from: `h${h}`, to: 'group' });
+  }
+  for (let w = 0; w < waiters; w++) {
+    nodes.push({ id: `w${w}` });
+    edges.push({ from: `w${w}`, to: 'group' });
+    for (let h = 0; h < holders; h++) edges.push({ from: `w${w}`, to: `h${h}` });
+  }
+  const t0 = performance.now();
+  const layout = layoutDag(nodes, edges);
+  const ms = performance.now() - t0;
+  assert.equal(layout.nodes.length, nodes.length);
+  assert.ok(ms < 3000, `layout took ${Math.round(ms)}ms`);
+});
+
+// -- assignCoordinates ------------------------------------------------------------------
+
+test('assignCoordinates: boxes in a layer never overlap', () => {
+  // Boxes drawn on top of each other is worse than any crookedness.
+  const names = ['r', 'a', 'b', 'c', 'd'];
+  const g = buildGraph(nodesFrom(names), names.slice(1).map((id) => ({ from: 'r', to: id })));
+  const acyclic = breakCycles(g);
+  const proper = insertDummies(g, acyclic, assignLayers(g, acyclic));
+  orderLayers(proper);
+  const sizes = g.nodes.map((_, i) => ({ w: 40 + i * 20, h: 30 }));
+  const coords = assignCoordinates(proper, sizes);
+  for (const row of coords.placements) {
+    const sorted = [...row].sort((x, y) => x.c - y.c);
+    for (let i = 1; i < sorted.length; i++) {
+      const gap = sorted[i].c - sorted[i].cSize / 2 - (sorted[i - 1].c + sorted[i - 1].cSize / 2);
+      assert.ok(gap >= DEFAULT_GAP - 1e-6, `gap ${gap} >= ${DEFAULT_GAP}`);
+    }
+  }
+});
+
+test('assignCoordinates: a straight chain draws as a straight line', () => {
+  // The staircase this prevents is the most obvious layout defect.
+  const g = buildGraph(CHAIN_NODES.slice(0, 3), [
+    { from: 'a', to: 'b' },
+    { from: 'b', to: 'c' },
+  ]);
+  const acyclic = breakCycles(g);
+  const proper = insertDummies(g, acyclic, assignLayers(g, acyclic));
+  orderLayers(proper);
+  const coords = assignCoordinates(proper, g.nodes.map(() => ({ w: 100, h: 30 })));
+  const centers = coords.placements.map((row) => row[0].c);
+  assert.equal(centers.length, 3);
+  for (const c of centers) assert.ok(Math.abs(c - centers[0]) < 1e-6, 'every node shares one center');
+});
+
+test('assignCoordinates: layers are stacked, and the drawing starts at 0', () => {
+  const g = buildGraph(CHAIN_NODES, CHAIN_EDGES);
+  const acyclic = breakCycles(g);
+  const proper = insertDummies(g, acyclic, assignLayers(g, acyclic));
+  orderLayers(proper);
+  const coords = assignCoordinates(proper, g.nodes.map(() => ({ w: 80, h: 30 })), { layerGap: 40 });
+  const nodeRows = coords.placements.map((row, l) => ({ l, row }));
+  for (let i = 1; i < nodeRows.length; i++) {
+    const prev = Math.max(...nodeRows[i - 1].row.map((p) => p.l + p.lSize));
+    const next = Math.min(...nodeRows[i].row.map((p) => p.l));
+    assert.ok(next >= prev, 'no layer reaches back into the one above it');
+  }
+  const minC = Math.min(...coords.placements.flat().map((p) => p.c - p.cSize / 2));
+  assert.ok(Math.abs(minC) < 1e-6, 'left edge is 0');
+});
+
+// -- layoutDag (end to end) --------------------------------------------------------------
+
+test('layoutDag: every edge points down the page', () => {
+  const layout = layoutDag(CHAIN_NODES, CHAIN_EDGES);
+  for (const e of layout.edges) {
+    const from = layout.nodes[e.from];
+    const to = layout.nodes[e.to];
+    assert.ok(to.layer > from.layer, `${e.edge.from} -> ${e.edge.to} goes downward`);
+  }
+});
+
+test('layoutDag: the same input produces byte-identical geometry', () => {
+  // A graph that reshuffles on refresh cannot be compared to what you saw.
+  const a = layoutDag(CHAIN_NODES, CHAIN_EDGES);
+  const b = layoutDag(CHAIN_NODES, CHAIN_EDGES);
+  assert.deepEqual(
+    a.nodes.map((n) => [n.node.id, n.x, n.y, n.w, n.h]),
+    b.nodes.map((n) => [n.node.id, n.x, n.y, n.w, n.h]),
+  );
+  assert.deepEqual(a.edges.map((e) => e.points), b.edges.map((e) => e.points));
+});
+
+test('layoutDag: an empty graph is a valid, empty layout', () => {
+  const layout = layoutDag([], []);
+  assert.deepEqual(ids(layout.nodes.map((n) => n.node)), []);
+  assert.deepEqual([...layout.edges], []);
+  assert.equal(layout.width, 0);
+  assert.deepEqual(layoutBounds(layout), { x: 0, y: 0, w: 0, h: 0 });
+});
+
+test('layoutDag: a graph with no edges at all still lays out', () => {
+  const layout = layoutDag(nodesFrom(['a', 'b', 'c']), []);
+  assert.equal(layout.nodes.length, 3);
+  // An edgeless node is set as a block rather than layered.
+  assert.deepEqual(Object.values(layerMap(layout)), [-1, -1, -1]);
+  assert.equal(layout.crossings, 0);
+  assert.ok(layout.width > 0 && layout.height > 0, 'the block still occupies the drawing');
+});
+
+test('layoutDag: disconnected components all get placed', () => {
+  const layout = layoutDag(nodesFrom(['a', 'b', 'x', 'y']), [
+    { from: 'a', to: 'b' },
+    { from: 'x', to: 'y' },
+  ]);
+  assert.equal(layout.nodes.length, 4);
+  assert.deepEqual(layerMap(layout), { a: 0, b: 1, x: 0, y: 1 });
+});
+
+test('layoutDag: a long edge gets bend points, a short one does not', () => {
+  const layout = layoutDag(CHAIN_NODES, CHAIN_EDGES);
+  const long = layout.edges.find((e) => e.edge.from === 'a' && e.edge.to === 'd');
+  const short = layout.edges.find((e) => e.edge.from === 'a' && e.edge.to === 'b');
+  assert.ok(long !== undefined && short !== undefined);
+  assert.equal(short.points.length, 2, 'a one-layer edge is a straight segment');
+  assert.equal(long.points.length, 4, 'a three-layer edge bends twice');
+});
+
+test('layoutDag: an edge meets the faces of its boxes, not their centers', () => {
+  // An arrowhead at a box center is an arrowhead nobody can see.
+  const layout = layoutDag(CHAIN_NODES.slice(0, 2), [{ from: 'a', to: 'b' }]);
+  const e = layout.edges[0];
+  const a = layout.nodes[e.from];
+  const b = layout.nodes[e.to];
+  assert.equal(e.points[0].y, a.y + a.h, 'leaves the bottom face');
+  assert.equal(e.points[e.points.length - 1].y, b.y, 'arrives at the top face');
+});
+
+test("layoutDag: 'LR' swaps the axes and keeps the direction", () => {
+  const tb = layoutDag(CHAIN_NODES, CHAIN_EDGES);
+  const lr = layoutDag(CHAIN_NODES, CHAIN_EDGES, { orientation: 'LR' });
+  assert.equal(lr.orientation, 'LR');
+  assert.ok(tb.height > tb.width || tb.nodes.length === 0);
+  assert.ok(lr.width > lr.height);
+  for (const e of lr.edges) {
+    const from = lr.nodes[e.from];
+    const to = lr.nodes[e.to];
+    assert.ok(to.x > from.x, 'edges run left to right');
+  }
+  const e0 = lr.edges[0];
+  const a = lr.nodes[e0.from];
+  assert.equal(e0.points[0].x, a.x + a.w, 'leaves the right face');
+});
+
+test('layoutDag: a cycle is drawn AND reported, never quietly straightened', () => {
+  const layout = layoutDag(nodesFrom(['a', 'b', 'c']), [
+    { from: 'a', to: 'b' },
+    { from: 'b', to: 'c' },
+    { from: 'c', to: 'a' },
+  ]);
+  assert.equal(layout.edges.length, 3, 'the cycle edge is still drawn');
+  assert.equal(layout.cycleEdges.length, 1);
+  const cut = layout.edges[layout.cycleEdges[0]];
+  assert.equal(cut.reversed, true);
+  assert.deepEqual({ from: cut.edge.from, to: cut.edge.to }, { from: 'c', to: 'a' });
+});
+
+test('layoutDag: a reversed edge is still routed from its TRUE source', () => {
+  // `points` always runs source -> target, so an arrowhead at the last
+  // point always means what it says, cycle or not.
+  const layout = layoutDag(nodesFrom(['a', 'b']), [
+    { from: 'a', to: 'b' },
+    { from: 'b', to: 'a' },
+  ]);
+  const back = layout.edges.find((e) => e.edge.from === 'b' && e.edge.to === 'a');
+  assert.ok(back !== undefined);
+  assert.equal(back.reversed, true);
+  const b = layout.nodes[layout.byId.get('b') as number];
+  const a = layout.nodes[layout.byId.get('a') as number];
+  assert.equal(back.points[0].y, b.y, 'leaves b upward');
+  assert.equal(back.points[back.points.length - 1].y, a.y + a.h, 'arrives under a');
+});
+
+test('layoutDag: rejected edges and overruled pins reach the caller', () => {
+  const layout = layoutDag([{ id: 'a' }, { id: 'b', layer: 0 }], [
+    { from: 'a', to: 'b' },
+    { from: 'a', to: 'nope' },
+  ]);
+  assert.deepEqual(layout.rejected.map((r) => r.reason), ['unknown-to']);
+  assert.deepEqual(layout.ignoredPins, ['b']);
+});
+
+test('layoutDag: byId resolves every node', () => {
+  const layout = layoutDag(CHAIN_NODES, CHAIN_EDGES);
+  for (const n of layout.nodes) {
+    assert.equal(layout.byId.get(n.node.id), layout.nodes.indexOf(n));
+  }
+});
+
+test('layoutDag: a custom sizeOf drives the geometry', () => {
+  const layout = layoutDag(nodesFrom(['a', 'b']), [{ from: 'a', to: 'b' }], {
+    sizeOf: () => ({ w: 200, h: 50 }),
+  });
+  for (const n of layout.nodes) assert.deepEqual([n.w, n.h], [200, 50]);
+});
+
+test('layoutDag: no two boxes on the same layer overlap', () => {
+  const names = Array.from({ length: 12 }, (_, i) => `n${i}`);
+  const edges: DagEdge[] = [];
+  for (let i = 1; i < 12; i++) edges.push({ from: `n${Math.floor((i - 1) / 3)}`, to: `n${i}` });
+  const layout = layoutDag(nodesFrom(names), edges);
+  const byLayer = new Map<number, typeof layout.nodes[number][]>();
+  for (const n of layout.nodes) {
+    const row = byLayer.get(n.layer) ?? [];
+    row.push(n);
+    byLayer.set(n.layer, row);
+  }
+  for (const row of byLayer.values()) {
+    row.sort((a, b) => a.x - b.x);
+    for (let i = 1; i < row.length; i++) {
+      assert.ok(row[i].x >= row[i - 1].x + row[i - 1].w, `${row[i].node.id} clears ${row[i - 1].node.id}`);
+    }
+  }
+});
+
+test('criticalPathLength: the longest dependency chain, in nodes', () => {
+  assert.equal(criticalPathLength(layoutDag(CHAIN_NODES, CHAIN_EDGES)), 4);
+  assert.equal(criticalPathLength(layoutDag(nodesFrom(['a', 'b']), [])), 1);
+  assert.equal(criticalPathLength(layoutDag([], [])), 0);
+});
+
+// -- anchorPoint ------------------------------------------------------------------------
+
+test('anchorPoint: the mid-point of the facing edge, per orientation', () => {
+  const n = { node: { id: 'a' }, index: 0, layer: 0, x: 10, y: 20, w: 100, h: 40 };
+  assert.deepEqual(anchorPoint(n, 'TB', 'out'), { x: 60, y: 60 });
+  assert.deepEqual(anchorPoint(n, 'TB', 'in'), { x: 60, y: 20 });
+  assert.deepEqual(anchorPoint(n, 'LR', 'out'), { x: 110, y: 40 });
+  assert.deepEqual(anchorPoint(n, 'LR', 'in'), { x: 10, y: 40 });
+});
+
+// -- edgePath ---------------------------------------------------------------------------
+
+function placedEdge(points: { x: number; y: number }[]): PlacedEdge {
+  return { edge: { from: 'a', to: 'b' }, index: 0, from: 0, to: 1, points, reversed: false };
+}
+
+/** The largest turn between neighbouring pieces, in degrees. */
+function maxJointTurn(path: readonly { x: number; y: number }[]): number {
+  let worst = 0;
+  for (let k = 2; k < path.length; k++) {
+    const ux = path[k - 1].x - path[k - 2].x;
+    const uy = path[k - 1].y - path[k - 2].y;
+    const vx = path[k].x - path[k - 1].x;
+    const vy = path[k].y - path[k - 1].y;
+    worst = Math.max(worst, (Math.abs(Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy)) * 180) / Math.PI);
+  }
+  return worst;
+}
+
+const BENT = [
+  { x: 0, y: 0 },
+  { x: 120, y: 90 },
+  { x: 240, y: 95 },
+  { x: 260, y: -40 },
+  { x: 400, y: 10 },
+];
+
+test('edgePath: passes through the start, every bend and the end, in order', () => {
+  const path = edgePath(placedEdge(BENT), 'LR');
+  let at = 0;
+  for (const p of BENT) {
+    const found = path.findIndex((q, k) => k >= at && q.x === p.x && q.y === p.y);
+    assert.ok(found >= at, `point ${JSON.stringify(p)} is on the path after index ${at}`);
+    at = found;
+  }
+  assert.deepEqual(path[0], BENT[0]);
+  assert.deepEqual(path[path.length - 1], BENT[BENT.length - 1]);
+});
+
+test('edgePath: no joint turns 5 degrees or more', () => {
+  for (const pts of [BENT, [{ x: 0, y: 0 }, { x: 48, y: 300 }], [{ x: 0, y: 0 }, { x: 10, y: 200 }, { x: 20, y: 0 }]]) {
+    const turn = maxJointTurn(edgePath(placedEdge(pts), 'LR'));
+    assert.ok(turn < 5, `worst joint ${turn.toFixed(2)} degrees`);
+  }
+});
+
+test('edgePath: leaves and enters along the layer axis, per orientation', () => {
+  const lr = edgePath(placedEdge([{ x: 0, y: 0 }, { x: 100, y: 80 }]), 'LR');
+  assert.ok(lr.length > 2, 'a two-point edge between different rows is a curve, not one straight piece');
+  assert.ok(Math.abs(lr[1].y - lr[0].y) < Math.abs(lr[1].x - lr[0].x) * 0.1);
+  const tb = edgePath(placedEdge([{ x: 0, y: 0 }, { x: 80, y: 100 }]), 'TB');
+  const n = tb.length;
+  assert.ok(Math.abs(tb[n - 1].x - tb[n - 2].x) < Math.abs(tb[n - 1].y - tb[n - 2].y) * 0.1);
+});
+
+test('edgePath: never doubles back along the layer axis', () => {
+  const path = edgePath(placedEdge(BENT), 'LR');
+  for (let k = 1; k < path.length; k++) assert.ok(path[k].x >= path[k - 1].x - 1e-9, `x falls at piece ${k}`);
+});
+
+test('edgePath: an end inset stops the curve short of the box, level with the end, arriving along the layer axis', () => {
+  const lr = edgePath(placedEdge([{ x: 0, y: 0 }, { x: 100, y: 80 }]), 'LR', 8);
+  const end = lr[lr.length - 1];
+  assert.deepEqual(end, { x: 92, y: 80 });
+  const prev = lr[lr.length - 2];
+  assert.ok(Math.abs(end.y - prev.y) < Math.abs(end.x - prev.x) * 0.1, 'the last piece runs along the axis into the arrowhead');
+  const back = edgePath({ ...placedEdge([{ x: 100, y: 0 }, { x: 0, y: 50 }]), reversed: true }, 'LR', 8);
+  assert.deepEqual(back[back.length - 1], { x: 8, y: 50 }, 'a reversed edge insets the other way');
+  const tb = edgePath(placedEdge([{ x: 0, y: 0 }, { x: 40, y: 10 }]), 'TB', 8);
+  assert.deepEqual(tb[tb.length - 1], { x: 40, y: 5 }, 'a gap shorter than two insets keeps half of it');
+});
+
+test('edgePath: an edge level with its target is one straight piece', () => {
+  assert.equal(edgePath(placedEdge([{ x: 0, y: 5 }, { x: 50, y: 5 }]), 'LR').length, 2);
+});
+
+// -- measureNode ------------------------------------------------------------------------
+
+test('measureNode: width tracks the longer of label and sublabel', () => {
+  const short = measureNode({ id: 'a', label: 'hi' });
+  const long = measureNode({ id: 'a', label: 'hi', sublabel: 'a much longer second line here' });
+  assert.ok(long.w > short.w);
+  assert.ok(long.h > short.h, 'the sublabel earns its own line');
+});
+
+test('measureNode: one enormous title cannot set the whole layout', () => {
+  const huge = measureNode({ id: 'a', label: 'x'.repeat(500) });
+  assert.equal(huge.w, DEFAULT_NODE_MAX_W);
+});
+
+test('measureNode: a one-character node is still a clickable target', () => {
+  assert.equal(measureNode({ id: 'x' }).w, DEFAULT_NODE_MIN_W);
+});
+
+test('measureNode: the id stands in for a missing label', () => {
+  assert.deepEqual(measureNode({ id: 'some-identifier' }), measureNode({ id: 'q', label: 'some-identifier' }));
+});
+
+// -- wrapText / layoutNodeText -------------------------------------------------------------
+
+test('wrapText: short text is one line, untouched', () => {
+  assert.deepEqual(wrapText('hello', 20, 2), { lines: ['hello'], truncated: false });
+});
+
+test('wrapText: a branch name breaks after its separators, not mid-word', () => {
+  const w = wrapText('#125 claude/serial-reason-validation-3a7xe4', 24, 2);
+  assert.equal(w.truncated, false);
+  assert.deepEqual(w.lines, ['#125 claude/serial-', 'reason-validation-3a7xe4']);
+  for (const l of w.lines) assert.ok(l.length <= 24, l);
+});
+
+test('wrapText: text past the line budget ends in an ellipsis inside the width', () => {
+  const w = wrapText('one two three four five six seven eight nine ten', 10, 2);
+  assert.equal(w.truncated, true);
+  assert.equal(w.lines.length, 2);
+  assert.ok(w.lines[1].endsWith('…'));
+  for (const l of w.lines) assert.ok(l.length <= 10, l);
+});
+
+test('wrapText: a token with no break point is cut mid-token', () => {
+  assert.deepEqual(wrapText('x'.repeat(25), 10, 3), { lines: ['x'.repeat(10), 'x'.repeat(10), 'x'.repeat(5)], truncated: false });
+});
+
+test('wrapText: blank text has no lines', () => {
+  assert.deepEqual(wrapText('   ', 10, 2), { lines: [], truncated: false });
+});
+
+test('layoutNodeText: a long title wraps to two lines instead of one clipped line', () => {
+  const t = layoutNodeText({ id: 'n', label: '#125 claude/serial-reason-validation-3a7xe4', sublabel: 'wow-look-at-my/gosmopolitan', state: 'blocked' });
+  assert.equal(t.label.join('').replace(/\s/g, ''), '#125claude/serial-reason-validation-3a7xe4');
+  assert.deepEqual(t.sub, ['wow-look-at-my/gosmopolitan']);
+  assert.equal(t.badge, 'blocked');
+  const one = layoutNodeText({ id: 'n', label: 'short', sublabel: 'wow-look-at-my/gosmopolitan', state: 'blocked' });
+  assert.ok(t.h >= one.h);
+});
+
+test('layoutNodeText: the state badge takes room on the label line', () => {
+  const plain = layoutNodeText({ id: 'n', label: 'build' });
+  const badged = layoutNodeText({ id: 'n', label: 'build', state: 'blocked' });
+  assert.ok(badged.w > plain.w, 'the badge widens the box');
+  assert.equal(plain.badge, '');
+});
+
+test('layoutNodeText: every wrapped line fits the characters the box holds', () => {
+  const t = layoutNodeText({ id: 'n', label: 'a '.repeat(200), sublabel: 'b-'.repeat(200), state: 'failed' });
+  assert.equal(t.w, DEFAULT_NODE_MAX_W);
+  for (const l of t.label) assert.ok(l.length <= t.labelChars, l);
+  for (const l of t.sub) assert.ok(l.length <= t.subChars, l);
+});
+
+// -- safeNodeHref ----------------------------------------------------------------------------
+
+test('safeNodeHref: http(s) and relative links pass', () => {
+  assert.equal(safeNodeHref('https://example.com/x'), 'https://example.com/x');
+  assert.equal(safeNodeHref(' /dashboard#task=1 '), '/dashboard#task=1');
+  assert.equal(safeNodeHref('#run=abc'), '#run=abc');
+});
+
+test('safeNodeHref: a script or data URL never opens', () => {
+  assert.equal(safeNodeHref('javascript:alert(1)'), null);
+  assert.equal(safeNodeHref('JavaScript:alert(1)'), null);
+  assert.equal(safeNodeHref('data:text/html,x'), null);
+  assert.equal(safeNodeHref('//evil.example'), null);
+  assert.equal(safeNodeHref(''), null);
+  assert.equal(safeNodeHref(undefined), null);
+});
+
+// -- Viewport ---------------------------------------------------------------------------
+
+const V: DagViewport = { x: 30, y: -20, scale: 2 };
+
+test('worldToScreen / screenToWorld are inverses', () => {
+  const p = { x: 12.5, y: -7.25 };
+  const back = screenToWorld(worldToScreen(p, V), V);
+  assert.ok(Math.abs(back.x - p.x) < 1e-9 && Math.abs(back.y - p.y) < 1e-9);
+});
+
+test('panViewport: shifts in screen space and leaves the scale alone', () => {
+  assert.deepEqual(panViewport(V, 10, -5), { x: 40, y: -25, scale: 2 });
+});
+
+test('zoomViewportAt: the world point under the anchor does not move', () => {
+  // Anything else makes the reader chase the node they zoomed toward.
+  for (const factor of [0.5, 1.37, 2, 0.13]) {
+    const before = screenToWorld({ x: 200, y: 140 }, V);
+    const next = zoomViewportAt(V, 200, 140, factor);
+    const after = screenToWorld({ x: 200, y: 140 }, next);
+    assert.ok(Math.abs(after.x - before.x) < 1e-6, `x held at factor ${factor}`);
+    assert.ok(Math.abs(after.y - before.y) < 1e-6, `y held at factor ${factor}`);
+  }
+});
+
+test('zoomViewportAt: clamps, and a clamped zoom is a no-op rather than a drift', () => {
+  const maxed = zoomViewportAt({ x: 0, y: 0, scale: MAX_SCALE }, 50, 50, 4);
+  assert.equal(maxed.scale, MAX_SCALE);
+  assert.deepEqual(maxed, { x: 0, y: 0, scale: MAX_SCALE }, 'no pan sneaks in at the clamp');
+  assert.equal(zoomViewportAt({ x: 0, y: 0, scale: MIN_SCALE }, 50, 50, 0.1).scale, MIN_SCALE);
+});
+
+test('zoomFactorForWheel: scroll up zooms in, and the rate is a clean doubling', () => {
+  assert.ok(zoomFactorForWheel(-260) > 1);
+  assert.ok(zoomFactorForWheel(260) < 1);
+  assert.ok(Math.abs(zoomFactorForWheel(-260) - 2) < 1e-9);
+  assert.equal(zoomFactorForWheel(0), 1);
+});
+
+test('fitViewport: centers the rect in the box', () => {
+  const v = fitViewport({ x: 0, y: 0, w: 100, h: 100 }, 400, 200, 20);
+  assert.equal(v.scale, 1.6, 'the tighter axis wins');
+  const tl = worldToScreen({ x: 0, y: 0 }, v);
+  const br = worldToScreen({ x: 100, y: 100 }, v);
+  assert.ok(Math.abs((tl.x + br.x) / 2 - 200) < 1e-6, 'horizontally centered');
+  assert.ok(Math.abs((tl.y + br.y) / 2 - 100) < 1e-6, 'vertically centered');
+});
+
+test('fitViewport: a degenerate rect still yields a usable viewport', () => {
+  const v = fitViewport({ x: 0, y: 0, w: 0, h: 0 }, 400, 300);
+  assert.ok(Number.isFinite(v.x) && Number.isFinite(v.y));
+  assert.ok(v.scale > 0 && v.scale <= MAX_SCALE);
+});
+
+test('fitViewport: obeys the scale clamps on a huge graph', () => {
+  const v = fitViewport({ x: 0, y: 0, w: 100000, h: 100000 }, 400, 300);
+  assert.equal(v.scale, MIN_SCALE);
+});
+
+test('legibleViewport: a graph that fits at a legible scale gets the plain fit', () => {
+  const rect = { x: 0, y: 0, w: 100, h: 100 };
+  assert.deepEqual(legibleViewport(rect, 400, 200, 0.4, 20), fitViewport(rect, 400, 200, 20));
+});
+
+test('legibleViewport: a board too big to fit opens at the legible scale, anchored top-left', () => {
+  const v = legibleViewport({ x: 0, y: 0, w: 4031, h: 3623 }, 1371, 576, 0.4, 32);
+  assert.equal(v.scale, 0.4);
+  assert.equal(v.x, 32, 'the left edge sits at the pad');
+  assert.equal(v.y, 32, 'the top edge sits at the pad');
+});
+
+test('legibleViewport: an axis that fits at the legible scale stays centered', () => {
+  const v = legibleViewport({ x: 0, y: 0, w: 1000, h: 5000 }, 1371, 576, 0.4, 32);
+  assert.equal(v.scale, 0.4);
+  assert.ok(Math.abs(v.x - (1371 - 400) / 2) < 1e-9, 'the 400 px wide drawing is centered');
+  assert.equal(v.y, 32);
+});
+
+test('clampViewport: a pan that keeps content on screen is untouched', () => {
+  const bounds = { x: 0, y: 0, w: 500, h: 400 };
+  const v = { x: 10, y: 10, scale: 1 };
+  assert.deepEqual(clampViewport(v, bounds, 800, 600, 60), v);
+});
+
+test('clampViewport: content flicked into the void is pulled back to the margin', () => {
+  const bounds = { x: 0, y: 0, w: 500, h: 400 };
+  const far = clampViewport({ x: 99999, y: -99999, scale: 1 }, bounds, 800, 600, 60);
+  assert.equal(far.x, 740, 'left edge stops at width - margin');
+  assert.equal(far.y, 60 - 400, 'bottom edge stops at the margin');
+  assert.equal(far.scale, 1, 'clamping never changes the zoom');
+});
+
+// -- Culling ----------------------------------------------------------------------------
+
+test('visibleWorldRect: the world box a viewport shows', () => {
+  const r = visibleWorldRect({ x: 0, y: 0, scale: 2 }, 400, 200);
+  assert.deepEqual(r, { x: 0, y: 0, w: 200, h: 100 });
+});
+
+test('rectsOverlap: touching counts, separated does not', () => {
+  assert.equal(rectsOverlap({ x: 0, y: 0, w: 10, h: 10 }, { x: 10, y: 10, w: 5, h: 5 }), true);
+  assert.equal(rectsOverlap({ x: 0, y: 0, w: 10, h: 10 }, { x: 11, y: 0, w: 5, h: 5 }), false);
+});
+
+test('visibleNodes / visibleEdges: off-screen content is culled, on-screen kept', () => {
+  const layout = layoutDag(CHAIN_NODES, CHAIN_EDGES);
+  const all = layoutBounds(layout);
+  assert.equal(visibleNodes(layout, all).length, layout.nodes.length);
+  assert.equal(visibleEdges(layout, all).length, layout.edges.length);
+  const far = { x: 1e6, y: 1e6, w: 10, h: 10 };
+  assert.deepEqual(visibleNodes(layout, far), []);
+  assert.deepEqual(visibleEdges(layout, far), []);
+});
+
+test('visibleEdges: a long edge crossing the view is kept even with both ends outside', () => {
+  const layout = layoutDag(CHAIN_NODES, CHAIN_EDGES);
+  const long = layout.edges.findIndex((e) => e.edge.from === 'a' && e.edge.to === 'd');
+  const pts = layout.edges[long].points;
+  const mid = pts[Math.floor(pts.length / 2)];
+  const sliver = { x: mid.x - 2, y: mid.y - 2, w: 4, h: 4 };
+  assert.ok(visibleEdges(layout, sliver).includes(long));
+});
+
+// -- Hit tests --------------------------------------------------------------------------
+
+test('hitTestNodes: inside hits, outside misses, edges are inclusive', () => {
+  const layout = layoutDag(CHAIN_NODES, CHAIN_EDGES);
+  const n = layout.nodes[0];
+  assert.equal(hitTestNodes(layout, n.x + n.w / 2, n.y + n.h / 2), 0);
+  assert.equal(hitTestNodes(layout, n.x, n.y), 0, 'the top-left corner counts');
+  assert.equal(hitTestNodes(layout, -1000, -1000), -1);
+});
+
+test('hitTestEdges: the NEAREST edge wins, not the first one within tolerance', () => {
+  // With several lines converging on a box, "the I am pointing at" is the
+  // closest one -- and the answer must not depend on edge order.
+  const layout = layoutDag(nodesFrom(['a', 'b', 't']), [
+    { from: 'a', to: 't' },
+    { from: 'b', to: 't' },
+  ]);
+  const midOf = (i: number): { x: number; y: number } => {
+    const p = layout.edges[i].points;
+    return { x: (p[0].x + p[1].x) / 2, y: (p[0].y + p[1].y) / 2 };
+  };
+  const m0 = midOf(0);
+  const m1 = midOf(1);
+  assert.equal(hitTestEdges(layout, m0.x, m0.y, 6), 0);
+  // Sitting on the SECOND edge must return the second edge.
+  const wide = Math.hypot(m1.x - m0.x, m1.y - m0.y) + 10;
+  assert.equal(hitTestEdges(layout, m1.x, m1.y, wide), 1);
+  assert.equal(hitTestEdges(layout, m0.x, m0.y + 100000, 6), -1, 'beyond tolerance is a miss');
+});
+
+test('nodeRect: a placed node as a hit rectangle', () => {
+  const layout = layoutDag(nodesFrom(['a']), []);
+  const n = layout.nodes[0];
+  assert.deepEqual(nodeRect(n), { x: n.x, y: n.y, w: n.w, h: n.h });
+});
+
+// -- Reachability -----------------------------------------------------------------------
+
+test('neighbourhood: everything up-stream and down-stream, transitively', () => {
+  //   a -> b -> c -> d, and a side branch b -> e.
+  const layout = layoutDag(nodesFrom(['a', 'b', 'c', 'd', 'e']), [
+    { from: 'a', to: 'b' },
+    { from: 'b', to: 'c' },
+    { from: 'c', to: 'd' },
+    { from: 'b', to: 'e' },
+  ]);
+  const idx = (id: string): number => layout.byId.get(id) as number;
+  const n = neighbourhood(layout, idx('c'));
+  assert.deepEqual([...n.ancestors].map((i) => layout.nodes[i].node.id).sort(), ['a', 'b']);
+  assert.deepEqual([...n.descendants].map((i) => layout.nodes[i].node.id).sort(), ['d']);
+  assert.equal(n.ancestors.has(idx('e')), false, 'a sibling branch is not a dependency');
+});
+
+test('neighbourhood: an isolated node has an empty neighbourhood', () => {
+  const layout = layoutDag(nodesFrom(['a', 'b']), []);
+  const n = neighbourhood(layout, 0);
+  assert.equal(n.ancestors.size, 0);
+  assert.equal(n.descendants.size, 0);
+  assert.equal(n.edges.size, 0);
+});
+
+test('neighbourhood: the edge set holds the connecting edges and nothing else', () => {
+  const layout = layoutDag(nodesFrom(['a', 'b', 'c', 'x', 'y']), [
+    { from: 'a', to: 'b' },
+    { from: 'b', to: 'c' },
+    { from: 'x', to: 'y' },
+  ]);
+  const n = neighbourhood(layout, layout.byId.get('b') as number);
+  assert.deepEqual(
+    [...n.edges].map((i) => `${layout.edges[i].edge.from}->${layout.edges[i].edge.to}`).sort(),
+    ['a->b', 'b->c'],
+    'the unrelated component contributes nothing',
+  );
+});
+
+test('neighbourhood: follows the TRUE direction of a cycle-reversed edge', () => {
+  // The highlight has to reflect the dependencies, not the drawing.
+  const layout = layoutDag(nodesFrom(['a', 'b', 'c']), [
+    { from: 'a', to: 'b' },
+    { from: 'b', to: 'c' },
+    { from: 'c', to: 'a' },
+  ]);
+  assert.equal(layout.cycleEdges.length, 1);
+  const n = neighbourhood(layout, layout.byId.get('a') as number);
+  // Every node in a cycle depends on every other, both ways round.
+  assert.equal(n.ancestors.size, 2);
+  assert.equal(n.descendants.size, 2);
+});
+
+// -- Hues -------------------------------------------------------------------------------
+
+test('nodeHue: stable, in range, and driven by category when there is one', () => {
+  const a = { id: 'x', category: 'build' };
+  const b = { id: 'y', category: 'build' };
+  assert.equal(nodeHue(a), nodeHue(b), 'one category, one hue');
+  assert.notEqual(nodeHue(a), nodeHue({ id: 'x', category: 'deploy' }));
+  for (const id of ['a', 'b', 'zzz', '']) {
+    const h = nodeHue({ id });
+    assert.ok(h >= 0 && h < 360, `${h} in range`);
+    assert.equal(h, nodeHue({ id }), 'stable');
+  }
+});
+
+test('nodeHue: an uncategorized graph is still multi-colored', () => {
+  // Falling back to the id beats one wall of the same blue.
+  const hues = new Set(['a', 'b', 'c', 'd', 'e'].map((id) => nodeHue({ id })));
+  assert.ok(hues.size >= 4, `${hues.size} distinct hues from 5 ids`);
+});
+
+// -- A larger graph, as a smoke test -------------------------------------------------------
+
+test('layoutDag: a 200-node graph lays out with no overlaps and no lost nodes', () => {
+  const n = 200;
+  const nodes = Array.from({ length: n }, (_, i) => ({ id: `n${i}`, category: `c${i % 7}` }));
+  const edges: DagEdge[] = [];
+  for (let i = 1; i < n; i++) {
+    edges.push({ from: `n${Math.floor(i / 3)}`, to: `n${i}` });
+    if (i % 11 === 0) edges.push({ from: `n${i % 17}`, to: `n${i}` });
+  }
+  const layout = layoutDag(nodes, edges);
+  assert.equal(layout.nodes.length, n, 'every node is placed');
+  assert.equal(layout.edges.length + layout.rejected.length, edges.length, 'every edge is drawn or reported');
+  for (const e of layout.edges) {
+    if (e.reversed) continue;
+    assert.ok(layout.nodes[e.to].layer > layout.nodes[e.from].layer);
+  }
+  assert.ok(layout.width > 0 && layout.height > 0);
+});

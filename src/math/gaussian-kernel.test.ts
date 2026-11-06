@@ -1,4 +1,4 @@
-// Tests for the linear-sampling separable Gaussian kernel builder.
+// Tests for the linear-sampling separable Gaussian kernel builder..mjs oracle.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -39,7 +39,6 @@ for (const sigma of [1, 2, 4, 8, 16, 32, 64]) {
     const k = buildGaussianKernel(sigma);
     const R = k.radius;
 
-    // Reference discrete Gaussian (two-sided, normalised to a set limit).
     const ref: number[] = [];
     let tot = 0;
     for (let m = 0; m <= R; m++) {

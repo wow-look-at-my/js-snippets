@@ -2,15 +2,21 @@
 
 import {
   SampleRing,
+  SeriesRing,
   computeStats,
   autoRange,
   niceStep,
   niceTicks,
   binMinMax,
+  binLast,
+  stackedMax,
+  stackedTotal,
   formatValue,
   type PerfStats,
   type AutoRangeOptions,
+  type SeriesSpec,
 } from './perf-graph-math.ts';
+import { categoryColor, categoryHue } from './color.ts';
 
 export * from './perf-graph-math.ts';
 
@@ -18,6 +24,8 @@ export * from './perf-graph-math.ts';
 
 const DEFAULT_HISTORY = 240;
 const DEFAULT_HEIGHT = 48;
+/** Default height of a `compact` graph: one text row over the trace. */
+const DEFAULT_HEIGHT_COMPACT = 32;
 const DEFAULT_UNIT = 'ms';
 const MAX_TICKS = 3;
 const PAD_X = 3; // CSS px text inset
@@ -57,12 +65,12 @@ type Theme = typeof THEME_DEFAULTS;
 
 // -- The custom element ----------------------------------------------------------
 
-/**The graph element. Auto-registered as `<perf-graph>` when this module loads
+/** The graph element. Auto-registered as `<perf-graph>` when this module loads
  * (unless that name is already taken). API: push(value), clear(),
  * refreshTheme(). */
 export class PerfGraphElement extends HTMLElement {
   static get observedAttributes(): string[] {
-    return ['label', 'unit', 'history', 'height', 'min', 'max', 'budget'];
+    return ['label', 'unit', 'history', 'height', 'min', 'max', 'budget', 'compact'];
   }
 
   private canvas: HTMLCanvasElement;
@@ -71,12 +79,21 @@ export class PerfGraphElement extends HTMLElement {
   private ring = new SampleRing(DEFAULT_HISTORY);
   private stats: PerfStats = { current: NaN, avg: NaN, min: NaN, max: NaN };
 
+  // Stacked mode. specs is empty for a plain single-series graph, and the series ring.
+  private specs: SeriesSpec[] = [];
+  private seriesRing = new SeriesRing([], DEFAULT_HISTORY);
+  private colors: string[] = [];
+  // Per-series band tops, one entry per drawn column.
+  private tops: Float64Array[] = [];
+  private binScratch = new Float32Array(0);
+
   // Attribute caches (kept in sync by attributeChangedCallback) so a draw never re-parses attributes.
   private aLabel = '';
   private aUnit = DEFAULT_UNIT;
   private aMin: number | null = null;
   private aMax: number | null = null;
   private aBudget: number | null = null;
+  private aCompact = false;
 
   // Backing store: device px in canvas.width/height, CSS px mirrors here.
   private cssW = 0;
@@ -162,8 +179,13 @@ export class PerfGraphElement extends HTMLElement {
         break;
       case 'history':
         this.ring.setCapacity(parseNum(value) ?? DEFAULT_HISTORY);
+        this.seriesRing.setCapacity(parseNum(value) ?? DEFAULT_HISTORY);
         break;
       case 'height':
+        this.applyHeight();
+        break;
+      case 'compact':
+        this.aCompact = value != null;
         this.applyHeight();
         break;
       case 'min':
@@ -199,7 +221,7 @@ export class PerfGraphElement extends HTMLElement {
     this.setAttribute('unit', v ?? '');
   }
 
-  /** Number of samples kept and displayed (a later default). */
+  /* */
   get history(): number {
     return this.ring.capacity;
   }
@@ -207,12 +229,20 @@ export class PerfGraphElement extends HTMLElement {
     this.setAttribute('history', String(v));
   }
 
-  /** Element height in CSS px (a later default). */
+  /* */
   get height(): number {
-    return parseNum(this.getAttribute('height')) ?? DEFAULT_HEIGHT;
+    return parseNum(this.getAttribute('height')) ?? (this.aCompact ? DEFAULT_HEIGHT_COMPACT : DEFAULT_HEIGHT);
   }
   set height(v: number) {
     this.setAttribute('height', String(v));
+  }
+
+  /** Compact mode: label + current value in one row, no stats, no tick labels. */
+  get compact(): boolean {
+    return this.aCompact;
+  }
+  set compact(v: boolean) {
+    this.toggleAttribute('compact', !!v);
   }
 
   /** Fixed low end of the scale, or null for autoscale. */
@@ -244,6 +274,27 @@ export class PerfGraphElement extends HTMLElement {
 
   // -- Public API ------------------------------------------------------------
 
+  /** The stacked bands, bottom-up. An empty list (the default) leaves the
+   * element a plain single-series graph. */
+  get series(): readonly SeriesSpec[] {
+    return this.specs;
+  }
+  set series(v: readonly SeriesSpec[]) {
+    this.specs = v.map((spec) => ({ ...spec }));
+    this.seriesRing.setKeys(this.specs.map((spec) => spec.key));
+    this.colors = this.specs.map((spec) => spec.color ?? categoryColor(categoryHue(spec.key)));
+    this.tops = []; // resized on the next draw
+    this.rangeMin = NaN;
+    this.rangeMax = NaN;
+    this.dirty = true;
+    this.schedule();
+  }
+
+  /** True while `series` is set, i.e. while this graph draws a stacked area. */
+  get stacked(): boolean {
+    return this.specs.length > 0;
+  }
+
   /** Append one sample and schedule (at most) one rAF redraw. */
   push(value: number): void {
     this.ring.push(value);
@@ -251,9 +302,18 @@ export class PerfGraphElement extends HTMLElement {
     this.schedule();
   }
 
-  /** Drop all samples. */
+  /** Append one stacked column: a record read by series key, or an array read
+   * by series index. */
+  pushSeries(values: Readonly<Record<string, number>> | readonly number[]): void {
+    this.seriesRing.push(values);
+    this.dirty = true;
+    this.schedule();
+  }
+
+  /** Drop all samples, single-series and stacked alike. */
   clear(): void {
     this.ring.clear();
+    this.seriesRing.clear();
     this.rangeMin = NaN;
     this.rangeMax = NaN;
     this.dirty = true;
@@ -297,7 +357,8 @@ export class PerfGraphElement extends HTMLElement {
   // -- Sizing / theme ------------------------------------------------------------
 
   private applyHeight(): void {
-    const h = parseNum(this.getAttribute('height'));
+    // The compact default is applied inline too: the :host rule carries the full-size default.
+    const h = parseNum(this.getAttribute('height')) ?? (this.aCompact ? DEFAULT_HEIGHT_COMPACT : null);
     if (h != null) this.style.height = `${Math.max(1, h)}px`;
     else if (this.heightApplied) this.style.height = ''; // never clobber a user's own inline height
     this.heightApplied = h != null;
@@ -317,6 +378,7 @@ export class PerfGraphElement extends HTMLElement {
     if (this.binMin.length !== bw) {
       this.binMin = new Float32Array(bw);
       this.binMax = new Float32Array(bw);
+      this.tops = []; // the column count moved with the width
     }
     this.readTheme(); // size or DPR moved — colors may be media-query-bound too
     this.dirty = true;
@@ -349,15 +411,15 @@ export class PerfGraphElement extends HTMLElement {
    * crosses a grid line.
    */
   private updateRange(): void {
-    let dLo = this.stats.min;
-    let dHi = this.stats.max;
+    let dLo = this.stacked ? 0 : this.stats.min;
+    let dHi = this.stacked ? stackedMax(this.seriesRing) : this.stats.max;
     const b = this.aBudget;
     if (b != null) {
       dLo = Number.isFinite(dLo) ? Math.min(dLo, b) : b;
       dHi = Number.isFinite(dHi) ? Math.max(dHi, b) : b;
     }
     const opts = this.rangeOpts;
-    opts.fixedMin = this.aMin ?? undefined;
+    opts.fixedMin = this.aMin ?? (this.stacked ? 0 : undefined);
     opts.fixedMax = this.aMax ?? undefined;
     const r = autoRange(dLo, dHi, opts);
     let lo = r.min;
@@ -389,6 +451,9 @@ export class PerfGraphElement extends HTMLElement {
     const w = this.cssW;
     const h = this.cssH;
     const t = this.theme;
+    // The background may be translucent.
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     ctx.fillStyle = t.bg;
@@ -398,11 +463,11 @@ export class PerfGraphElement extends HTMLElement {
     this.updateRange();
     const lo = this.rangeMin;
     const hi = this.rangeMax;
+    const fs = t.fontSize;
     const plotTop = 1;
     const plotBottom = h - 1;
     const sy = (plotBottom - plotTop) / (hi - lo);
     const hairline = 1 / dpr;
-    const fs = t.fontSize;
 
     // Horizontal gridlines + tick labels (skip rows the readout text owns).
     ctx.strokeStyle = t.grid;
@@ -416,8 +481,8 @@ export class PerfGraphElement extends HTMLElement {
       ctx.lineTo(w, y);
       ctx.stroke();
       // Label the line only where the text won't collide with the top
-      // (label/current) or bottom (stats) readout rows.
-      if (y > fs * 2 + PAD_Y + 3 && y < h - fs - PAD_Y) {
+      // (label/current) or bottom (stats) readout rows. Compact has no room.
+      if (!this.aCompact && y > fs * 2 + PAD_Y + 3 && y < h - fs - PAD_Y) {
         ctx.fillStyle = t.text;
         ctx.font = this.fontText;
         ctx.textAlign = 'left';
@@ -426,7 +491,72 @@ export class PerfGraphElement extends HTMLElement {
       }
     }
 
-    // Data: min-max columns when samples outnumber device pixels, else a polyline (+ soft area fill).
+    if (this.stacked) this.drawBands(ctx, lo, sy, plotTop, plotBottom);
+    else this.drawTrace(ctx, lo, sy, plotTop, plotBottom, hairline);
+
+    // Budget guide: dashed, visually distinct, drawn over the data.
+    const budget = this.aBudget;
+    if (budget != null && budget >= lo && budget <= hi) {
+      const y = (Math.floor((plotBottom - (budget - lo) * sy) * dpr) + 0.5) / dpr;
+      ctx.strokeStyle = t.budget;
+      ctx.lineWidth = 1;
+      ctx.setLineDash(BUDGET_DASH);
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+      ctx.setLineDash(SOLID_DASH);
+    }
+
+    // Readout text: label top-left, current top-right, stats bottom-left.
+    ctx.textBaseline = 'top';
+    if (this.aLabel !== '') {
+      ctx.fillStyle = t.text;
+      ctx.font = this.fontText;
+      ctx.textAlign = 'left';
+      ctx.fillText(this.aLabel, PAD_X, PAD_Y);
+    }
+    ctx.fillStyle = t.value;
+    ctx.font = this.aCompact ? this.fontText : this.fontValue;
+    ctx.textAlign = 'right';
+    ctx.fillText(formatValue(this.currentReadout(), this.aUnit), w - PAD_X, PAD_Y);
+    if (this.aCompact) return;
+    if (this.stacked) {
+      this.drawLegend(ctx, w, h);
+      return;
+    }
+    ctx.fillStyle = t.text;
+    ctx.font = this.fontText;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(
+      `avg ${formatValue(this.stats.avg, this.aUnit)}  min ${formatValue(this.stats.min, this.aUnit)}  max ${formatValue(this.stats.max, this.aUnit)}`,
+      PAD_X,
+      h - PAD_Y,
+    );
+  }
+
+  /** The number the top-right readout shows: the newest column's total when stacked. */
+  private currentReadout(): number {
+    if (!this.stacked) return this.stats.current;
+    const last = this.seriesRing.length - 1;
+    return last < 0 ? NaN : stackedTotal(this.seriesRing, last);
+  }
+
+  /**
+   * Single-series data: min-max columns when samples outnumber device pixels,
+   * else a polyline (+ soft area fill). Newest sample at the right edge.
+   */
+  private drawTrace(
+    ctx: CanvasRenderingContext2D,
+    lo: number,
+    sy: number,
+    plotTop: number,
+    plotBottom: number,
+    hairline: number,
+  ): void {
+    const t = this.theme;
+    const w = this.cssW;
     const count = this.ring.length;
     const cap = this.ring.capacity;
     const plotWdev = this.canvas.width;
@@ -462,42 +592,108 @@ export class PerfGraphElement extends HTMLElement {
       this.tracePath(ctx, count, stepX, lo, sy, plotTop, plotBottom);
       ctx.stroke();
     }
+  }
 
-    // Budget guide: dashed, visually distinct, drawn over the data.
-    const budget = this.aBudget;
-    if (budget != null && budget >= lo && budget <= hi) {
-      const y = (Math.floor((plotBottom - (budget - lo) * sy) * dpr) + 0.5) / dpr;
-      ctx.strokeStyle = t.budget;
-      ctx.lineWidth = 1;
-      ctx.setLineDash(BUDGET_DASH);
+  /**
+   * The stacked bands. Each band is filled as the whole area under its own
+   * cumulative top. The bands are painted from the top one down, so a lower
+   * band simply covers the part of the one above it that it owns. That is
+   * one closed path per band, and no shared edge to make agree.
+   *
+   * Columns are one per sample. This holds while the samples fit the backing
+   * store, and one per device pixel past that, with binLast picking each
+   * column's newest sample. Every band bins onto the same columns.
+   */
+  private drawBands(
+    ctx: CanvasRenderingContext2D,
+    lo: number,
+    sy: number,
+    plotTop: number,
+    plotBottom: number,
+  ): void {
+    const w = this.cssW;
+    const series = this.seriesRing;
+    const count = series.length;
+    const nSeries = series.count;
+    if (count === 0 || nSeries === 0) return;
+
+    const cap = series.capacity;
+    const plotWdev = this.canvas.width;
+    const binned = count > plotWdev;
+    const columns = binned ? Math.max(1, Math.min(plotWdev, Math.floor((plotWdev * count) / cap))) : count;
+    this.ensureTops(nSeries, columns);
+    if (this.binScratch.length < columns) this.binScratch = new Float32Array(columns);
+
+    // Cumulative tops, bottom band first: tops[s] is the top edge of band s.
+    for (let s = 0; s < nSeries; s++) {
+      const ring = series.ring(s);
+      const out = this.tops[s];
+      const below = s > 0 ? this.tops[s - 1] : null;
+      if (binned && ring !== undefined) binLast(ring, columns, this.binScratch);
+      for (let c = 0; c < columns; c++) {
+        const raw = binned ? this.binScratch[c] : (ring?.at(c) ?? NaN);
+        const v = Number.isFinite(raw) ? raw : 0;
+        out[c] = (below === null ? 0 : below[c]) + v;
+      }
+    }
+
+    // One device pixel per column when binned, otherwise the sample pitch the single-series trace uses.
+    const stepX = binned ? 1 / this.dpr : cap > 1 ? w / (cap - 1) : 0;
+    const xAt = (c: number): number => w - (columns - 1 - c) * stepX;
+    for (let s = nSeries - 1; s >= 0; s--) {
+      const top = this.tops[s];
+      ctx.fillStyle = this.colors[s];
       ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(w, y);
-      ctx.stroke();
-      ctx.setLineDash(SOLID_DASH);
+      ctx.moveTo(xAt(0), plotBottom);
+      for (let c = 0; c < columns; c++) {
+        let y = plotBottom - (top[c] - lo) * sy;
+        if (y < plotTop) y = plotTop;
+        else if (y > plotBottom) y = plotBottom;
+        ctx.lineTo(xAt(c), y);
+      }
+      ctx.lineTo(xAt(columns - 1), plotBottom);
+      ctx.closePath();
+      ctx.fill();
     }
+  }
 
-    // Readout text: label top-left, current top-right, stats bottom-left.
-    ctx.textBaseline = 'top';
-    if (this.aLabel !== '') {
-      ctx.fillStyle = t.text;
-      ctx.font = this.fontText;
-      ctx.textAlign = 'left';
-      ctx.fillText(this.aLabel, PAD_X, PAD_Y);
-    }
-    ctx.fillStyle = t.value;
-    ctx.font = this.fontValue;
-    ctx.textAlign = 'right';
-    ctx.fillText(formatValue(this.stats.current, this.aUnit), w - PAD_X, PAD_Y);
-    ctx.fillStyle = t.text;
+  /** Size the per-band cumulative-top scratch to the current series and columns. */
+  private ensureTops(nSeries: number, columns: number): void {
+    if (this.tops.length === nSeries && (nSeries === 0 || this.tops[0].length >= columns)) return;
+    this.tops = [];
+    for (let s = 0; s < nSeries; s++) this.tops.push(new Float64Array(columns));
+  }
+
+  /**
+   * The legend row, in place of the stats line. A swatch and the newest value
+   * per band, left to right, stopping at the edge rather than overflowing it.
+   */
+  private drawLegend(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+    const t = this.theme;
+    const last = this.seriesRing.length - 1;
+    const fs = t.fontSize;
+    const swatch = Math.max(4, Math.round(fs * 0.7));
+    const y = h - PAD_Y;
     ctx.font = this.fontText;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
-    ctx.fillText(
-      `avg ${formatValue(this.stats.avg, this.aUnit)}  min ${formatValue(this.stats.min, this.aUnit)}  max ${formatValue(this.stats.max, this.aUnit)}`,
-      PAD_X,
-      h - PAD_Y,
-    );
+    let x = PAD_X;
+    for (let s = 0; s < this.specs.length; s++) {
+      const value = last < 0 ? NaN : this.seriesRing.at(s, last);
+      const text = `${this.specs[s].label ?? this.specs[s].key} ${formatValue(value, this.aUnit)}`;
+      const width = swatch + 3 + ctx.measureText(text).width;
+      if (x + width > w - PAD_X) {
+        // No room for this band's entry: say how many are unlisted instead of drawing a half one off the edge.
+        ctx.fillStyle = t.text;
+        ctx.fillText(`+${this.specs.length - s}`, x, y);
+        return;
+      }
+      ctx.fillStyle = this.colors[s];
+      ctx.fillRect(x, y - swatch, swatch, swatch);
+      ctx.fillStyle = t.text;
+      ctx.fillText(text, x + swatch + 3, y);
+      x += width + fs;
+    }
   }
 
   /** Emit the polyline path for the current samples (oldest → newest at right edge). */
@@ -534,8 +730,8 @@ function readProp(cs: CSSStyleDeclaration, name: string, fallback: string): stri
   return v !== '' ? v : fallback;
 }
 
-// Auto-register under the conventional tag name, but never clobber an existing
-// definition (a consumer may have registered their own, or loaded this twice).
+// Auto-register under the conventional tag name, but never clobber an
+// existing definition.
 if (typeof customElements !== 'undefined' && !customElements.get('perf-graph')) {
   customElements.define('perf-graph', PerfGraphElement);
 }

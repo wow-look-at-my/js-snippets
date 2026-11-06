@@ -2,7 +2,7 @@
 
 import type { Vec3 } from './vec3.ts';
 
-/**`radicalInverse2(0) === 0`. Mirrors `radicalInverse` in prefilter.wgsl. */
+/*`radicalInverse2(0) === 0`. Mirrors `radicalInverse` in prefilter.wgsl. */
 export function radicalInverse2(i: number): number {
   let bits = i >>> 0;
   bits = (bits << 16) | (bits >>> 16);
@@ -14,12 +14,12 @@ export function radicalInverse2(i: number): number {
 }
 
 /** The i-th of `n` points of the 2D Hammersley set: `[i / n,
- * radicalInverse2(i)]`. `hammersley(0, n) === [0, 0]`. */
+ * radicalInverse2(i)]`. `hammersley(, n) === [, ]`. */
 export function hammersley(i: number, n: number): [number, number] {
   return [i / n, radicalInverse2(i)];
 }
 
-/** `u` maps to cos(theta) (so the pole is at u = 1), `v` to the azimuth. */
+/*`u` maps to cos(theta) (so the pole is at u = 1), `v` to the azimuth. */
 export function uniformHemisphere(u: number, v: number): Vec3 {
   const z = u;
   const r = Math.sqrt(Math.max(0, 1 - z * z));
@@ -27,7 +27,7 @@ export function uniformHemisphere(u: number, v: number): Vec3 {
   return [r * Math.cos(phi), r * Math.sin(phi), z];
 }
 
-/** `u` sets the radius (r = sqrt(u)), `v` the azimuth. */
+/*`u` sets the radius (r = sqrt(u)), `v` the azimuth. */
 export function cosineHemisphere(u: number, v: number): Vec3 {
   const r = Math.sqrt(u);
   const phi = 2 * Math.PI * v;

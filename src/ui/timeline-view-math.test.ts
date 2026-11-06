@@ -1,4 +1,4 @@
-// Tests for the pure math half of <timeline-view> (ui/timeline-view-math.ts): scales + anchor-preserving zoom, wheel normalization + gesture routing, the follow-now engage/disengage rule (2-device-px re-engage at the hard `now` end stop).
+// Tests for the pure math half of <timeline-view> (ui/timeline-view-math.ts): scales + anchor-preserving zoom.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -59,6 +59,8 @@ import {
   feedIsStale,
   liveEdgeTarget,
   clampViewToNow,
+  clampViewToBounds,
+  boundedMaxSpan,
   snapViewToDevicePixels,
   snapTextOrigin,
   nowLineX,
@@ -67,10 +69,14 @@ import {
   MIN_BAR_PX,
   packVisibleTracks,
   TrackAllocator,
+  resolveParents,
+  packFamily,
   clusterInstants,
   clusterZoomView,
   clusterMarkerTime,
-  CLUSTER_JOIN_PX,
+  fitSpanView,
+  segmentAtTime,
+  CLUSTER_PITCH_PX,
   CLUSTER_ZOOM_FILL_FRAC,
   minimapExtent,
   minimapWindowRect,
@@ -175,7 +181,7 @@ test('zoomView: degenerate factors are ignored', () => {
 test('wheelDeltaToPixels: deltaMode 0 is 1:1, 1 is lines, 2 is pages', () => {
   assert.equal(wheelDeltaToPixels(7.5, 0), 7.5);
   assert.equal(wheelDeltaToPixels(-120, 0), -120);
-  assert.equal(wheelDeltaToPixels(3, 1), 48); // A few lines × 16px
+  assert.equal(wheelDeltaToPixels(3, 1), 48); // A few lines ×
   assert.equal(wheelDeltaToPixels(3, 1, 20), 60);
   assert.equal(wheelDeltaToPixels(1, 2), 800);
   assert.equal(wheelDeltaToPixels(-2, 2, 16, 500), -1000);
@@ -372,7 +378,6 @@ test('pack: equal starts tie-break by id, deterministically', () => {
     { id: 'y', start: 5, end: 10 },
     { id: 'x', start: 5, end: 10 },
   ]);
-  // 'x' sorts first → the first track in both orderings.
   assert.deepEqual(a.tracks, [0, 1]);
   assert.deepEqual(b.tracks, [1, 0]);
 });
@@ -475,7 +480,6 @@ test('computeAutoFit: all-compact fallback when even full demotion overflows (la
 test('computeAutoFit: hysteresis — borderline heights do not flap across jittering evaluations', () => {
   const counts = [4, 1, 1];
   assert.equal(FIT_HYSTERESIS_FRAC, 0.1);
-  // Overflow at a set value → demote the 4-track lane.
   let count = computeAutoFit(counts, FIT_M, 4, 130, 0).count;
   assert.equal(count, 1);
   for (const avail of [132, 130, 133, 131, 132, 134, 130]) {
@@ -652,7 +656,7 @@ test('connectorRoute: forward S-curve — exact endpoints, monotonic y, mid cros
 });
 
 test('connectorRoute: backward target loops out of the source and into the target', () => {
-  const from: HitRect = { x: 100, y: 0, w: 40, h: 10 }; // ends at a set value
+  const from: HitRect = { x: 100, y: 0, w: 40, h: 10 };
   const to: HitRect = { x: 20, y: 40, w: 30, h: 10 };
   const pts = connectorRoute(from, to, 32);
   assert.deepEqual(pts[0], { x: 140, y: 5 });
@@ -729,7 +733,7 @@ test('DEFAULT_STYLES: the required built-in treatments exist and alias', () => {
   assert.equal(DEFAULT_STYLES.failed.glyph, 'bang');
   assert.equal(DEFAULT_STYLES.failed.border?.emphasis, true);
   assert.ok((DEFAULT_STYLES.failed.border?.width ?? 0) >= 2);
-  // dim/queued and hatch/waiting are DIMMED regions.
+  // dim/queued and hatch/waiting are DIMMED regions: the element runs every color painted inside them (fill, border, label text).
   assert.equal(DEFAULT_STYLES.dim.dimmed, true);
   assert.equal(DEFAULT_STYLES.hatch.dimmed, true);
   assert.equal(DEFAULT_STYLES.hatch.pattern, 'hatch');
@@ -868,8 +872,8 @@ const wheel = (over: Partial<WheelInput>): WheelInput => ({
   ...over,
 });
 
-// The full routing matrix: {plain, ctrl, meta, shift} x {deltaX only, deltaY only, diagonal by dominant axis} x {lanes overflow, no overflow}. `consumed` is the preventDefault contract — false means the element must NOT call preventDefault
-// and the page scrolls normally over the chart.
+// The full routing matrix: {plain, ctrl, meta, shift} x {deltaX only, deltaY
+// only, diagonal by dominant axis} x {lanes overflow, no overflow}.
 
 test('routeWheel: deltaX always pans time (consumed), with and without lane overflow', () => {
   for (const lanesOverflow of [false, true]) {
@@ -880,8 +884,7 @@ test('routeWheel: deltaX always pans time (consumed), with and without lane over
 
 test('routeWheel: plain deltaY routes NOTHING — page scroll wins even over an overflowing lane stack', () => {
   // The vertical-scroll contract: a vertical-dominant modifier-less wheel is
-  // never consumed AS A FRESH/ISOLATED EVENT, so preventDefault is not
-  // called.
+  // never consumed AS A FRESH/ISOLATED EVENT.
   for (const lanesOverflow of [false, true]) {
     assert.deepEqual(routeWheel(wheel({ deltaY: 5 }), lanesOverflow), { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false });
     assert.deepEqual(routeWheel(wheel({ deltaY: -240 }), lanesOverflow), { zoomPx: 0, panPx: 0, laneScrollPx: 0, consumed: false });
@@ -890,7 +893,7 @@ test('routeWheel: plain deltaY routes NOTHING — page scroll wins even over an 
 
 test('routeWheel: a HORIZONTAL-dominant diagonal pans time; its minor deltaY nudges overflowing lanes', () => {
   assert.deepEqual(routeWheel(wheel({ deltaX: -6, deltaY: 4 }), true), { zoomPx: 0, panPx: -6, laneScrollPx: 4, consumed: true });
-  // No overflow: deltaX pans time, the minor vertical component is DROPPED.
+  // No overflow: deltaX pans time.
   assert.deepEqual(routeWheel(wheel({ deltaX: -6, deltaY: 4 }), false), { zoomPx: 0, panPx: -6, laneScrollPx: 0, consumed: true });
 });
 
@@ -964,8 +967,6 @@ test('routeWheel: shift+wheel pans time (vertical delta wins, else horizontal), 
 
 test('routeWheel: deltaMode 1 (lines) normalizes to pixels on every path', () => {
   assert.deepEqual(routeWheel(wheel({ deltaX: -2, deltaMode: 1 }), false), { zoomPx: 0, panPx: -32, laneScrollPx: 0, consumed: true });
-  // Horizontal-dominant discrete diagonal over overflowing lanes: both
-  // axes come out normalized (a later lineheight).
   assert.deepEqual(routeWheel(wheel({ deltaX: -4, deltaY: 1, deltaMode: 1 }), true), {
     zoomPx: 0,
     panPx: -64,
@@ -1025,7 +1026,7 @@ test('classifyWheel ↔ routeWheel invariant: consumed === (class !== passthroug
             );
             checked++;
           }
-          // The class also never depends on overflow by construction.
+          // The class also never depends on overflow by construction (classifyWheel has no overflow parameter) —.
           assert.equal(routeWheel(e, false).consumed, routeWheel(e, true).consumed);
         }
       }
@@ -1042,7 +1043,7 @@ test('classifyWheel ↔ routeWheel invariant: consumed === (class !== passthroug
 // no clock of its own.
 
 test('WheelGestureRouter: a FRESH router routes any single event exactly like routeWheel (full matrix)', () => {
-  // The isolated-event contract: gesture state only ever changes what happens WITHIN a stream — the first.
+  // The isolated-event contract: gesture state only ever changes what happens WITHIN a stream — the first (or a lone).
   const deltas = [-240, -16, -5, -1, 0, 1, 5, 16, 240, NaN, Infinity];
   const modes = [0, 1, 2];
   const mods = [
@@ -1076,6 +1077,8 @@ test('WheelGestureRouter: a FRESH router routes any single event exactly like ro
 });
 
 test('WheelGestureRouter: h-locked stream consumes its vertical-dominant jitter — pan is Σdx, the page gets nothing', () => {
+  // The operator gesture: a mostly-horizontal trackpad swipe whose edge /
+  // momentum-tail events are individually vertical-dominant.
   const stream: Array<[number, number]> = [
     [-120, 8],
     [-120, 8],
@@ -1135,9 +1138,7 @@ test('WheelGestureRouter: v-locked stream passes EVERYTHING through — horizont
   let ts = 9000;
   for (const [deltaX, deltaY] of stream) {
     for (const lanesOverflow of [false, true]) {
-      // Routing must not depend on overflow either way; route twice at
-      // the same ts (idempotent for a v-locked stream — nothing mutates
-      // but the gesture clock).
+      // Routing must not depend on overflow either way.
       assert.deepEqual(r.route(wheel({ deltaX, deltaY }), lanesOverflow, ts), {
         zoomPx: 0,
         panPx: 0,
@@ -1156,7 +1157,7 @@ test('WheelGestureRouter: a gap over WHEEL_GESTURE_GAP_MS ends the gesture — t
   assert.equal(r.route(wheel({ deltaX: -120, deltaY: 8 }), false, 1016).consumed, true);
   // ...pause 300ms, then a vertical-dominant event: FRESH → 'v' → the page.
   assert.equal(r.route(wheel({ deltaX: -4, deltaY: 10 }), false, 1316).consumed, false);
-  // The fresh event locked 'v': horizontal JITTER inside its gesture passes through too.
+  // The fresh event locked 'v'.
   assert.equal(r.route(wheel({ deltaX: -12, deltaY: 5 }), false, 1332).consumed, false);
   // ...until a pause frees it again.
   assert.equal(r.route(wheel({ deltaX: -12, deltaY: 5 }), false, 1332 + WHEEL_GESTURE_GAP_MS + 1).consumed, true);
@@ -1171,7 +1172,7 @@ test('WheelGestureRouter: a gap over WHEEL_GESTURE_GAP_MS ends the gesture — t
 });
 
 test('WheelGestureRouter: a DECISIVE opposite-axis event re-locks mid-gesture — proportional jitter never does', () => {
-  // The load-bearing case (browser-verified on the two-chart showcase): a page scroll carries a second chart under the cursor mid-stream.
+  // The load-bearing case (browser-verified on those-chart showcase): a page scroll carries a second chart under the cursor mid-stream.
   const r = new WheelGestureRouter();
   assert.equal(r.route(wheel({ deltaX: -12, deltaY: 5 }), false, 1000).consumed, true, 'fresh h-dominant jitter locks h (per-event rule)');
   assert.equal(r.route(wheel({ deltaY: 100 }), false, 1016).consumed, false, 'decisive vertical (>2x, >=24px) flips the lock to v');
@@ -1198,7 +1199,7 @@ test('WheelGestureRouter: a DECISIVE opposite-axis event re-locks mid-gesture �
 });
 
 test('WheelGestureRouter: modifier events route as routeWheel and neither read nor extend the lock', () => {
-  // (d) a ctrl zoom mid-h-stream.
+  // (d) a ctrl zoom mid-h-stream: routes exactly like per-event routeWheel (always consumed), and the h lock survives.
   const r = new WheelGestureRouter();
   assert.equal(r.route(wheel({ deltaX: -120, deltaY: 8 }), false, 1000).consumed, true);
   assert.deepEqual(r.route(wheel({ deltaY: -40, ctrlKey: true }), true, 1016), {
@@ -1273,12 +1274,128 @@ test('WheelGestureRouter: deltaMode-normalized classification — a line-mode st
     laneScrollPx: 16,
     consumed: true,
   });
-  // A 2-line vertical tick normalizes to 32px — over the floor, so it decisively FLIPS the gesture.
+  // A 2-line vertical tick normalizes to 32px — over the floor.
   assert.equal(r.route(wheel({ deltaY: 2, deltaMode: 1 }), true, 1032).consumed, false);
   // Fresh line-mode vertical-dominant event → 'v' lock, then a line-mode horizontal jitter passes through.
   const v = new WheelGestureRouter();
   assert.equal(v.route(wheel({ deltaY: 3, deltaMode: 1 }), false, 2000).consumed, false);
   assert.equal(v.route(wheel({ deltaX: -1, deltaMode: 1 }), false, 2016).consumed, false, 'line-mode h jitter inside the v gesture');
+});
+
+// -- Direction-aware lane scrolling (the nested-scroller contract) ----------------
+
+// The LaneScrollable input form: a vertical wheel scrolls an overflowing lane
+// stack IN PLACE while the stack can move in the wheel's direction. It passes
+// to the page the moment it cannot — so a tall lane stack is finally
+// wheel-scrollable. The page stays reachable past it. The boolean form keeps
+// the pinned page-always-wins behavior byte-for-byte (every test above this
+// section runs on it, unchanged).
+
+test('routeWheel: direction-aware lanes — a vertical wheel scrolls the stack while it has headroom that way', () => {
+  // Parked at the top (headroom below): wheel-down scrolls the stack,
+  // wheel-up belongs to the page.
+  assert.deepEqual(routeWheel(wheel({ deltaY: 90 }), { up: false, down: true }), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: 90,
+    consumed: true,
+  });
+  assert.deepEqual(routeWheel(wheel({ deltaY: -90 }), { up: false, down: true }), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: 0,
+    consumed: false,
+  });
+  // Symmetric at the bottom.
+  assert.deepEqual(routeWheel(wheel({ deltaY: -90 }), { up: true, down: false }), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: -90,
+    consumed: true,
+  });
+  assert.deepEqual(routeWheel(wheel({ deltaY: 90 }), { up: true, down: false }), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: 0,
+    consumed: false,
+  });
+  // No headroom at all (a stack that fits): identical to the boolean
+  // form — the page owns every vertical wheel.
+  for (const dy of [90, -90]) {
+    assert.equal(routeWheel(wheel({ deltaY: dy }), { up: false, down: false }).consumed, false);
+  }
+  // The consumed-horizontal route's minor-dy nudge keys off OVERFLOW (either
+  // direction).
+  assert.deepEqual(routeWheel(wheel({ deltaX: -60, deltaY: 4 }), { up: false, down: true }), {
+    zoomPx: 0,
+    panPx: -60,
+    laneScrollPx: 4,
+    consumed: true,
+  });
+  assert.deepEqual(routeWheel(wheel({ deltaX: -60, deltaY: 4 }), { up: false, down: false }), {
+    zoomPx: 0,
+    panPx: -60,
+    laneScrollPx: 0,
+    consumed: true,
+  });
+});
+
+test('WheelGestureRouter: a v gesture latches lane-vs-page from scrollability at lock time', () => {
+  // Downward headroom at lock time: the WHOLE gesture belongs to the stack — including after the stack reports its edge mid-gesture.
+  const r = new WheelGestureRouter();
+  let ts = 1000;
+  assert.deepEqual(r.route(wheel({ deltaY: 100 }), { up: false, down: true }, ts), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: 100,
+    consumed: true,
+  });
+  ts += 16;
+  assert.deepEqual(
+    r.route(wheel({ deltaY: 100 }), { up: true, down: false }, ts),
+    { zoomPx: 0, panPx: 0, laneScrollPx: 100, consumed: true },
+    'edge reached mid-gesture: still latched to the stack',
+  );
+  ts += 16;
+  const jitter = r.route(wheel({ deltaX: -12, deltaY: 5 }), { up: true, down: false }, ts);
+  assert.equal(jitter.consumed, true, 'h jitter under the flip floor stays in the lane gesture');
+  assert.equal(jitter.panPx, 0);
+  assert.equal(jitter.laneScrollPx, 5);
+  // After the gesture gap, a fresh wheel-down against the exhausted stack belongs to the page.
+  ts += WHEEL_GESTURE_GAP_MS + 1;
+  assert.deepEqual(r.route(wheel({ deltaY: 100 }), { up: true, down: false }, ts), {
+    zoomPx: 0,
+    panPx: 0,
+    laneScrollPx: 0,
+    consumed: false,
+  });
+  // And a page-latched gesture never grabs the stack mid-stream, even if headroom appears under it (a re-layout mid-scroll).
+  ts += 16;
+  assert.equal(r.route(wheel({ deltaY: 100 }), { up: true, down: true }, ts).consumed, false);
+  ts += WHEEL_GESTURE_GAP_MS + 1;
+  assert.equal(r.route(wheel({ deltaY: 100 }), { up: true, down: true }, ts).consumed, true, 'fresh gesture takes the now-scrollable stack');
+});
+
+test('WheelGestureRouter: a FRESH router equals routeWheel on direction-aware inputs too', () => {
+  const scrolls = [
+    { up: false, down: false },
+    { up: true, down: false },
+    { up: false, down: true },
+    { up: true, down: true },
+  ];
+  for (const lanes of scrolls) {
+    for (const deltaY of [-90, -1, 0, 1, 90]) {
+      for (const deltaX of [0, -4, 120]) {
+        const e = wheel({ deltaX, deltaY });
+        const fresh = new WheelGestureRouter();
+        assert.deepEqual(
+          fresh.route(e, lanes, 500),
+          routeWheel(e, lanes),
+          `dx=${deltaX} dy=${deltaY} lanes=${JSON.stringify(lanes)}`,
+        );
+      }
+    }
+  }
 });
 
 // -- Now-line x ------------------------------------------------------------------
@@ -1328,7 +1445,6 @@ test('nowLineX: degenerate dpr passes the unsnapped x through', () => {
 
 // -- Follow-now rule ----------------------------------------------------------------
 
-// A 1000-CSS-px plot at one dpr: ms per device pixel for a given span.
 const mppx = (span: number, plotW = 1000, dpr = 1): number => span / (plotW * dpr);
 
 test('followAfterGesture: a small backward PAN disengages follow (trackpad panning must escape now)', () => {
@@ -1420,7 +1536,6 @@ test('followAfterGesture: a span change is not a pan — wasFollowing=true stays
   assert.equal(followAfterGesture(false, view.end, zoomed, now, false, mppx(zoomed.end - zoomed.start)), false);
 });
 
-// -- a later item: the zoom anchor wins over the follow pin --------------------------------
 //
 // The element applies a zoom gesture as zoomView(view, anchor, f) and —
 // because a zoom never inherits the pin — routes it through
@@ -1455,7 +1570,7 @@ test('zoom while following: follow is re-earned exactly at the snap boundary (bo
   const frac = 1 / 3;
   const anchor = view.start + span * frac;
   // Solve the zoom factor that lands the right edge exactly k device px short of now — measured at the ZOOMED span's scale.
-  const W = plotW; // One dpr
+  const W = plotW;
   const spanFor = (k: number) => (now - anchor) / (1 - frac + k / W);
   for (const [k, engaged] of [
     [FOLLOW_SNAP_DEVICE_PX, true],
@@ -1506,6 +1621,67 @@ test('clampViewToNow: the hard end stop — end never passes now, span preserved
   assert.deepEqual(clampViewToNow(before, now), before);
   const at: TimeView = { start: now - span, end: now };
   assert.deepEqual(clampViewToNow(at, now), at);
+});
+
+test('clampViewToBounds: each side clamps independently, span preserved', () => {
+  const min = 1_000_000_000;
+  const max = min + 3_600_000;
+  const span = 600_000;
+  // Unbounded on both sides: identity, whatever the view.
+  const v: TimeView = { start: min - 5 * span, end: min - 4 * span };
+  assert.deepEqual(clampViewToBounds(v, { min: null, max: null }), v);
+  // min alone: a view before it shifts forward.
+  const back = clampViewToBounds({ start: min - span, end: min }, { min, max: null });
+  assert.deepEqual(back, { start: min, end: min + span });
+  assert.deepEqual(clampViewToBounds({ start: max, end: max + span }, { min, max: null }), { start: max, end: max + span });
+  // max alone: a view past it shifts back over an unlimited past.
+  const fwd = clampViewToBounds({ start: max, end: max + span }, { min: null, max });
+  assert.deepEqual(fwd, { start: max - span, end: max });
+  assert.deepEqual(clampViewToBounds({ start: min - 99 * span, end: min - 98 * span }, { min: null, max }), {
+    start: min - 99 * span,
+    end: min - 98 * span,
+  });
+  // Both: inside is untouched, either overshoot parks at its own stop.
+  const inside: TimeView = { start: min + span, end: min + 2 * span };
+  assert.deepEqual(clampViewToBounds(inside, { min, max }), inside);
+  assert.deepEqual(clampViewToBounds({ start: max, end: max + span }, { min, max }), { start: max - span, end: max });
+  assert.deepEqual(clampViewToBounds({ start: min - span, end: min }, { min, max }), { start: min, end: min + span });
+  // A span wider than the range cannot keep both stops: it collapses onto
+  // the range exactly, from either direction.
+  for (const wide of [max - min + 1, 10 * (max - min)]) {
+    assert.deepEqual(clampViewToBounds({ start: min - wide, end: min }, { min, max }), { start: min, end: max });
+    assert.deepEqual(clampViewToBounds({ start: max, end: max + wide }, { min, max }), { start: min, end: max });
+  }
+  // Non-finite sides read as unbounded, never as NaN arithmetic.
+  assert.deepEqual(clampViewToBounds(v, { min: NaN, max: Infinity }), v);
+});
+
+test('boundedMaxSpan: the range when both sides are set, never under the zoom floor', () => {
+  const min = 1_000_000_000;
+  assert.equal(boundedMaxSpan({ min: null, max: null }), MAX_SPAN_MS);
+  assert.equal(boundedMaxSpan({ min, max: null }), MAX_SPAN_MS);
+  assert.equal(boundedMaxSpan({ min: null, max: min + 1000 }), MAX_SPAN_MS);
+  assert.equal(boundedMaxSpan({ min, max: min + 600_000 }), 600_000);
+  // A range wider than the hard ceiling still stops at the ceiling.
+  assert.equal(boundedMaxSpan({ min, max: min + 30 * MAX_SPAN_MS }), MAX_SPAN_MS);
+  assert.equal(boundedMaxSpan({ min, max: min + 1 }), MIN_SPAN_MS);
+});
+
+test('clampViewToBounds: a min stop and the live-now stop compose without fighting', () => {
+  // The element clamps every gesture through both at once — min from the configured bound.
+  const min = 1_000_000_000;
+  const now = min + 7_200_000;
+  const span = 900_000;
+  for (const raw of [
+    { start: min - 10 * span, end: min - 9 * span },
+    { start: now, end: now + span },
+    { start: min + span, end: min + 2 * span },
+  ]) {
+    const c = clampViewToBounds(raw, { min, max: now });
+    assert.ok(c.start >= min, 'never before the min stop');
+    assert.ok(c.end <= now, 'never past the now stop');
+    assert.equal(c.end - c.start, span, 'span preserved — the range is wider than it');
+  }
 });
 
 test('clampViewToNow + followAfterGesture: any forward overshoot parks at the stop and reliably re-docks', () => {
@@ -1618,7 +1794,7 @@ test('disengage: a backward wheel sequence consumes the lead — no frame moves 
     }
     const moved = prevEnd - view.end; // backward displacement this frame
     const easing = easeStepBound((glide ? glide.from : lead) * span, FRAME_MS, tween);
-    // Forward motion is only ever the natural follow drift.
+    // Forward motion is only ever the natural follow drift (now advancing while still pinned).
     assert.ok(moved >= (following ? -FRAME_MS : 0) - 1e-6, `frame ${frame}: view never jumps FORWARD while disengaging`);
     assert.ok(moved <= userDelta + easing + 1e-6, `frame ${frame}: moved ${moved}ms > user ${userDelta}ms + easing ${easing}ms`);
   }
@@ -1845,7 +2021,7 @@ test('durationWidthPx: translation-invariant — shape decisions cannot flicker 
 test('durationWidthPx: zero-duration events are pips at any zoom; real widths clear the threshold', () => {
   const view: TimeView = { start: 0, end: 600_000 };
   assert.equal(isInstantWidth(durationWidthPx(1_000, 1_000, view, 1000)), true, 'zero duration = pip');
-  // 2px true width: below the pip threshold — but MIN_BAR_PX exists.
+  // 2px true width: below the pip threshold — but MIN_BAR_PX exists so a bar that passes the threshold is never rendered thinner.
   assert.ok(MIN_BAR_PX >= 2 && MIN_BAR_PX < INSTANT_THRESHOLD_PX);
   const wide = durationWidthPx(0, 3_600, view, 1000); // 6px
   assert.equal(isInstantWidth(wide), false);
@@ -1922,7 +2098,6 @@ test('packVisibleTracks: partial overlap counts; empty window collapses to one t
   ];
   // Window clips both, they overlap each other → multiple tracks.
   assert.equal(packVisibleTracks(items, { start: 420, end: 480 }).trackCount, 2);
-  // Window sees nothing → collapses to `frac`.
   const empty = packVisibleTracks(items, { start: 2_000, end: 3_000 });
   assert.equal(empty.trackCount, 1);
   assert.deepEqual(empty.tracks, [-1, -1]);
@@ -1953,6 +2128,203 @@ test('packVisibleTracks: assignment is stable while the window slides over an un
   }
 });
 
+// -- Multi-row items (sub-span families are one pack item `rows` tall) --------------------
+
+test('pack: a multi-row item takes a run of consecutive free tracks and blocks all of them', () => {
+  const { tracks, trackCount } = packOf([
+    { id: 'a', start: 0, end: 100, rows: 3 },
+    { id: 'b', start: 10, end: 50 },
+    { id: 'c', start: 150, end: 200 },
+  ]);
+  assert.deepEqual(tracks, [0, 3, 0]);
+  assert.equal(trackCount, 4);
+});
+
+test('pack: a multi-row item skips past a busy track inside its candidate run', () => {
+  const { tracks, trackCount } = packOf([
+    { id: 'x', start: 0, end: 100 },
+    { id: 'y', start: 0, end: 100 },
+    { id: 'z', start: 0, end: 100 },
+    { id: 'blk', start: 5, end: 50, rows: 2 },
+  ]);
+  assert.deepEqual(tracks.slice(0, 3), [0, 1, 2]);
+  assert.equal(tracks[3], 3);
+  assert.equal(trackCount, 5);
+  const gap = packOf([
+    { id: 'x', start: 0, end: 100 },
+    { id: 'y', start: 0, end: 4 },
+    { id: 'z', start: 0, end: 4 },
+    { id: 'w', start: 0, end: 100 },
+    { id: 'blk', start: 5, end: 50, rows: 2 },
+  ]);
+  assert.deepEqual(gap.tracks, [1, 2, 3, 0, 2], 'the block reuses the freed middle rows');
+  assert.equal(gap.trackCount, 4);
+});
+
+test('packVisibleTracks: a multi-row item counts every row it holds', () => {
+  const items: PackItem[] = [{ id: 'fam', start: 0, end: 100, rows: 4 }];
+  assert.equal(packVisibleTracks(items, { start: 10, end: 20 }).trackCount, 4);
+  assert.equal(packVisibleTracks(items, { start: 500, end: 600 }).trackCount, 1);
+});
+
+test('TrackAllocator: multi-row items pack, stick and count like single rows', () => {
+  const fam: PackItem = { id: 'fam', start: 0, end: 100, rows: 3 };
+  const a: PackItem = { id: 'a', start: 10, end: 60 };
+  const b: PackItem = { id: 'b', start: 200, end: 260 };
+  const alloc = new TrackAllocator();
+  const first = alloc.assign([fam, a, b], { start: 0, end: 300 });
+  assert.deepEqual(first.tracks, [0, 3, 0], 'the block holds rows 0..2; a sits under it; b reuses row 0 after it');
+  assert.equal(first.trackCount, 4);
+  // A newcomer that overlaps the block must clear its whole run — even the rows the block holds.
+  const c: PackItem = { id: 'c', start: 20, end: 30 };
+  const second = alloc.assign([fam, a, b, c], { start: 0, end: 300 });
+  assert.deepEqual(second.tracks, [0, 3, 0, 4], 'rows under the block are blocked, not free');
+  // The block scrolls out: the lane shrinks and a keeps its row.
+  const later = alloc.assign([fam, a, b, c], { start: 150, end: 300 });
+  assert.deepEqual(later.tracks, [-1, -1, 0, -1]);
+  assert.equal(later.trackCount, 1);
+});
+
+// -- resolveParents / packFamily (sub-spans) -------------------------------------------------
+
+test('resolveParents: same-lane parents nest; missing, cross-lane and self parents leave a root', () => {
+  const parent = resolveParents([
+    { id: 'run', laneId: 'ci' },
+    { id: 'build', laneId: 'ci', parentId: 'run' },
+    { id: 'orphan', laneId: 'ci', parentId: 'nope' },
+    { id: 'elsewhere', laneId: 'deploy', parentId: 'run' },
+    { id: 'me', laneId: 'ci', parentId: 'me' },
+    { id: 'unit', laneId: 'ci', parentId: 'build' },
+  ]);
+  assert.deepEqual(parent, [-1, 0, -1, -1, -1, 1]);
+});
+
+test('resolveParents: a cycle is cut so the result is a forest', () => {
+  const parent = resolveParents([
+    { id: 'a', parentId: 'c' },
+    { id: 'b', parentId: 'a' },
+    { id: 'c', parentId: 'b' },
+    { id: 'd', parentId: 'c' },
+  ]);
+  assert.equal(parent[0], -1, 'the lowest-index member of the cycle becomes the root');
+  assert.deepEqual(parent.slice(1), [0, 1, 2]);
+  // No ancestor walk loops forever.
+  for (let i = 0; i < parent.length; i++) {
+    let j = i;
+    let steps = 0;
+    while (parent[j] >= 0) {
+      j = parent[j];
+      steps++;
+      assert.ok(steps <= parent.length, 'acyclic');
+    }
+  }
+});
+
+test('packFamily: a flame chart — every child sits on the row under its parent, and the block is one row per depth', () => {
+  const fam = packFamily({
+    id: 'run',
+    start: 0,
+    end: 100,
+    children: [
+      { id: 'build', start: 5, end: 40 },
+      {
+        id: 'test',
+        start: 40,
+        end: 80,
+        children: [
+          { id: 'unit', start: 41, end: 60 },
+          { id: 'e2e', start: 60, end: 79 },
+        ],
+      },
+      { id: 'promote', start: 85, end: 95 },
+    ],
+  });
+  assert.equal(fam.rows, 3);
+  assert.equal(fam.start, 0);
+  assert.equal(fam.end, 100);
+  assert.deepEqual(
+    ['run', 'build', 'test', 'promote', 'unit', 'e2e'].map((id) => fam.tops.get(id)),
+    [0, 1, 1, 1, 2, 2],
+  );
+  assert.deepEqual(fam.overlaps, []);
+});
+
+test('packFamily: the block is as tall as its deepest branch', () => {
+  const fam = packFamily({
+    id: 'p',
+    start: 0,
+    end: 100,
+    children: [
+      { id: 'a', start: 0, end: 50, children: [{ id: 'a1', start: 0, end: 50, children: [{ id: 'a11', start: 0, end: 10 }] }] },
+      { id: 'b', start: 50, end: 100 },
+    ],
+  });
+  assert.equal(fam.rows, 4);
+  assert.equal(fam.tops.get('a11'), 3);
+  assert.equal(fam.tops.get('b'), 1);
+});
+
+test('packFamily: overlapping siblings are not valid flame-chart data — they share the row and are reported', () => {
+  const fam = packFamily({
+    id: 'p',
+    start: 0,
+    end: 100,
+    children: [
+      { id: 'b', start: 30, end: 60 },
+      { id: 'a', start: 0, end: 40 },
+      { id: 'c', start: 60, end: 90 },
+      { id: 'live', start: 92, end: null },
+      { id: 'late', start: 95, end: 99 },
+    ],
+  });
+  assert.equal(fam.rows, 2, 'no extra row is made to hide the overlap');
+  assert.deepEqual(fam.overlaps, ['b', 'late'], 'b starts inside a; late starts while live still runs; c starts as b ends');
+});
+
+test('packFamily: an overlap deep in the tree reaches the root', () => {
+  const fam = packFamily({
+    id: 'p',
+    start: 0,
+    end: 100,
+    children: [{ id: 't', start: 0, end: 100, children: [{ id: 'x', start: 0, end: 50 }, { id: 'y', start: 10, end: 20 }] }],
+  });
+  assert.deepEqual(fam.overlaps, ['y']);
+});
+
+test('packFamily: the extent is the union, and any ongoing member makes the block ongoing', () => {
+  const over = packFamily({ id: 'p', start: 10, end: 20, children: [{ id: 'c', start: 5, end: 30 }] });
+  assert.equal(over.start, 5);
+  assert.equal(over.end, 30);
+  const live = packFamily({ id: 'p', start: 10, end: 20, children: [{ id: 'c', start: 12, end: null }] });
+  assert.equal(live.end, null);
+  const liveRoot = packFamily({ id: 'p', start: 10, end: null, children: [{ id: 'c', start: 12, end: 15 }] });
+  assert.equal(liveRoot.end, null);
+});
+
+test('packFamily: back-to-back instants at one time are sequential, not overlapping', () => {
+  const fam = packFamily({
+    id: 'p',
+    start: 0,
+    end: 10,
+    children: [
+      { id: 'i1', start: 5, end: 5 },
+      { id: 'i2', start: 5, end: 5 },
+    ],
+  });
+  assert.equal(fam.rows, 2);
+  assert.deepEqual(fam.overlaps, []);
+});
+
+test('packFamily + packTracks: a family block keeps unrelated bars out of its rows', () => {
+  const fam = packFamily({ id: 'run', start: 0, end: 100, children: [{ id: 'c', start: 10, end: 90 }] });
+  const lane = packTracks([
+    { id: 'run', start: fam.start, end: fam.end, rows: fam.rows },
+    { id: 'other', start: 50, end: 60 },
+  ]);
+  assert.deepEqual(lane.tracks, [0, 2], 'the unrelated bar lands under the whole block, never inside it');
+  assert.equal(lane.trackCount, 3);
+});
+
 // -- TrackAllocator (sticky rows) --------------------------------------------------------
 
 const ti = (id: string, start: number, end: number | null): PackItem => ({ id, start, end });
@@ -1969,7 +2341,6 @@ test('TrackAllocator: a fresh allocator reproduces the stateless first-fit packe
 });
 
 test('TrackAllocator: visible items keep their rows when membership churn would reflow the stateless packer', () => {
-  // a leaves the view.
   const items = [ti('a', 0, 10), ti('b', 2, 12), ti('c', 11, 20)];
   const alloc = new TrackAllocator();
   const v1 = alloc.assign(items, { start: 0, end: 15 });
@@ -2017,7 +2388,6 @@ test('TrackAllocator: a returning interval whose old row is now taken falls to t
   const b = ti('b', 0, 60);
   assert.deepEqual(alloc.assign([a], { start: 0, end: 20 }).tracks, [0]);
   assert.deepEqual(alloc.assign([a, b], { start: 50, end: 60 }).tracks, [-1, 0]);
-  // a returns.
   assert.deepEqual(alloc.assign([a, b], { start: 0, end: 60 }).tracks, [1, 0]);
 });
 
@@ -2121,27 +2491,104 @@ test('clusterInstants: coincident instants merge into ONE cluster (the lane-heig
   assert.equal(r.clusters.length, 1);
   assert.equal(r.clusters[0].indices.length, 50);
   assert.deepEqual(r.clusters[0].extent, { start: 5_000, end: 5_000 }, 'coincident members: a point extent');
+  assert.deepEqual(r.clusters[0].marks, [{ time: 5_000, from: 0, to: 50 }], 'one mark: the stack glyph case');
   assert.ok(r.memberOf.every((m) => m === 0));
 });
 
-test('clusterInstants: threshold boundary — a gap exactly at joinPx merges, just past it stays apart', () => {
+test('clusterInstants: threshold boundary — a gap just under the pitch merges, at it they stay apart', () => {
   const view: TimeView = { start: 0, end: 100_000 };
-  const joinMs = CLUSTER_JOIN_PX * 100;
-  const at = clusterInstants([pip('a', 10_000), pip('b', 10_000 + joinMs)], view, 1000);
-  assert.equal(at.clusters.length, 1, 'exactly at the threshold merges');
-  const past = clusterInstants([pip('a', 10_000), pip('b', 10_000 + joinMs + 1)], view, 1000);
-  assert.equal(past.clusters.length, 0, 'one ms past it stays apart');
-  assert.deepEqual(past.memberOf, [-1, -1]);
+  const pitchMs = CLUSTER_PITCH_PX * 100;
+  const under = clusterInstants([pip('a', 10_000), pip('b', 10_000 + pitchMs - 1)], view, 1000);
+  assert.equal(under.clusters.length, 1, 'a pixel short of clearing: the pips collide, so they cluster');
+  const at = clusterInstants([pip('a', 10_000), pip('b', 10_000 + pitchMs)], view, 1000);
+  assert.equal(at.clusters.length, 0, 'exactly at the pitch they both draw');
+  assert.deepEqual(at.memberOf, [-1, -1]);
 });
 
-test('clusterInstants: transitive chain — pairwise-close pips merge even when the ends are far apart', () => {
-  // 10px apart each (join 12px): a↔d are 30px apart, still ONE cluster.
+test('clusterInstants: a chain runs to the real gap, and every member that clears the pitch keeps its pip', () => {
+  // 4px apart at the default 6px pitch: all of them chain, and the thinning keeps every other one — each at its own true timestamp.
   const view: TimeView = { start: 0, end: 100_000 }; // 100ms/px
-  const items = [pip('a', 10_000), pip('b', 11_000), pip('c', 12_000), pip('d', 13_000)];
+  const items = [pip('a', 10_000), pip('b', 10_400), pip('c', 10_800), pip('d', 11_200)];
   const r = clusterInstants(items, view, 1000);
   assert.equal(r.clusters.length, 1);
   assert.deepEqual(r.clusters[0].indices, [0, 1, 2, 3]);
-  assert.deepEqual(r.clusters[0].extent, { start: 10_000, end: 13_000 });
+  assert.deepEqual(r.clusters[0].extent, { start: 10_000, end: 11_200 });
+  assert.deepEqual(
+    r.clusters[0].marks,
+    [
+      { time: 10_000, from: 0, to: 2 },
+      { time: 10_800, from: 2, to: 4 },
+    ],
+    'b and d sit inside the pitch — dropped, and counted by the pip before them',
+  );
+  // A compact lane draws smaller dots at a tighter pitch, so more fit.
+  const compact = clusterInstants(items, view, 1000, 3);
+  assert.equal(compact.clusters.length, 0);
+  assert.deepEqual(compact.memberOf, [-1, -1, -1, -1]);
+});
+
+test('clusterInstants: ZOOMING OUT HALVES THE MARKS — it never fuses them into one shape', () => {
+  // THE rule (docs/timeline/zoom-out-never-merges.md).
+  const items = Array.from({ length: 4000 }, (_, i) => pip(`s${String(i).padStart(4, '0')}`, i * 1_000));
+  const plotWidth = 1000;
+  let prev = Infinity;
+  for (const span of [1_000_000, 2_000_000, 4_000_000, 8_000_000]) {
+    const view: TimeView = { start: 0, end: span };
+    const r = clusterInstants(items, view, plotWidth);
+    const msPerPx = span / plotWidth;
+    const marks = r.clusters.reduce((n, c) => n + c.marks.length, 0);
+    // Every drawn mark clears the one by a whole mark + its gap, so the ticks
+    // the element draws can never touch, let alone merge.
+    for (const c of r.clusters) {
+      for (let k = 1; k < c.marks.length; k++) {
+        assert.ok(
+          (c.marks[k].time - c.marks[k - 1].time) / msPerPx >= CLUSTER_PITCH_PX - 1e-9,
+          `span ${span}: marks ${k - 1}/${k} closer than the pitch`,
+        );
+      }
+      // Marks cover every member exactly once, in order — nothing is lost from the tooltip counts by being dropped.
+      let next = 0;
+      for (const mk of c.marks) {
+        assert.equal(mk.from, next);
+        assert.ok(mk.to > mk.from);
+        next = mk.to;
+      }
+      assert.equal(next, c.indices.length);
+    }
+    // Each 2x zoom-out roughly halves the marks (never merges them).
+    if (prev !== Infinity) {
+      assert.ok(marks < prev * 0.6, `span ${span}: ${marks} marks vs ${prev} at half the span`);
+      assert.ok(marks > prev * 0.4, `span ${span}: ${marks} marks vs ${prev} — dropped far more than half`);
+    }
+    prev = marks;
+  }
+});
+
+test('clusterInstants: a run of marks fills its extent — no fixed-pitch comb, no single blob', () => {
+  // The failure this replaced: a 24px width cap chopped any dense run into equal groups, one glyph each.
+  const view: TimeView = { start: -600_000, end: 15_000_000 };
+  const plotWidth = 1300;
+  const msPerPx = (view.end - view.start) / plotWidth;
+  const r = clusterInstants(
+    Array.from({ length: 240 }, (_, i) => pip(`m${String(i).padStart(3, '0')}`, i * 60_000)),
+    view,
+    plotWidth,
+  );
+  const marks = r.clusters.flatMap((c) => c.marks);
+  const dataPx = (240 * 60_000) / msPerPx;
+  // Marks stop at what the width can hold, and fill it.
+  assert.ok(marks.length <= dataPx / CLUSTER_PITCH_PX + 1, `${marks.length} marks is more than ${dataPx.toFixed(0)}px can separate`);
+  const spanPx = (marks[marks.length - 1].time - marks[0].time) / msPerPx;
+  assert.ok(spanPx > dataPx * 0.95, `marks cover ${spanPx.toFixed(0)}px of the run's ${dataPx.toFixed(0)}px`);
+  // The same window with a fifth as many events draws a fifth as many marks
+  // — the fixed-pitch comb drew both identically.
+  const sparse = clusterInstants(
+    Array.from({ length: 48 }, (_, i) => pip(`f${String(i).padStart(3, '0')}`, i * 300_000)),
+    view,
+    plotWidth,
+  );
+  const sparseMarks = sparse.clusters.flatMap((c) => c.marks).length + sparse.memberOf.filter((m) => m < 0).length;
+  assert.ok(marks.length > sparseMarks * 2, `${marks.length} marks for 240 events vs ${sparseMarks} for 48`);
 });
 
 test('clusterInstants: bars and ongoing intervals never cluster', () => {
@@ -2186,16 +2633,16 @@ test('clusterInstants: pure pans never change membership or extents (translation
 });
 
 test('clusterInstants: zooming in progressively splits clusters until each pip stands alone', () => {
-  // Gaps: a↔b 400ms, b↔c 3_600ms.
-  const items = [pip('a', 10_000), pip('b', 10_400), pip('c', 14_000)];
-  const wide = clusterInstants(items, { start: 0, end: 600_000 }, 1000); // 600ms/px → join 7_200ms
-  assert.equal(wide.clusters.length, 1, 'wide: everything is one blob');
+  // Gaps: a↔b 200ms, b↔c 1_600ms.
+  const items = [pip('a', 10_000), pip('b', 10_200), pip('c', 11_800)];
+  const wide = clusterInstants(items, { start: 0, end: 600_000 }, 1000); // 600ms/px → pitch 3_600ms
+  assert.equal(wide.clusters.length, 1, 'wide: everything is one chain');
   assert.equal(wide.clusters[0].indices.length, 3);
-  const mid = clusterInstants(items, { start: 0, end: 60_000 }, 1000); // 60ms/px → join 720ms
-  assert.equal(mid.clusters.length, 1, 'mid: only the close pair remains merged');
+  const mid = clusterInstants(items, { start: 0, end: 60_000 }, 1000); // 60ms/px → pitch 360ms
+  assert.equal(mid.clusters.length, 1, 'mid: only the close pair still collides');
   assert.deepEqual(mid.clusters[0].indices, [0, 1]);
   assert.equal(mid.memberOf[2], -1);
-  const close = clusterInstants(items, { start: 0, end: 10_000 }, 1000); // 10ms/px → join 120ms
+  const close = clusterInstants(items, { start: 0, end: 10_000 }, 1000); // 10ms/px → pitch 60ms
   assert.equal(close.clusters.length, 0, 'zoomed in: every pip stands at its true timestamp');
 });
 
@@ -2269,7 +2716,6 @@ test('minimapWindowRect: maps the view into strip px and crops at the strip edge
   const extent: TimeView = { start: 0, end: 10_000 };
   // Interior window: exact linear mapping.
   assert.deepEqual(minimapWindowRect({ start: 2_000, end: 6_000 }, extent, 1_000), { x0: 200, x1: 600 });
-  // A view hanging past the extent start: CROPPED at a set value (never slid to a lying position), the visible remainder honest.
   assert.deepEqual(minimapWindowRect({ start: -2_000, end: 4_000 }, extent, 1_000), { x0: 0, x1: 400 });
   // Symmetric at the live end.
   assert.deepEqual(minimapWindowRect({ start: 8_000, end: 12_000 }, extent, 1_000), { x0: 800, x1: 1_000 });
@@ -2315,12 +2761,12 @@ test('minimapHitZone: a narrow window keeps a grabbable middle (inside reach shr
   assert.equal(minimapHitZone(106, rect), 'inside');
   assert.equal(minimapHitZone(102, rect), 'left-handle');
   assert.equal(minimapHitZone(110, rect), 'right-handle');
-  // The width/4 rule keeps both handle zones disjoint on ANY nonzero-width window — even a 4px one keeps its 2px middle.
+  // The width/4 rule keeps both handle zones disjoint on ANY nonzero-width window.
   const tiny = { x0: 100, x1: 104 };
   assert.equal(minimapHitZone(101, tiny), 'left-handle');
   assert.equal(minimapHitZone(103, tiny), 'right-handle');
   assert.equal(minimapHitZone(102, tiny), 'inside');
-  // Zero-width rect (not producible by minimapWindowRect, but total).
+  // Zero-width rect (not producible by minimapWindowRect, but total): the exact edge is the overlap.
   assert.equal(minimapHitZone(100, { x0: 100, x1: 100 }), 'left-handle');
 });
 
@@ -2460,7 +2906,7 @@ test('coverage: the fixed cadence still storm-proofs a 60Hz frame loop after a f
   const req = c.nextRequest(view, 0);
   assert.ok(req);
   c.settle(req, { ok: false }, 1_000);
-  // A frame loop probing every 16ms issues NOTHING inside the window — the cadence gate (not backoff growth) is what prevents request storms.
+  // A frame loop probing every 16ms issues NOTHING inside the window — the cadence gate (not backoff growth).
   let issued = 0;
   for (let now = 1_016; now < 3_000; now += 16) {
     if (c.nextRequest(view, now)) issued++;
@@ -2500,7 +2946,6 @@ test('shouldRender: gates a 60Hz rAF stream to the tier budget without aliasing'
 });
 
 test('clockDrawBudgetMs: normal zooms render at the plain tier budget', () => {
-  // A 10s span over 900px at one dpr: ~11ms per device pixel — the scene moves at least a pixel per tier frame. The budget IS the tier's.
   const view = { start: 0, end: 10_000 };
   assert.equal(clockDrawBudgetMs(view, 900, 1, IDLE_FRAME_MS), IDLE_FRAME_MS);
   assert.equal(clockDrawBudgetMs(view, 900, 2, IDLE_FRAME_MS), IDLE_FRAME_MS);
@@ -2508,10 +2953,8 @@ test('clockDrawBudgetMs: normal zooms render at the plain tier budget', () => {
 });
 
 test('clockDrawBudgetMs: zoomed OUT widens to the exact per-device-pixel period — no upper cap', () => {
-  // 15-min span over a 900px plot at one dpr: one device pixel per 1000ms.
   const view = { start: 0, end: 900_000 };
   assert.equal(clockDrawBudgetMs(view, 900, 1, IDLE_FRAME_MS), 1000);
-  // A later dpr halves the pixel period (device-pixel space, matching snapViewToDevicePixels).
   assert.equal(clockDrawBudgetMs(view, 900, 2, IDLE_FRAME_MS), 500);
   // A week-long span advances a pixel every few minutes.
   assert.equal(clockDrawBudgetMs({ start: 0, end: 7 * 86_400_000 }, 900, 1, IDLE_FRAME_MS), (7 * 86_400_000) / 900);
@@ -2628,4 +3071,87 @@ test('labelHaloColor: unparseable colors fall back to the dark halo', () => {
   // The dark default theme's shape — a var()/named fg keeps a sane rim.
   assert.equal(labelHaloColor('var(--my-fg)'), 'rgba(0, 0, 0, 0.55)');
   assert.equal(labelHaloColor('papayawhip'), 'rgba(0, 0, 0, 0.55)');
+});
+
+// -- segmentAtTime (hovered-phase hit refinement) --------------------------------------
+
+// The webhook-runner shape: a dim queue lead-in, a hatched wait, then the unsegmented base bar to the end.
+const SEG_IV = { start: 0, end: 100_000 };
+const SEGS = [
+  { start: 0, end: 40_000, kind: 'queued' },
+  { start: 40_000, end: 70_000, kind: 'waiting' },
+];
+
+test('segmentAtTime: resolves the phase covering t, with index and clamped window', () => {
+  assert.deepEqual(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, 10_000), { index: 0, kind: 'queued', start: 0, end: 40_000 });
+  assert.deepEqual(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, 55_000), { index: 1, kind: 'waiting', start: 40_000, end: 70_000 });
+});
+
+test('segmentAtTime: base bar (no covering phase) and off-bar times resolve to null', () => {
+  assert.equal(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, 85_000), null); // past the last phase
+  assert.equal(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, -5), null);
+  assert.equal(segmentAtTime([], SEG_IV.start, SEG_IV.end, 10), null);
+  assert.equal(segmentAtTime(null, SEG_IV.start, SEG_IV.end, 10), null);
+  assert.equal(segmentAtTime(undefined, SEG_IV.start, SEG_IV.end, 10), null);
+});
+
+test('segmentAtTime: half-open boundaries — a shared edge belongs to the incoming phase', () => {
+  assert.equal(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, 40_000)?.kind, 'waiting');
+  // The last phase's trailing edge is exclusive too (base bar beyond it).
+  assert.equal(segmentAtTime(SEGS, SEG_IV.start, SEG_IV.end, 70_000), null);
+});
+
+test('segmentAtTime: overlaps resolve LAST-painted (draw order overpaints)', () => {
+  const overlapping = [
+    { start: 0, end: 80_000, kind: 'dim' },
+    { start: 50_000, end: 100_000, kind: 'waiting' },
+  ];
+  assert.equal(segmentAtTime(overlapping, SEG_IV.start, SEG_IV.end, 60_000)?.kind, 'waiting');
+  assert.equal(segmentAtTime(overlapping, SEG_IV.start, SEG_IV.end, 20_000)?.kind, 'dim');
+});
+
+test('segmentAtTime: null end runs to the interval end, inclusive at the bar\'s last instant', () => {
+  const tail = [{ start: 90_000, end: null, kind: 'outline' }];
+  assert.deepEqual(segmentAtTime(tail, SEG_IV.start, SEG_IV.end, 95_000), { index: 0, kind: 'outline', start: 90_000, end: 100_000 });
+  // t exactly at the interval end still hits the segment ending there.
+  assert.equal(segmentAtTime(tail, SEG_IV.start, SEG_IV.end, 100_000)?.kind, 'outline');
+  assert.equal(segmentAtTime(tail, SEG_IV.start, SEG_IV.end, 100_001), null);
+});
+
+test('segmentAtTime: draw-path clamps — starts floor to the interval, ends cap to it, outside phases skip', () => {
+  const segs = [
+    { start: -10_000, end: 20_000, kind: 'queued' },
+    { start: 60_000, end: 500_000, kind: 'waiting' }, // end caps to the interval
+    { start: 150_000, end: 160_000, kind: 'dim' }, // fully outside — never matches
+  ];
+  assert.deepEqual(segmentAtTime(segs, SEG_IV.start, SEG_IV.end, 5_000), { index: 0, kind: 'queued', start: 0, end: 20_000 });
+  assert.deepEqual(segmentAtTime(segs, SEG_IV.start, SEG_IV.end, 99_000), { index: 1, kind: 'waiting', start: 60_000, end: 100_000 });
+  assert.equal(segmentAtTime(segs, SEG_IV.start, SEG_IV.end, 30_000), null);
+});
+
+test('segmentAtTime: accepts Date phase bounds (toMs like every API edge)', () => {
+  const segs = [{ start: new Date(10_000), end: new Date(20_000), kind: 'waiting' }];
+  assert.equal(segmentAtTime(segs, SEG_IV.start, SEG_IV.end, 15_000)?.index, 0);
+});
+
+// -- fitSpanView (single-span full-width fit) ------------------------------------------
+
+test('fitSpanView: pads the span by the fraction each side (default 0.05)', () => {
+  assert.deepEqual(fitSpanView(0, 100_000), { start: -5_000, end: 105_000 });
+  assert.deepEqual(fitSpanView(0, 100_000, 0.1), { start: -10_000, end: 110_000 });
+  assert.deepEqual(fitSpanView(0, 100_000, 0), { start: 0, end: 100_000 });
+  assert.deepEqual(fitSpanView(0, MIN_SPAN_MS, 0), { start: 0, end: MIN_SPAN_MS });
+});
+
+test('fitSpanView: short spans and instants center in the minimum window', () => {
+  // 500ms padded (550ms) is under MIN_SPAN_MS — center, never left-anchor.
+  assert.deepEqual(fitSpanView(0, 500), { start: 250 - MIN_SPAN_MS / 2, end: 250 + MIN_SPAN_MS / 2 });
+  assert.deepEqual(fitSpanView(5_000, 5_000), { start: 5_000 - MIN_SPAN_MS / 2, end: 5_000 + MIN_SPAN_MS / 2 });
+});
+
+test('fitSpanView: order-tolerant, Date-tolerant, junk pad falls back to the default', () => {
+  assert.deepEqual(fitSpanView(100_000, 0), fitSpanView(0, 100_000));
+  assert.deepEqual(fitSpanView(new Date(0), new Date(100_000), 0.05), { start: -5_000, end: 105_000 });
+  assert.deepEqual(fitSpanView(0, 100_000, -1), fitSpanView(0, 100_000, 0.05));
+  assert.deepEqual(fitSpanView(0, 100_000, Number.NaN), fitSpanView(0, 100_000, 0.05));
 });

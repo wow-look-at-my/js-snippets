@@ -2,3 +2,6 @@ node_modules/
 dist/
 package-lock.json
 pnpm-lock.yaml
+build/
+.ste-lint/
+*.ts0.mjs

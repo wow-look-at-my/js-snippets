@@ -1,4 +1,4 @@
-// Tests for the pure signed-distance-field math.
+// Tests for the pure signed-distance-field math..mjs oracle and adapted to this library's API.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

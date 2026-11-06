@@ -7,9 +7,11 @@ export const MAX_RADIUS = 192;
 export interface GaussianKernel {
   /** The clamped sigma actually used (>= 1e-3). */
   sigma: number;
-  /** MAX_RADIUS). */
+  /*MAX_RADIUS). */
   radius: number;
+  /* */
   weights: number[];
+  /* */
   entries: [number, number][];
 }
 
@@ -18,7 +20,6 @@ export function buildGaussianKernel(sigma: number): GaussianKernel {
   const s = Math.max(sigma, 1e-3);
   const radius = Math.max(1, Math.min(MAX_RADIUS, Math.ceil(s * 3)));
 
-  // Discrete Gaussian, normalised so the full (two-sided) tap set sums to a set limit.
   const g = new Array<number>(radius + 1);
   let total = 0;
   for (let k = 0; k <= radius; k++) {

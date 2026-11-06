@@ -1,3 +1,4 @@
+// Gallery wiring.
 
 import {
   DEFAULT_STYLES,
@@ -8,10 +9,29 @@ import {
   type TimelineHit,
 } from '../src/ui/timeline-view.ts';
 import { LANES, batchForRange, type RunPlan } from './fake-data.ts';
+import { mountDataTableDemo } from './data-table-demo.ts';
+import { mountDataTableFeedDemo } from './data-table-feed-demo.ts';
+import { mountDagViewDemo } from './dag-view-demo.ts';
+import { mountPerfGraphDemo } from './perf-graph-demo.ts';
+import { mountBarChartDemo } from './bar-chart-demo.ts';
+import { mountFitLabelDemo } from './fit-label-demo.ts';
 import PAGE_CSS from './page.css';
+import { installTabs } from './tabs.ts';
 
 // Adopt the page stylesheet (imported as text — see the note in index.html).
 document.head.append(Object.assign(document.createElement('style'), { textContent: PAGE_CSS }));
+installTabs();
+
+// The static sections.
+{
+  const now = Date.now();
+  mountDataTableDemo(now);
+  mountDataTableFeedDemo(now);
+  mountDagViewDemo();
+  mountPerfGraphDemo();
+  mountBarChartDemo();
+  mountFitLabelDemo();
+}
 
 const SEC = 1_000;
 const MIN = 60_000;
@@ -27,12 +47,18 @@ const PRUNE_EVERY_MS = 5 * MIN;
 
 const main = document.getElementById('main') as TimelineViewElement;
 const mini = document.getElementById('mini') as TimelineViewElement;
-const els: TimelineViewElement[] = [main, mini];
+// Back-limited but LIVE: minTime alone.
+const floorEl = document.getElementById('floor') as TimelineViewElement;
+// Frozen: both bounds, its own one-shot window, no live feed at all.
+const staticEl = document.getElementById('static') as TimelineViewElement;
+// Frozen too, fit to ONE release run so every nested stage keeps its label.
+const subEl = document.getElementById('subspans') as TimelineViewElement;
+const els: TimelineViewElement[] = [main, mini, floorEl];
 
 // -- Styles: consumer style-map keys on top of the built-ins ---------------------
 
 const styles: StyleMap = {
-  // A consumer-defined terminal treatment.
+  // A consumer-defined terminal treatment: like 'failed' but with a dashed emphasis border, used by the fan-out.
   timeout: { pattern: 'stipple', border: { width: 2, emphasis: true, dash: [5, 3] }, glyph: 'bang' },
 };
 if (!('cancelled' in DEFAULT_STYLES)) {
@@ -69,6 +95,8 @@ function tooltipFor(hit: TimelineHit): string | Node | null {
     const end = iv.end == null ? null : toMs(iv.end);
     add(iv.label || iv.id);
     add(`lane: ${hit.lane.label}`);
+    // A sub-span names the run it belongs to (the hit's `parent`).
+    if (hit.parent) add(`part of ${hit.parent.label ?? hit.parent.id}`);
     if (end === start) {
       add(`instant · ${new Date(start).toLocaleTimeString()}`);
     } else {
@@ -90,6 +118,16 @@ const boot = Date.now();
 const floor = boot - FLOOR_MS;
 let lastTick = boot;
 
+// -- Static bounds: both stops, one each and then both together ---------------
+
+/** How far back #floor may scroll — well inside the lazy-history floor. */
+const FLOOR_DEMO_MS = 10 * MIN;
+/** The frozen window #static shows, as an offset back from boot. */
+const STATIC_FROM_MS = 45 * MIN;
+const STATIC_TO_MS = 15 * MIN;
+
+floorEl.minTime = boot - FLOOR_DEMO_MS;
+
 function feed(el: TimelineViewElement, t0: number, now: number, reset: boolean): void {
   const b = batchForRange(t0, now, now);
   const payload = {
@@ -105,6 +143,41 @@ function feed(el: TimelineViewElement, t0: number, now: number, reset: boolean):
 
 // Boot: pre-roll recent history so the default view is already populated.
 for (const el of els) feed(el, boot - PREROLL_MS, boot, true);
+
+// The frozen instance: ONE batch over a closed window, then both stops. Its
+// "now" is the window's end, so the runs that were still going then stay
+// ongoing. Their bars must terminate at maxTime instead of growing, which is
+// the treatment this instance exists to keep on screen.
+{
+  const from = boot - STATIC_FROM_MS;
+  const to = boot - STATIC_TO_MS;
+  staticEl.styles = styles;
+  staticEl.tooltipFor = tooltipFor;
+  const b = batchForRange(from, to, to);
+  staticEl.setData({ lanes: LANES, intervals: b.intervals, connectors: b.connectors, markers: b.markers, coverage: { start: from, end: to } });
+  staticEl.minTime = from;
+  staticEl.maxTime = to;
+  staticEl.setViewport(from, to);
+
+  // The sub-span instance: the same frozen batch, fit to the latest SUCCESSFUL release run, so the plain shades show.
+  subEl.styles = styles;
+  subEl.tooltipFor = tooltipFor;
+  const release = b.intervals.filter((iv) => iv.laneId === 'release');
+  subEl.setData({ lanes: LANES.filter((l) => l.id === 'release'), intervals: release, coverage: { start: from, end: to } });
+  subEl.minTime = from;
+  subEl.maxTime = to;
+  let latest: string | null = null;
+  let latestEnd = -Infinity;
+  for (const iv of release) {
+    if (iv.parentId || iv.end == null || iv.state) continue;
+    const end = toMs(iv.end);
+    if (end > latestEnd) {
+      latestEnd = end;
+      latest = iv.id;
+    }
+  }
+  if (latest === null || !subEl.fitToInterval(latest, { pad: 0.08 })) subEl.setViewport(from, to);
+}
 
 // Live tick: re-snapshot every run overlapping the recent window.
 setInterval(() => {

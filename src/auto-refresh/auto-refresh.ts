@@ -1,6 +1,4 @@
-/** Auto-Refresh Detection
- *
- * Detects server-side changes and reloads the page automatically. */
+/** Auto-Refresh Detection Detects server-side changes and reloads the page automatically. Primary method. */
 
 // -- Configuration -----------------------------------------------------------
 
@@ -22,7 +20,9 @@ const VERSION_PATH = 'version.txt';
 // -- Types -------------------------------------------------------------------
 
 export interface AutoRefreshOptions {
+  /* */
   interval?: number;
+  /* */
   refreshDelay?: number;
 }
 
@@ -217,7 +217,7 @@ export function createAutoRefresh(
   return { start, stop };
 }
 
-// -- Auto-start when loaded as a standalone script Pages can import { createAutoRefresh } for manual control.
+// -- Auto-start when loaded as a standalone script --------------------------- Pages can import { createAutoRefresh } for manual control.
 
 const instance = createAutoRefresh();
 

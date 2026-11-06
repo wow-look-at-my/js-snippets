@@ -13,7 +13,7 @@ export interface VideoTextureOptions {
 export interface VideoTexture {
   texture: WebGLTexture;
   video: HTMLVideoElement;
-  /** Upload the current video frame if a new one is available and the video has data (`readyState >= HAVE_CURRENT_DATA`). */
+  /** Upload the current video frame if a new one is available and the video has data. */
   update(): boolean;
   dispose(): void;
 }

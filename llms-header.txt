@@ -11,6 +11,6 @@ import { loadHDR } from 'https://sites.pazer.build/js-snippets/branch/library/we
 import * as mat4 from 'https://sites.pazer.build/js-snippets/branch/library/math/mat4.js';
 ```
 
-Every module also serves a TypeScript declaration at the same URL with `.d.ts` in place of `.js` (e.g. …/math/mat4.d.ts) — fetch types alongside the code.
+Every module also serves a TypeScript declaration at the same URL, with `.d.ts` in place of `.js` (e.g. …/math/mat4.d.ts). Fetch types alongside the code.
 
 ## Modules

@@ -7,6 +7,7 @@ export interface MeshAttribute {
   location: number;
   /** Tightly packed float data. */
   data: Float32Array;
+  /* */
   size: number;
 }
 
@@ -23,6 +24,7 @@ export interface Mesh {
   vao: WebGLVertexArrayObject;
   /** Element count passed to drawElements / vertex count for drawArrays. */
   count: number;
+  /* */
   indexType: GLenum;
   /** Draw mode (`gl.TRIANGLES`, `gl.LINES`, ...). */
   mode: GLenum;
@@ -32,7 +34,7 @@ export interface Mesh {
   dispose(): void;
 }
 
-/**Typed input arrays are returned as-is (no copy). Pure — no GL required. */
+/*Typed input arrays are returned as-is (no copy). Pure — no GL required. */
 export function chooseIndexArray(
   indices: ArrayLike<number> | Uint16Array | Uint32Array,
   vertexCount: number,

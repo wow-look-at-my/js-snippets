@@ -1,5 +1,6 @@
 // PURE level math for the GPU exclusive prefix scan (webgpu/scan.ts).
 
+/* */
 export const SCAN_BLOCK_SIZE = 512;
 /** Elements consumed per scan_addback workgroup. */
 export const SCAN_ADDBACK_SIZE = 256;
@@ -16,6 +17,7 @@ export interface ScanDispatch {
 export interface ScanLevelPlan {
   /** Elements scanned at this level. */
   count: number;
+  /* */
   blocks: number;
   /** Scratch-relative element index of this level's block sums. */
   sumsBase: number;
@@ -28,11 +30,11 @@ export interface ScanLevelPlan {
 export interface ScanPlan {
   /** Elements in the input run (>= 0). */
   count: number;
-  /** The first level scans the input run into the output run; level k >= 1 scans level k-1's block sums IN PLACE inside scratch. */
+  /* */
   levels: ScanLevelPlan[];
   /** Total scratch elements required (sum of blocks over all levels). */
   scratchElems: number;
-  /** Scratch-relative element index of the grand total (last level's sums[0]). */
+  /* */
   grandTotalElem: number;
 }
 
@@ -42,9 +44,7 @@ function splitDispatch(n: number, maxPerDim: number): ScanDispatch {
   return { x, y: Math.ceil(n / x) };
 }
 
-/**PURE level math for an exclusive scan over `count` u32 elements.
- * `maxWorkgroupsPerDim` should be the device's maxComputeWorkgroupsPerDimension
- * (a later default, the WebGPU baseline). */
+/** PURE level math for an exclusive scan over `count` u32 elements. */
 export function planScan(count: number, maxWorkgroupsPerDim = DEFAULT_MAX_WG): ScanPlan {
   const n0 = Math.max(0, Math.floor(count) || 0);
   const maxWg = Math.max(1, Math.floor(maxWorkgroupsPerDim) || 1);
@@ -52,7 +52,6 @@ export function planScan(count: number, maxWorkgroupsPerDim = DEFAULT_MAX_WG): S
   let n = n0;
   let sumsBase = 0;
   for (;;) {
-    // A block is dispatched even for the first count so the grand total gets written.
     const blocks = Math.max(1, Math.ceil(n / SCAN_BLOCK_SIZE));
     levels.push({
       count: n,

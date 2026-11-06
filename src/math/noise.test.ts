@@ -1,5 +1,4 @@
-// Tests for the deterministic procedural noise (hash -> value noise -> fbm, 2D
-// and 3D).
+// Tests for the deterministic procedural noise (hash -> value noise -> fbm, 2D and 3D).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -25,7 +24,6 @@ test('valueNoise / fbm are deterministic', () => {
 // ---- Known hash constants (byte-equivalence to the source math) ------------
 
 test('hash2 matches specific known constants', () => {
-  // All-zero inputs hash to a set limit.
   assert.equal(hash2(0, 0, 16, 0), 0);
   assert.equal(hash2(1, 2, 16, 7), 0.08902817570814588);
   assert.equal(hash2(3, 5, 8, 1), 0.5579161333287871);

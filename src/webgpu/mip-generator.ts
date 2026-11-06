@@ -1,4 +1,4 @@
-// AMD Single Pass Downsampler — WebGPU mip chain generator.
+// AMD Single Pass Downsampler — WebGPU mip chain generator Generates a full mip chain for a GPUTexture in compute dispatches instead.
 
 import spdSource from './shaders/spd.wgsl';
 
@@ -23,11 +23,10 @@ function createGPUBuffer(device: GPUDevice, data: ArrayBufferView, usage: GPUBuf
   return buf;
 }
 
-/**Generate the full mip chain for a texture using the AMD Single Pass
+/** Generate the full mip chain for a texture using the AMD Single Pass
  * Downsampler algorithm. The texture must have been created with `COPY_DST`
- * usage and the desired `mipLevelCount`. Mip the first level must already
- * contain data. Must be rgba32float. @param mipCount Number of mip levels
- * (including the first level). If omitted, uses `texture.mipLevelCount`. */
+ * usage and the desired `mipLevelCount`. If omitted, uses
+ * `texture.mipLevelCount`. */
 export function generateMips(device: GPUDevice, texture: GPUTexture, mipCount?: number): void {
   const BUF = GPUBufferUsage;
   const srcW = texture.width;

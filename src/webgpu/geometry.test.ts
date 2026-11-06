@@ -131,8 +131,8 @@ test('createTorus: structural invariants and bounds', () => {
 });
 
 // Winding oracle. For each non-degenerate triangle, the geometric normal
-// cross(p1 - p0, p2 - p0) must agree with the average stored vertex normal
-// (dot > 0). That means the triangle is counter-clockwise viewed from
+// cross(p1 - p0, p2 - p0) agrees with the average of its stored vertex
+// normals (dot > 0). The triangle is then counter-clockwise viewed from
 // outside, front-facing under WebGPU's default frontFace: 'ccw'. Zero-area
 // triangles (e.g. sphere pole rows, a cone's apex row) are skipped.
 function windingDots(m: Mesh): { tri: number; dot: number }[] {
@@ -154,9 +154,6 @@ function windingDots(m: Mesh): { tri: number; dot: number }[] {
   return dots;
 }
 
-// One representative instance per generator; the cylinder also as a frustum
-// (unequal radii) and a cone (the first radiustop, whose apex-row triangles
-// are all degenerate and must be skipped, not failed).
 function windingCases(): [string, Mesh][] {
   return [
     ['createCube', createCube(2)],
@@ -206,7 +203,7 @@ test('flipWinding: (a,b,c) -> (a,c,b), no mutation, arrays pass through, double 
     assert.equal(flipped.indices[t + 1], m.indices[t + 2], `tri ${t / 3} vertex 1 <- 2`);
     assert.equal(flipped.indices[t + 2], m.indices[t + 1], `tri ${t / 3} vertex 2 <- 1`);
   }
-  // Flipping twice restores the original index order exactly.
+  // Flipping twice restores the index order exactly.
   const twice = flipWinding(flipped);
   assert.deepEqual(Array.from(twice.indices), before, 'double flip round-trips');
 });

@@ -1,0 +1,218 @@
+/* <data-table> shadow-DOM styles.
+ *
+ * Themed entirely through --table-* custom properties, which inherit
+ * through the shadow boundary — a consumer sets them once on the host (or
+ * :root) and every instance follows. The defaults below are a dark
+ * GitHub-ish palette; a light host only has to set the surface vars.
+ *
+ * Every --table-* falls back to a generic (--fg/--muted/--border/--panel/
+ * --accent), so a host that already defines a palette needs no
+ * configuration at all. The feed variant adds the severity colors
+ * --table-bad/-warn/-good/-skip/-info, which fall back to --failure/
+ * --running/--success/--skipped/--accent.
+ */
+
+:host {
+  display: block;
+
+  --table-fg: var(--fg, #e6edf3);
+  --table-muted: var(--muted, #7d8590);
+  --table-border: var(--border, #30363d);
+  --table-panel: var(--panel, #161b22);
+  --table-accent: var(--accent, #2f81f7);
+
+  --table-row-gap: 0.35rem;
+  --table-font: inherit;
+  --table-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+
+  color: var(--table-fg);
+  font-family: var(--table-font);
+}
+
+/* -- Filter bar ------------------------------------------------------------
+ *
+ * The query box, the facet chip groups, and a live "showing N of M" count.
+ * It wraps rather than scrolls — a table with many buckets must never hide
+ * its own controls behind an overflow.
+ */
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+}
+
+.q {
+  flex: 1 1 12rem;
+  min-width: 8rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--table-border);
+  border-radius: 6px;
+  background: var(--table-panel);
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+}
+.q::placeholder { color: var(--table-muted); }
+.q:focus-visible { outline: 2px solid var(--table-accent); outline-offset: 1px; }
+
+/* Groups are separate flex rows inside one wrapper so a severity row and a
+   family row stay visually distinct instead of merging into one long strip
+   of unrelated words. */
+.chip-groups { display: flex; flex-wrap: wrap; gap: 0.4rem 0.7rem; align-items: center; }
+.chips { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+
+.chip {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  font-size: 0.7rem;
+  font-family: var(--table-mono);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--table-muted);
+  cursor: pointer;
+}
+.chip:focus-visible { outline: 2px solid var(--table-accent); outline-offset: 1px; }
+/* A dimmed chip is one that is HIDING its rows: the strike-through says so
+   without relying on the color alone (the same information twice, for
+   anyone who cannot separate the two states by hue). */
+.chip.off { opacity: 0.45; text-decoration: line-through; }
+
+.count { margin-left: auto; color: var(--table-muted); font-size: 0.75rem; white-space: nowrap; }
+
+.clear {
+  border: 1px solid var(--table-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--table-muted);
+  font: inherit;
+  font-size: 0.7rem;
+  padding: 0.05rem 0.45rem;
+  cursor: pointer;
+}
+.clear:hover { color: var(--table-fg); }
+.clear:focus-visible { outline: 2px solid var(--table-accent); outline-offset: 1px; }
+
+/* -- Rows ------------------------------------------------------------------ */
+
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+
+thead th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--table-muted);
+  border-bottom: 1px solid var(--table-border);
+  padding: 0 0.5rem var(--table-row-gap) 0;
+  white-space: nowrap;
+}
+thead th.end { text-align: right; }
+
+/* A sortable header has to LOOK actionable before it is hovered — an
+   invisible affordance is one nobody uses. */
+thead th.sortable { cursor: pointer; user-select: none; }
+thead th.sortable:hover { color: var(--table-fg); }
+thead th.sortable:focus-visible { outline: 2px solid var(--table-accent); outline-offset: 1px; }
+thead th.sorted { color: var(--table-fg); }
+.caret { margin-left: 0.25em; font-size: 0.9em; }
+
+tbody td {
+  padding: var(--table-row-gap) 0.5rem var(--table-row-gap) 0;
+  border-bottom: 1px solid var(--table-border);
+  vertical-align: top;
+}
+tbody td.end { text-align: right; font-variant-numeric: tabular-nums; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr { border-left: 2px solid transparent; }
+tbody tr td:first-child { padding-left: 0.5rem; }
+
+/* Only rows that DO something look and behave interactive — the class is
+   added exactly when a row-click listener exists. The focus ring is not
+   optional: these rows are keyboard-reachable, and a focusable element
+   nobody can see the focus on is worse than one that is not reachable. */
+tbody tr.interactive { cursor: pointer; }
+tbody tr.interactive:hover { background: var(--table-panel); }
+tbody tr.interactive:focus-visible {
+  outline: 2px solid var(--table-accent);
+  outline-offset: -2px;
+}
+
+.empty { color: var(--table-muted); font-size: 0.85rem; margin: 0.5rem 0; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .chip { transition: opacity 120ms ease; }
+}
+
+/* Expandable detail rows (detailFor). The detail spans every column and
+   reads as part of its parent row, not as a sibling: same left edge accent,
+   no row separator between them. */
+tbody tr.has-open-detail { background: var(--table-panel); }
+tbody tr.detail-row > td {
+  padding: 0.5rem 0.75rem 0.75rem;
+  background: var(--table-panel);
+  border-top: 0;
+}
+tbody tr.detail-row .detail-pending { color: var(--table-muted); font-style: italic; }
+tbody tr.detail-row .detail-error { color: var(--table-failure, var(--failure, #f85149)); }
+
+/* -- Feed variant (variant="feed") -----------------------------------------
+ *
+ * SEVERITY is the pill tint and FAMILY is the leading dot: two axes, both
+ * derived from the kind string (data-table-feed-math.ts), so a kind the
+ * producer adds tomorrow is styled the first time it appears. A stylesheet
+ * that lists known kinds drifts, and everything unlisted shares one grey.
+ */
+:host([variant="feed"]) {
+  --table-bad: var(--failure, #f85149);
+  --table-warn: var(--running, #d29922);
+  --table-good: var(--success, #3fb950);
+  --table-skip: var(--skipped, #a371f7);
+  --table-info: var(--accent, #2f81f7);
+}
+
+:host([variant="feed"]) .time { white-space: nowrap; color: var(--table-muted); }
+:host([variant="feed"]) .msg { overflow-wrap: anywhere; }
+/* A messageRenderer link sits in the shadow root, where no host rule reaches it. */
+:host([variant="feed"]) .msg a { color: var(--table-accent); }
+
+:host([variant="feed"]) .kind {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-family: var(--table-mono);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--table-muted);
+  white-space: nowrap;
+}
+
+/* The badge tint and the chip tint are one rule: a chip must read as the
+   same thing as the rows it hides. */
+:host([variant="feed"]) .sev-bad:is(.kind, .chip) { background: rgba(248, 81, 73, 0.15); color: var(--table-bad); }
+:host([variant="feed"]) .sev-warn:is(.kind, .chip) { background: rgba(210, 153, 34, 0.15); color: var(--table-warn); }
+:host([variant="feed"]) .sev-good:is(.kind, .chip) { background: rgba(63, 185, 80, 0.15); color: var(--table-good); }
+:host([variant="feed"]) .sev-skip:is(.kind, .chip) { background: rgba(163, 113, 247, 0.15); color: var(--table-skip); }
+:host([variant="feed"]) .sev-info:is(.kind, .chip) { background: rgba(47, 129, 247, 0.13); color: var(--table-info); }
+
+/* The family dot, on the badge and on the family chip alike. --fam-hue is
+   set per element from the family's derived hue, so an unmapped family
+   still gets a stable distinct color. */
+:host([variant="feed"]) .kind::before,
+:host([variant="feed"]) .chip.fam::before {
+  content: "";
+  display: inline-block;
+  width: 0.45em;
+  height: 0.45em;
+  margin-right: 0.4em;
+  border-radius: 50%;
+  vertical-align: 0.08em;
+  background: hsl(var(--fam-hue, 210) 60% 68%);
+}
+
+/* Row-level severity accent: a thin left rule, so a wall of rows still reads
+   at a glance when scrolled past reading speed. */
+:host([variant="feed"]) tbody tr.sev-bad { border-left-color: var(--table-bad); }
+:host([variant="feed"]) tbody tr.sev-warn { border-left-color: var(--table-warn); }

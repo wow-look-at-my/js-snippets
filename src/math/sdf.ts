@@ -11,8 +11,7 @@ export const SDF_TORUS = 3;
 /** A 4-component params vector; each primitive reads the components it needs. */
 export type SdfParams = readonly [number, number, number, number];
 
-// -- Primitive distance functions (local space) ------------------------------
-// `params` is a 4-vector; each primitive reads the components it needs.
+// -- Primitive distance functions (local space) `params` is a 4-vector.
 
 /** Signed distance to a sphere. params: [radius]. */
 export function sdSphere(p: Vec3, params: SdfParams): number {
@@ -30,6 +29,7 @@ export function sdBox(p: Vec3, params: SdfParams): number {
   return outside + inside;
 }
 
+/** Signed distance to a Y-axis cylinder. params: [radius, halfHeight]. */
 export function sdCylinder(p: Vec3, params: SdfParams): number {
   const dx = Math.hypot(p[0], p[2]) - params[0];
   const dy = Math.abs(p[1]) - params[1];
@@ -116,6 +116,7 @@ function loadTexel(grid: SdfGrid, ix: number, iy: number, iz: number): number {
   return grid.data[(cz * ny + cy) * nx + cx];
 }
 
+/* */
 export function trilinear(grid: SdfGrid, q: Vec3): number {
   const [nx, ny, nz] = grid.dims;
   const gx = q[0] * nx - 0.5, gy = q[1] * ny - 0.5, gz = q[2] * nz - 0.5;
@@ -169,7 +170,7 @@ export function sampleGrid(grid: SdfGrid, p: Vec3): number {
 
 // -- Ray / box intersection --------------------------------------------------
 
-/**Slab ray/AABB test. */
+/** Slab ray/AABB test. */
 export function intersectAABB(ro: Vec3, rd: Vec3, bmin: Vec3, bmax: Vec3): [number, number] {
   const inv: Vec3 = [1 / rd[0], 1 / rd[1], 1 / rd[2]];
   const t0: Vec3 = [(bmin[0] - ro[0]) * inv[0], (bmin[1] - ro[1]) * inv[1], (bmin[2] - ro[2]) * inv[2]];
@@ -209,12 +210,13 @@ export interface SoftShadowOptions {
 
 /** Result of a `softShadow` march. */
 export interface SoftShadowResult {
+  /* */
   vis: number;
   /** Number of field samples taken (for cost visualisation). */
   steps: number;
 }
 
-/**`sampleFn(p)` returns the scene SDF at a point. res = min(res, k*h/t): the
+/*`sampleFn(p)` returns the scene SDF at a point. res = min(res, k*h/t): the
  * closest the ray passes to the surface, scaled by k, is the penumbra. If `aabb`
  * is given, the march is clipped to that box and a ray that misses it returns
  * fully lit at zero cost. When the field has no occluder outside the volume this

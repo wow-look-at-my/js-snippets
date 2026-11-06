@@ -1,7 +1,4 @@
-// First-person fly ("noclip") camera: the look half comes from
-// `applyLookDrag` in camera.ts (drag-to-look, pointer-up = look-up). This
-// module adds the movement half — WASD-style key flight, wheel dolly along
-// the view direction, and two-finger pinch dolly.
+// First-person fly ("noclip") camera: the look half comes from `applyLookDrag` in camera.ts (drag-to-look, pointer-up = look-up).
 
 import { applyLookDrag, dirFromAzEl } from './camera.ts';
 import type { LookDragOptions, LookState } from './camera.ts';
@@ -22,8 +19,7 @@ export interface FlyMoveState {
 
 const DEG = Math.PI / 180;
 
-/**
- * Displacement for one movement step of length `distance` (pure).
+/** Displacement for one movement step of length `distance` (pure).
  *
  * - `forward`/`back` move along the full 3D view direction
  *   (`dirFromAzEl(look)`) — pitching down and holding forward flies into the
@@ -31,8 +27,7 @@ const DEG = Math.PI / 180;
  * - `left`/`right` strafe along `normalize(cross(dir, up))` (screen-right; see
  *   the camera.ts drag-convention note).
  * - `up`/`down` move along the world `up` axis (default `[0,1,0]`), NOT the
- *   camera's tilted up vector.
- */
+ *   camera's tilted up vector. */
 export function flyMoveDelta(
   look: LookState,
   move: FlyMoveState,
@@ -51,26 +46,31 @@ export function flyMoveDelta(
   return out;
 }
 
-/** * Displacement for a dolly of `amount` world units along the view direction
-    * (pure). Positive = toward what you're looking at. */
+/** Displacement for a dolly of `amount` world units along the view direction
+ * (pure). Positive = toward what you're looking at. */
 export function dollyDelta(look: LookState, amount: number): Vec3 {
   return scale(dirFromAzEl(look.azDeg * DEG, look.elDeg * DEG), amount);
 }
 
 /** Options for `createFlyController`. */
 export interface FlyControllerOptions extends LookDragOptions {
+  /* */
   position?: Vec3;
-  /** Initial yaw in degrees (the first default; see `LookState`). */
+  /* */
   azDeg?: number;
-  /** Initial pitch in degrees (the initial pitch in degrees). */
+  /* */
   elDeg?: number;
-  /** Key-held movement speed in world units/second (a later default). */
+  /* */
   moveSpeed?: number;
+  /* */
   wheelSpeed?: number;
+  /* */
   pinchSpeed?: number;
+  /* */
   up?: Vec3;
   /** `KeyboardEvent.code` → movement mapping (default WASD + Space/E up, Q down). */
   keyMap?: Record<string, keyof FlyMoveState>;
+  /* */
   dragButtons?: number[];
 }
 
@@ -99,10 +99,7 @@ const DEFAULT_KEY_MAP: Record<string, keyof FlyMoveState> = {
   KeyQ: 'down',
 };
 
-/**Attach fly controls to `element`: drag to look (via `applyLookDrag`, so
- * pointer-up = look-up unless `invertY`), keys to fly (`update(dt)` applies
- * them), wheel and two-finger pinch to dolly along the view direction.
- * Read/set `position`/`azDeg`/`elDeg` directly at any time. */
+/*Read/set `position`/`azDeg`/`elDeg` directly at any time. */
 export function createFlyController(
   element: HTMLElement,
   options: FlyControllerOptions = {},
@@ -157,8 +154,7 @@ export function createFlyController(
     if (prop) move[prop] = e.type === 'keydown';
   };
 
-  // Losing window focus swallows the matching keyup, which would leave the
-  // camera drifting forever after an alt-tab mid-flight — drop all held keys.
+  // Losing window focus swallows the matching keyup.
   const onWindowBlur = () => {
     for (const k of Object.keys(move) as (keyof FlyMoveState)[]) move[k] = false;
   };

@@ -1,0 +1,228 @@
+/* <bar-chart> shadow-DOM styles. Every color is a --bar-chart-* custom property, which inherits through the shadow boundary. */
+
+:host {
+  display: block;
+  position: relative;
+
+  --bar-chart-bg: transparent;
+  --bar-chart-fg: #e8ecf4;
+  --bar-chart-text-muted: #8b93a3;
+  --bar-chart-grid: rgba(200, 205, 216, 0.08);
+  --bar-chart-axis: rgba(200, 205, 216, 0.28);
+  --bar-chart-muted-fill: rgba(200, 205, 216, 0.12);
+  --bar-chart-link: #7fb4ff;
+  --bar-chart-focus: #7fb4ff;
+  --bar-chart-tooltip-bg: #161a22;
+  --bar-chart-tooltip-border: #2c3341;
+  --bar-chart-marker: #b4bccb;
+  --bar-chart-marker-warning: #f0a500;
+  --bar-chart-marker-critical: #ef4444;
+  --bar-chart-font: ui-sans-serif, system-ui, sans-serif;
+  --bar-chart-font-size: 12px;
+
+  background: var(--bar-chart-bg);
+  color: var(--bar-chart-fg);
+  font-family: var(--bar-chart-font);
+  font-size: var(--bar-chart-font-size);
+}
+
+:host([hidden]) {
+  display: none;
+}
+
+svg {
+  display: block;
+  width: 100%;
+  overflow: visible;
+  font: inherit;
+}
+
+text {
+  fill: var(--bar-chart-fg);
+}
+
+.label {
+  dominant-baseline: central;
+}
+
+a .label {
+  fill: var(--bar-chart-link);
+}
+
+a:hover .label,
+a:focus-visible .label {
+  text-decoration: underline;
+}
+
+.tick,
+.marker-label.off {
+  fill: var(--bar-chart-text-muted);
+}
+
+.tick {
+  font-size: 0.9em;
+}
+
+.value {
+  dominant-baseline: central;
+  font-variant-numeric: tabular-nums;
+}
+
+.grid {
+  stroke: var(--bar-chart-grid);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.axis {
+  stroke: var(--bar-chart-axis);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.band {
+  fill: transparent;
+}
+
+.band.interactive {
+  cursor: pointer;
+  outline: none;
+}
+
+.band.interactive:focus-visible {
+  stroke: var(--bar-chart-focus);
+  stroke-width: 1.5;
+}
+
+.seg {
+  transition: opacity 120ms;
+  pointer-events: none;
+}
+
+.seg.muted {
+  fill: var(--bar-chart-muted-fill);
+}
+
+.emph .seg:not(.hot):not(.muted) {
+  opacity: 0.4;
+}
+
+.marker {
+  stroke: var(--bar-chart-marker);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+.marker.warning {
+  stroke: var(--bar-chart-marker-warning);
+}
+
+.marker.critical {
+  stroke: var(--bar-chart-marker-critical);
+}
+
+.marker.off {
+  stroke-dasharray: 3 3;
+}
+
+.marker-label {
+  font-size: 0.9em;
+  fill: var(--bar-chart-marker);
+}
+
+.marker-label.warning {
+  fill: var(--bar-chart-marker-warning);
+}
+
+.marker-label.critical {
+  fill: var(--bar-chart-marker-critical);
+}
+
+/* -- Legend ------------------------------------------------------------------ */
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+  color: var(--bar-chart-text-muted);
+}
+
+.legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+}
+
+.swatch.muted {
+  background: var(--bar-chart-muted-fill);
+  box-shadow: inset 0 0 0 1px var(--bar-chart-axis);
+}
+
+/* -- Tooltip ----------------------------------------------------------------- */
+
+.tooltip {
+  position: absolute;
+  z-index: 1;
+  max-width: 280px;
+  padding: 6px 8px;
+  border: 1px solid var(--bar-chart-tooltip-border);
+  border-radius: 4px;
+  background: var(--bar-chart-tooltip-bg);
+  color: var(--bar-chart-fg);
+  pointer-events: none;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.tooltip .title {
+  font-weight: 600;
+}
+
+.tooltip .line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tooltip .num {
+  margin-left: auto;
+  padding-left: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tooltip .detail {
+  margin-top: 4px;
+  color: var(--bar-chart-text-muted);
+  white-space: pre-line;
+}
+
+/* -- Empty state and the table for screen readers ---------------------------- */
+
+.empty {
+  margin: 0;
+  padding: 16px 0;
+  text-align: center;
+  color: var(--bar-chart-text-muted);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

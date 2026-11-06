@@ -2,6 +2,7 @@
 
 import fullscreenVertGlsl from './shaders/fullscreen.vert.glsl';
 
+/* */
 export const FULLSCREEN_VERTEX_SHADER: string = fullscreenVertGlsl;
 
 /** A drawable fullscreen pass (empty VAO + drawArrays of multiple vertices). */
